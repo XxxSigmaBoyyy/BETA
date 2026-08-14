@@ -6,12 +6,29 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
+
+
+def git_ignored(root: Path) -> set[str]:
+    """Repo-relative paths git is told to ignore; empty when this is not a checkout.
+
+    In CI the tree is a fresh clone with nothing ignored, so this is a no-op there. It exists
+    so the same check can be run on a working copy that holds untracked local files.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--others", "--ignored", "--exclude-standard"],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return set()
+    return {line for line in result.stdout.splitlines() if line}
 
 
 def main() -> int:
@@ -476,10 +493,16 @@ def main() -> int:
         fail(errors, "core and UI backup managers must remain byte-identical")
 
     forbidden_suffixes = {".p12", ".pfx", ".mobileprovision"}
+    ignored = git_ignored(root)
     for path in root.rglob("*"):
         if ".git" in path.parts or not path.is_file():
             continue
         if path.resolve() == Path(__file__).resolve():
+            continue
+        # Only what git would actually carry: a gitignored file is in the working copy by
+        # intent (the push token lives there) and cannot reach a commit, so scanning it
+        # reports a leak that does not exist and hides the ones that do.
+        if path.relative_to(root).as_posix() in ignored:
             continue
         if path.suffix.lower() in forbidden_suffixes:
             fail(errors, f"private signing material is tracked: {path.relative_to(root)}")
