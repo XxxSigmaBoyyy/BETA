@@ -147,28 +147,79 @@ def askpass_env(token_path: Path) -> tuple[dict, tempfile.TemporaryDirectory]:
     return env, holder
 
 
+def remote_head(branch: str, env: dict) -> str:
+    return git("ls-remote", REMOTE_URL, f"refs/heads/{branch}", env=env, isolated=True).split("\t")[0]
+
+
+def push_once(refspec: str, env: dict, lease: str | None = None) -> bool:
+    """One `git push` over HTTP/1.1, exit code reported rather than raised on.
+
+    HTTP/2 is what fails on a first push of this repo: the whole history is one ~40 MiB pack and
+    GitHub answers `HTTP 400 curl 22 / unexpected disconnect while reading sideband packet`
+    partway through writing it. Forcing 1.1 and giving curl a post buffer big enough to hold the
+    pack is the fix; slicing the history is the fallback when even that is too much for one
+    request.
+    """
+    tuning = [
+        "-c", "credential.helper=",
+        "-c", "http.version=HTTP/1.1",
+        "-c", "http.postBuffer=524288000",
+        "-c", "http.lowSpeedLimit=0",
+        "-c", "http.lowSpeedTime=600",
+    ]
+    args = ["push"]
+    if lease is not None:
+        args.append(f"--force-with-lease={lease}")
+    args += [REMOTE_URL, refspec]
+    result = subprocess.run(["git", *tuning, *args], cwd=ROOT, text=True, env=env, check=False)
+    return result.returncode == 0
+
+
+def push_in_slices(branch: str, env: dict) -> None:
+    """Walk the history up in chunks, so each request carries a pack the server will accept."""
+    commits = git("rev-list", "--reverse", "--first-parent", "HEAD").splitlines()
+    if not commits:
+        fail("no commits to push")
+    step = max(1, len(commits) // 12)
+    checkpoints = commits[step - 1 :: step]
+    if checkpoints and checkpoints[-1] != commits[-1]:
+        checkpoints.append(commits[-1])
+    print(f"pushing {len(commits)} commits in {len(checkpoints)} slices")
+    for index, sha in enumerate(checkpoints, start=1):
+        print(f"  slice {index}/{len(checkpoints)} -> {sha[:12]}")
+        for attempt in (1, 2, 3):
+            if push_once(f"{sha}:refs/heads/{branch}", env):
+                break
+            if attempt == 3:
+                fail(
+                    f"slice {index} failed three times at {sha[:12]}\n"
+                    "       the connection is dropping mid-pack; try again on a steadier network"
+                )
+            print(f"    retrying ({attempt}/2)")
+            time.sleep(5.0)
+
+
 def push(branch: str, force: bool) -> None:
     env, holder = askpass_env(TOKEN_PATH)
     try:
-        remote_before = git(
-            "ls-remote", REMOTE_URL, f"refs/heads/{branch}", env=env, isolated=True
-        ).split("\t")[0]
-        args = ["push", REMOTE_URL, f"HEAD:refs/heads/{branch}"]
-        if force and remote_before:
-            # Pinned to the sha just read rather than plain --force-with-lease, which needs a
-            # remote-tracking ref this push does not have: DD is addressed by URL so that its
-            # token never lands in .git/config.
-            args.insert(1, f"--force-with-lease=refs/heads/{branch}:{remote_before}")
+        remote_before = remote_head(branch, env)
+        local = git("rev-parse", "HEAD")
+        if remote_before == local:
+            print(f"{branch} on {REPO_SLUG} is already at {local[:12]}")
+            return
+        # Pinned to the sha just read rather than plain --force-with-lease, which needs a
+        # remote-tracking ref this push does not have: DD is addressed by URL so that its token
+        # never lands in .git/config.
+        lease = f"refs/heads/{branch}:{remote_before}" if force and remote_before else None
         print(f"pushing HEAD -> {REPO_SLUG} {branch}")
-        subprocess.run(
-            ["git", "-c", "credential.helper=", *args], cwd=ROOT, text=True, env=env, check=False
-        )
+        if not push_once(f"HEAD:refs/heads/{branch}", env, lease=lease):
+            print("that push did not complete; sending the history in slices instead")
+            push_in_slices(branch, env)
+            if not push_once(f"HEAD:refs/heads/{branch}", env, lease=lease):
+                fail("the final slice would not go through")
         # Rather than trust the exit code of a command whose stderr we let through, confirm the
         # remote tip really is our commit.
-        local = git("rev-parse", "HEAD")
-        remote = git(
-            "ls-remote", REMOTE_URL, f"refs/heads/{branch}", env=env, isolated=True
-        ).split("\t")[0]
+        remote = remote_head(branch, env)
         if remote != local:
             fail(
                 f"{branch} on {REPO_SLUG} is at {remote[:12] or 'nothing'}, not {local[:12]}\n"
