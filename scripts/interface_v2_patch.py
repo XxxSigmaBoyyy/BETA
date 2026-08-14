@@ -64,10 +64,11 @@ private final class AorusGlassThemeCache {
 
     private let lock = NSLock()
     private var sourceIdentifier: ObjectIdentifier?
-    private var listTheme: PresentationTheme?
+    private var darkVariant: PresentationTheme?
+    private var lightVariant: PresentationTheme?
     private var derivedIdentifiers = Set<ObjectIdentifier>()
 
-    func derive(from theme: PresentationTheme) -> PresentationTheme {
+    func derive(from theme: PresentationTheme, dark: Bool) -> PresentationTheme {
         self.lock.lock()
         defer { self.lock.unlock() }
 
@@ -76,27 +77,43 @@ private final class AorusGlassThemeCache {
             return theme
         }
         let identifier = ObjectIdentifier(theme)
-        if self.sourceIdentifier == identifier, let listTheme = self.listTheme {
-            return listTheme
+        if self.sourceIdentifier != identifier {
+            self.sourceIdentifier = identifier
+            self.darkVariant = nil
+            self.lightVariant = nil
+        }
+        if dark, let cached = self.darkVariant {
+            return cached
+        }
+        if !dark, let cached = self.lightVariant {
+            return cached
         }
 
-        // Translucent white rather than a tinted fill: the glass pane behind the section is
-        // what supplies the material, and this is the pane's own face. No border, no sheen --
-        // the two things that make a hand-drawn panel read as a fake.
+        // Ink and pane, and both of them flip with the appearance. That flip is the whole of
+        // light-theme support: black letters on a pale pane, where the dark theme has white
+        // letters on a dark one. No border and no sheen in either -- those are the two things
+        // that make a hand-drawn panel read as a fake next to the real material behind it.
+        let ink: UIColor = dark ? UIColor(white: 1.0, alpha: 1.0) : UIColor(white: 0.0, alpha: 1.0)
+        let pane: UIColor = dark ? UIColor(white: 1.0, alpha: 0.09) : UIColor(white: 1.0, alpha: 0.55)
+        let hairline: UIColor = dark ? UIColor(white: 1.0, alpha: 0.12) : UIColor(white: 0.0, alpha: 0.1)
+        func aorusInk(_ alpha: CGFloat) -> UIColor {
+            return dark ? UIColor(white: 1.0, alpha: alpha) : UIColor(white: 0.0, alpha: alpha)
+        }
+
         let list = theme.list.withUpdated(
-            itemPrimaryTextColor: UIColor(white: 1.0, alpha: 1.0),
-            itemSecondaryTextColor: UIColor(white: 1.0, alpha: 0.65),
-            itemDisabledTextColor: UIColor(white: 1.0, alpha: 0.35),
-            itemAccentColor: UIColor(white: 1.0, alpha: 1.0),
-            itemPlaceholderTextColor: UIColor(white: 1.0, alpha: 0.4),
-            itemBlocksBackgroundColor: UIColor(white: 1.0, alpha: 0.09),
-            itemHighlightedBackgroundColor: UIColor(white: 1.0, alpha: 0.1),
-            itemBlocksSeparatorColor: UIColor(white: 1.0, alpha: 0.12),
-            itemPlainSeparatorColor: UIColor(white: 1.0, alpha: 0.12),
-            disclosureArrowColor: UIColor(white: 1.0, alpha: 0.35),
-            sectionHeaderTextColor: UIColor(white: 1.0, alpha: 0.6),
-            freeTextColor: UIColor(white: 1.0, alpha: 0.55),
-            controlSecondaryColor: UIColor(white: 1.0, alpha: 0.2)
+            itemPrimaryTextColor: ink,
+            itemSecondaryTextColor: aorusInk(0.65),
+            itemDisabledTextColor: aorusInk(0.35),
+            itemAccentColor: ink,
+            itemPlaceholderTextColor: aorusInk(0.4),
+            itemBlocksBackgroundColor: pane,
+            itemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
+            itemBlocksSeparatorColor: hairline,
+            itemPlainSeparatorColor: hairline,
+            disclosureArrowColor: aorusInk(0.35),
+            sectionHeaderTextColor: aorusInk(0.6),
+            freeTextColor: aorusInk(0.55),
+            controlSecondaryColor: aorusInk(0.2)
         )
         let derived = PresentationTheme(
             name: theme.name,
@@ -121,32 +138,33 @@ private final class AorusGlassThemeCache {
         if self.derivedIdentifiers.count > 8 {
             self.derivedIdentifiers.removeAll()
         }
-        self.sourceIdentifier = identifier
-        self.listTheme = derived
+        if dark {
+            self.darkVariant = derived
+        } else {
+            self.lightVariant = derived
+        }
         self.derivedIdentifiers.insert(ObjectIdentifier(derived))
         return derived
     }
 }
 
 public extension PresentationTheme {
-    /// White labels on translucent panes, for the settings lists.
-    ///
-    /// Held back on a light theme on purpose: white labels there would be white on white, and
-    /// a mode that makes the app unreadable is worse than one that skips a screen.
+    /// Labels and panes for the settings lists: white on dark panes under a dark theme, black on
+    /// pale ones under a light one.
     var aorusGlassListTheme: PresentationTheme {
-        guard self.overallDarkAppearance, UserDefaults.standard.bool(forKey: aorusInterfaceV2Key) else {
+        guard UserDefaults.standard.bool(forKey: aorusInterfaceV2Key) else {
             return self
         }
-        return AorusGlassThemeCache.shared.derive(from: self)
+        return AorusGlassThemeCache.shared.derive(from: self, dark: self.overallDarkAppearance)
     }
 
-    /// The same, for the peer-info list, where the page underneath is the avatar's colour
-    /// rather than the theme's -- so it applies whatever the theme's own appearance is.
+    /// The same, for the peer-info list. Always the dark pair whatever the theme is: the page
+    /// under this one is the avatar's colour, which is dark by construction.
     var aorusGlassProfileTheme: PresentationTheme {
         guard UserDefaults.standard.bool(forKey: aorusInterfaceV2Key) else {
             return self
         }
-        return AorusGlassThemeCache.shared.derive(from: self)
+        return AorusGlassThemeCache.shared.derive(from: self, dark: true)
     }
 }
 '''
@@ -479,22 +497,37 @@ def _patch_avatar_placeholder(tg: Path) -> None:
         "            // its own. Only the lettered placeholder is touched: the archive, deleted and\n"
         "            // saved-messages avatars are icons that have to keep their meaning.\n"
         "            //\n"
-        "            // Held back on a light theme for the same reason the glass list theme is: the\n"
-        "            // letters are drawn white, and white on a pale frosted grey is unreadable. A\n"
-        "            // nil theme is the custom-letters path, which is only used on dark surfaces.\n"
+        "            // A light theme gets the plate and the letters the other way round -- a pale\n"
+        "            // frost with black initials -- because white letters on a pale frost cannot be\n"
+        "            // read. A nil theme is the custom-letters path, which only ever draws on dark\n"
+        "            // surfaces, so it takes the dark pair.\n"
         "            var aorusPlaceholderColors = colors\n"
+        "            var aorusLetterColor = UIColor.white\n"
         "            if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
         "               let parameters = parameters as? AvatarNodeParameters,\n"
-        "               parameters.theme?.overallDarkAppearance != false,\n"
         "               parameters.icon == .none,\n"
         "               !parameters.letters.isEmpty {\n"
-        "                aorusPlaceholderColors = [\n"
-        "                    UIColor(white: 0.52, alpha: 0.5),\n"
-        "                    UIColor(white: 0.32, alpha: 0.5)\n"
-        "                ]\n"
+        "                if parameters.theme?.overallDarkAppearance == false {\n"
+        "                    aorusPlaceholderColors = [\n"
+        "                        UIColor(white: 1.0, alpha: 0.62),\n"
+        "                        UIColor(white: 0.86, alpha: 0.62)\n"
+        "                    ]\n"
+        "                    aorusLetterColor = UIColor(white: 0.0, alpha: 0.85)\n"
+        "                } else {\n"
+        "                    aorusPlaceholderColors = [\n"
+        "                        UIColor(white: 0.52, alpha: 0.5),\n"
+        "                        UIColor(white: 0.32, alpha: 0.5)\n"
+        "                    ]\n"
+        "                }\n"
         "            }\n"
         "            let colorsArray: NSArray = aorusPlaceholderColors.map(\\.cgColor) as NSArray\n",
         "avatar placeholder colours",
+    )
+    text = _replace_once(
+        text,
+        "                    let attributedString = NSAttributedString(string: string, attributes: [NSAttributedString.Key.font: parameters.font, NSAttributedString.Key.foregroundColor: UIColor.white])\n",
+        "                    let attributedString = NSAttributedString(string: string, attributes: [NSAttributedString.Key.font: parameters.font, NSAttributedString.Key.foregroundColor: aorusLetterColor])\n",
+        "avatar placeholder letters",
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: frosted the avatar placeholders")
@@ -648,6 +681,241 @@ def _patch_undo_glass(tg: Path) -> None:
     print("InterfaceV2: made the toasts glass")
 
 
+def _patch_header_button_set(tg: Path) -> None:
+    """Always four buttons in a profile header, whatever the peer is.
+
+    Telegram's count swings between two and five: a bot loses the call button and gains "stop",
+    a channel trades search for a leave button, a support account has no overflow menu at all.
+    A row of glass circles only reads as a row when it is the same row in every profile, so
+    Interface 2.0 fixes it at four -- one action, mute, search, more -- and lets the overflow
+    menu carry whatever the peer's own list would have added, which is where the stock header
+    already puts everything it cannot fit.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoData.swift"
+    text = _read(path, "PeerInfoData.swift")
+    if "aorusForcedButtons" in text:
+        print("InterfaceV2: header button set already fixed at four")
+        return
+    text = _replace_once(
+        text,
+        "        result.append(.mute)\n"
+        "        result.append(.search)\n"
+        "        result.append(.more)\n"
+        "    }\n"
+        "    \n"
+        "    return result\n"
+        "}\n",
+        "        result.append(.mute)\n"
+        "        result.append(.search)\n"
+        "        result.append(.more)\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: Interface 2.0 shows the same four buttons in every profile, bots and\n"
+        "    // channels included. The leading one is whichever action the peer actually supports,\n"
+        "    // so a user with calls gets the phone and a channel gets its chat; the other three are\n"
+        "    // supported by every peer kind. An empty result is left alone -- that is a peer with no\n"
+        "    // header buttons at all, not one with too few.\n"
+        "    if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"), threadInfo == nil, !result.isEmpty {\n"
+        "        var aorusForcedButtons: [PeerInfoHeaderButtonKey] = []\n"
+        "        for candidate in [PeerInfoHeaderButtonKey.call, .voiceChat, .message, .discussion] {\n"
+        "            if result.contains(candidate) {\n"
+        "                aorusForcedButtons.append(candidate)\n"
+        "                break\n"
+        "            }\n"
+        "        }\n"
+        "        if aorusForcedButtons.isEmpty {\n"
+        "            // Opening the chat: the one action that means something for every peer, and the\n"
+        "            // fallback for a bot or a deleted account whose own list offered nothing else.\n"
+        "            aorusForcedButtons.append(.message)\n"
+        "        }\n"
+        "        aorusForcedButtons.append(.mute)\n"
+        "        aorusForcedButtons.append(.search)\n"
+        "        aorusForcedButtons.append(.more)\n"
+        "        return aorusForcedButtons\n"
+        "    }\n"
+        "    \n"
+        "    return result\n"
+        "}\n",
+        "four header buttons",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: fixed the header button set at four")
+
+
+def _patch_item_list_glass(tg: Path) -> None:
+    """Put the real material behind the settings lists too, not just the profile.
+
+    A blocks-style ItemList screen paints an opaque page and opaque rows on top of it. Interface
+    2.0 keeps the page -- something has to be behind glass for glass to mean anything -- lays a
+    pane of `GlassBackgroundView` over it, and lets the list scroll above that with a clear
+    background. The rows are already translucent by then, because the glass list theme has
+    replaced their fill, so what is left is cards on glass. This is the one file every settings
+    screen in the app goes through, so all of them change together.
+    """
+    path = tg / "submodules/ItemListUI/Sources/ItemListControllerNode.swift"
+    text = _read(path, "ItemListControllerNode.swift")
+    if "aorusGlassBackgroundView" in text:
+        print("InterfaceV2: settings lists already on glass")
+        return
+    if _GLASS_IMPORT not in text:
+        text = _replace_once(
+            text,
+            "import GlassControls\n",
+            "import GlassControls\n" + _GLASS_IMPORT,
+            "list glass import",
+        )
+    text = _replace_once(
+        text,
+        "    private var previousContentOffset: ListViewVisibleContentOffset?\n",
+        "    private var previousContentOffset: ListViewVisibleContentOffset?\n"
+        "    // AorusGram: created on the first transition that reports a blocks-style list, so a\n"
+        "    // screen opened with Interface 2.0 off never builds an effect view it will not show.\n"
+        "    private var aorusGlassBackgroundView: GlassBackgroundView?\n",
+        "list glass property",
+    )
+    # Both copies of the blocks branch: one runs on a theme change, the other when the style
+    # itself changes. The anchor is the same text, so the same replacement is applied twice.
+    blocks_old = (
+        "                        case .blocks:\n"
+        "                            self.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
+        "                            self.listNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
+        "                            self.leftOverlayNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
+        "                            self.rightOverlayNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
+    )
+    blocks_new = (
+        "                        case .blocks:\n"
+        "                            // AorusGram: the page colour stays on this node's own layer,\n"
+        "                            // which is what the glass pane above it refracts. The list and\n"
+        "                            // the side gutters go clear so that pane is not painted over.\n"
+        "                            let aorusListGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "                            self.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
+        "                            self.listNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
+        "                            self.leftOverlayNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
+        "                            self.rightOverlayNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
+    )
+    text = _replace_once(text, blocks_old, blocks_new, "list glass colours on theme change")
+    text = _replace_once(text, blocks_old, blocks_new, "list glass colours on style change")
+    # The style is only known once a transition has been dequeued, and the first layout runs
+    # before that, so the pane is installed from the transition side and merely resized from
+    # the layout side.
+    text = _replace_once(
+        text,
+        "    private func dequeueTransitions() {\n"
+        "        while !self.enqueuedTransitions.isEmpty {\n"
+        "            let transition = self.enqueuedTransitions.removeFirst()\n",
+        "    // AorusGram: one pane for the whole page rather than one per row. A row is drawn by its\n"
+        "    // own item node, of which there are dozens of kinds across the app, and an effect view\n"
+        "    // per visible row would cost more than the look is worth. Behind the list and above the\n"
+        "    // page colour is the one place that reaches all of them at once.\n"
+        "    private func aorusUpdateListGlass(transition: ContainedViewLayoutTransition = .immediate) {\n"
+        "        var isEnabled = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        if let listStyle = self.listStyle {\n"
+        "            if case .plain = listStyle {\n"
+        "                isEnabled = false\n"
+        "            }\n"
+        "        } else {\n"
+        "            isEnabled = false\n"
+        "        }\n"
+        "        guard isEnabled, let (aorusLayout, _, _) = self.validLayout else {\n"
+        "            if let glassView = self.aorusGlassBackgroundView {\n"
+        "                self.aorusGlassBackgroundView = nil\n"
+        "                glassView.removeFromSuperview()\n"
+        "            }\n"
+        "            return\n"
+        "        }\n"
+        "        let glassFrame = CGRect(origin: CGPoint(), size: aorusLayout.size)\n"
+        "        let glassView: GlassBackgroundView\n"
+        "        if let current = self.aorusGlassBackgroundView {\n"
+        "            glassView = current\n"
+        "        } else {\n"
+        "            glassView = GlassBackgroundView(frame: glassFrame)\n"
+        "            glassView.isUserInteractionEnabled = false\n"
+        "            self.aorusGlassBackgroundView = glassView\n"
+        "            self.view.insertSubview(glassView, at: 0)\n"
+        "        }\n"
+        "        transition.updateFrame(view: glassView, frame: glassFrame)\n"
+        "        glassView.update(\n"
+        "            size: glassFrame.size,\n"
+        "            cornerRadius: 0.0,\n"
+        "            isDark: self.theme?.overallDarkAppearance ?? false,\n"
+        "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "            isInteractive: false,\n"
+        "            isVisible: true,\n"
+        "            transition: ComponentTransition(transition)\n"
+        "        )\n"
+        "    }\n"
+        "\n"
+        "    private func dequeueTransitions() {\n"
+        "        while !self.enqueuedTransitions.isEmpty {\n"
+        "            let transition = self.enqueuedTransitions.removeFirst()\n",
+        "list glass helper",
+    )
+    # Once per dequeued transition: the theme or the style may just have changed, and either
+    # decides whether the pane belongs here and how dark it is.
+    text = _replace_once(
+        text,
+        "            var options = ListViewDeleteAndInsertOptions()\n"
+        "            if transition.firstTime {\n",
+        "            self.aorusUpdateListGlass()\n"
+        "\n"
+        "            var options = ListViewDeleteAndInsertOptions()\n"
+        "            if transition.firstTime {\n",
+        "list glass transition hook",
+    )
+    text = _replace_once(
+        text,
+        "        let dequeue = self.validLayout == nil\n"
+        "        self.validLayout = (layout, navigationBarHeight, additionalInsets)\n"
+        "        if dequeue {\n"
+        "            self.dequeueTransitions()\n"
+        "        }\n",
+        "        let dequeue = self.validLayout == nil\n"
+        "        self.validLayout = (layout, navigationBarHeight, additionalInsets)\n"
+        "        if dequeue {\n"
+        "            self.dequeueTransitions()\n"
+        "        }\n"
+        "        // AorusGram: follows the page through rotation and split-view resizes.\n"
+        "        self.aorusUpdateListGlass(transition: transition)\n",
+        "list glass layout hook",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: put the settings lists on glass")
+
+
+def _patch_nav_button_glass(tg: Path) -> None:
+    """Take the peer's colour out of the glass behind the navigation buttons.
+
+    Telegram already draws these two on the system material -- the back chevron and the Edit
+    label over the photo are glass in stock 12.9 -- but over a coloured header it tints that
+    material with the colour it sampled from the photo. Interface 2.0 asks for the material and
+    nothing else, so the tint goes clear and everything else about the container is left alone.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNavigationButtonContainerNode.swift"
+    text = _read(path, "PeerInfoHeaderNavigationButtonContainerNode.swift")
+    if "aorusPlainNavGlass" in text:
+        print("InterfaceV2: navigation button glass already untinted")
+        return
+    text = _replace_once(
+        text,
+        "        let tintColor: GlassBackgroundView.TintColor\n"
+        "        let tintIsDark: Bool\n"
+        "        if self.isOverColoredContents {\n",
+        "        let tintColor: GlassBackgroundView.TintColor\n"
+        "        let tintIsDark: Bool\n"
+        "        // AorusGram: plain material under Interface 2.0. The sampled colour is what makes\n"
+        "        // the back button read as a tinted disc instead of glass, and the panel variant\n"
+        "        // brings a rim with it.\n"
+        "        let aorusPlainNavGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        if aorusPlainNavGlass {\n"
+        "            tintColor = .init(kind: .clear)\n"
+        "            tintIsDark = self.isOverColoredContents ? true : presentationData.theme.overallDarkAppearance\n"
+        "        } else if self.isOverColoredContents {\n",
+        "navigation button glass tint",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: untinted the navigation button glass")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -672,4 +940,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_avatar_placeholder(tg)
     _patch_avatar_expansion(tg)
     _patch_undo_glass(tg)
+    _patch_header_button_set(tg)
+    _patch_item_list_glass(tg)
+    _patch_nav_button_glass(tg)
     _patch_build(tg)

@@ -2659,10 +2659,22 @@ def main() -> None:
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
             ("aorusKeepsAvatarExpanded",),
         ),
-        ("submodules/AvatarNode/Sources/AvatarNode.swift", ("aorusPlaceholderColors",)),
+        ("submodules/AvatarNode/Sources/AvatarNode.swift", ("aorusPlaceholderColors", "aorusLetterColor")),
         (
             "submodules/UndoUI/Sources/UndoOverlayControllerNode.swift",
             ("aorusGlassToast", "import GlassBackgroundComponent"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoData.swift",
+            ("aorusForcedButtons",),
+        ),
+        (
+            "submodules/ItemListUI/Sources/ItemListControllerNode.swift",
+            ("aorusUpdateListGlass", "aorusGlassBackgroundView", "import GlassBackgroundComponent"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNavigationButtonContainerNode.swift",
+            ("aorusPlainNavGlass",),
         ),
     )
     for relative_path, markers in interface_v2_expectations:
@@ -2680,6 +2692,14 @@ def main() -> None:
         err.append("InterfaceV2: UndoUI BUILD is missing")
     elif "//submodules/TelegramUI/Components/GlassBackgroundComponent" not in undo_build.read_text(encoding="utf-8"):
         err.append("InterfaceV2: UndoUI cannot see GlassBackgroundComponent")
+
+    # Upstream already declares this edge, which is why no pass adds it; checked here so that an
+    # upstream bump dropping it fails on this line instead of a hundred lines into swiftc.
+    item_list_build = tg / "submodules" / "ItemListUI" / "BUILD"
+    if not item_list_build.is_file():
+        err.append("InterfaceV2: ItemListUI BUILD is missing")
+    elif "//submodules/TelegramUI/Components/GlassBackgroundComponent" not in item_list_build.read_text(encoding="utf-8"):
+        err.append("InterfaceV2: ItemListUI cannot see GlassBackgroundComponent")
 
     if formatting_toolbar.is_file():
         toolbar_text = formatting_toolbar.read_text(encoding="utf-8")
