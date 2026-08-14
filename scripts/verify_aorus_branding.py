@@ -2634,6 +2634,53 @@ def main() -> None:
     elif "@AppStorage" in glass_components.read_text(encoding="utf-8"):
         err.append("GlassEffects: AppStorage is unavailable at the iOS 13 deployment target")
 
+    # Interface 2.0. Each patch already raises when its anchor moves, so what is checked here is
+    # the other failure: a pass that reported success against a file the build does not compile,
+    # or an "already present" short-circuit hiding a half-applied edit from a previous run.
+    interface_v2_expectations = (
+        (
+            "submodules/TelegramPresentationData/Sources/PresentationTheme.swift",
+            ("aorusGlassListTheme", "aorusGlassProfileTheme", "AorusGlassThemeCache"),
+        ),
+        ("submodules/ItemListUI/Sources/ItemListItem.swift", ("theme.aorusGlassListTheme",)),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenItemSectionContainerNode.swift",
+            ("aorusGlassBackgroundView", "import GlassBackgroundComponent"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift",
+            ("aorusCentredHeader", "publishAvatarTint", "aorusHidesButtonsBlur"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderButtonNode.swift",
+            ("aorusGlassBackground", "import GlassBackgroundComponent"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
+            ("aorusKeepsAvatarExpanded",),
+        ),
+        ("submodules/AvatarNode/Sources/AvatarNode.swift", ("aorusPlaceholderColors",)),
+        (
+            "submodules/UndoUI/Sources/UndoOverlayControllerNode.swift",
+            ("aorusGlassToast", "import GlassBackgroundComponent"),
+        ),
+    )
+    for relative_path, markers in interface_v2_expectations:
+        target = tg / relative_path
+        if not target.is_file():
+            err.append(f"InterfaceV2: {relative_path} is missing")
+            continue
+        target_text = target.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in target_text:
+                err.append(f"InterfaceV2: {relative_path} is missing {marker}")
+
+    undo_build = tg / "submodules" / "UndoUI" / "BUILD"
+    if not undo_build.is_file():
+        err.append("InterfaceV2: UndoUI BUILD is missing")
+    elif "//submodules/TelegramUI/Components/GlassBackgroundComponent" not in undo_build.read_text(encoding="utf-8"):
+        err.append("InterfaceV2: UndoUI cannot see GlassBackgroundComponent")
+
     if formatting_toolbar.is_file():
         toolbar_text = formatting_toolbar.read_text(encoding="utf-8")
         if 'aorusgram_feature_glass_ui' not in toolbar_text:

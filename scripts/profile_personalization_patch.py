@@ -264,7 +264,14 @@ def _patch_round_action_buttons(tg: Path) -> None:
         "        // AorusGram: Interface 2.0 lays the row out as centred circles instead of\n"
         "        // rectangles stretched edge to edge.\n"
         "        let aorusRoundButtons = !buttonKeys.isEmpty && UserDefaults.standard.bool(forKey: \"aorusgram_interface_v2\")\n"
-        "        let aorusRoundButtonDiameter: CGFloat = 64.0\n"
+        "        // 64pt is the design's diameter and the cap, not the answer: a profile with five\n"
+        "        // buttons -- message, call, mute, search, more -- needs 352pt of row on a screen\n"
+        "        // that may only have 288pt of it, and the fixed diameter is what made those\n"
+        "        // profiles overflow their own header. Shrunk to fit instead, down to a floor that\n"
+        "        // still holds a 40pt icon and a tappable target.\n"
+        "        let aorusButtonCount = CGFloat(max(1, buttonKeys.count))\n"
+        "        let aorusRoundButtonFit = (width - buttonSideInset * 2.0 - (aorusButtonCount - 1.0) * buttonSpacing) / aorusButtonCount\n"
+        "        let aorusRoundButtonDiameter: CGFloat = max(44.0, min(64.0, floor(aorusRoundButtonFit)))\n"
         "        let buttonWidth = aorusRoundButtons ? aorusRoundButtonDiameter : ((width - buttonSideInset * 2.0 + buttonSpacing) / CGFloat(buttonKeys.count) - buttonSpacing)\n"
         "        let buttonSize = CGSize(width: buttonWidth, height: aorusRoundButtons ? aorusRoundButtonDiameter : 58.0)\n"
         "        let aorusRowWidth = CGFloat(buttonKeys.count) * buttonSize.width + CGFloat(max(0, buttonKeys.count - 1)) * buttonSpacing\n"
@@ -291,12 +298,22 @@ def _patch_music_capsule(tg: Path) -> None:
     if "aorusMusicCapsule" in text:
         print("MusicCapsule: already patched")
         return
+    if "import GlassBackgroundComponent\n" not in text:
+        text = _replace_once(
+            text,
+            "import UIKit\n",
+            "import UIKit\nimport GlassBackgroundComponent\n",
+            "music capsule glass import",
+        )
 
     text = _replace_once(
         text,
         "    let aorusAnimatedProfileBackgroundView = AorusAnimatedProfileBackgroundView()\n",
         "    let aorusAnimatedProfileBackgroundView = AorusAnimatedProfileBackgroundView()\n"
-        "    let aorusMusicCapsule = UIView()\n",
+        "    // A pane of the system glass material, not a translucent white pill: the capsule sits\n"
+        "    // over the avatar, and a flat white fill there is the fake glass Interface 2.0 exists\n"
+        "    // to get rid of.\n"
+        "    let aorusMusicCapsule = GlassBackgroundView(frame: CGRect())\n",
         "music capsule property",
     )
     # Zero minimum width: the component then reports the width its content actually needs,
@@ -323,13 +340,19 @@ def _patch_music_capsule(tg: Path) -> None:
         "                    // travels with the same additive transitions the row already uses.\n"
         "                    if self.aorusMusicCapsule.superview == nil {\n"
         "                        self.aorusMusicCapsule.isUserInteractionEnabled = false\n"
-        "                        self.aorusMusicCapsule.layer.cornerCurve = .continuous\n"
         "                        self.regularContentNode.view.addSubview(self.aorusMusicCapsule)\n"
         "                    }\n"
-        "                    self.aorusMusicCapsule.backgroundColor = UIColor(white: 1.0, alpha: 0.16)\n"
         "                    let aorusCapsuleFrame = musicFrame.insetBy(dx: -12.0, dy: -7.0)\n"
-        "                    self.aorusMusicCapsule.layer.cornerRadius = aorusCapsuleFrame.height * 0.5\n"
         "                    musicTransition.updateFrame(view: self.aorusMusicCapsule, frame: aorusCapsuleFrame)\n"
+        "                    self.aorusMusicCapsule.update(\n"
+        "                        size: aorusCapsuleFrame.size,\n"
+        "                        cornerRadius: aorusCapsuleFrame.height * 0.5,\n"
+        "                        isDark: true,\n"
+        "                        tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "                        isInteractive: false,\n"
+        "                        isVisible: true,\n"
+        "                        transition: .immediate\n"
+        "                    )\n"
         "                    self.aorusMusicCapsule.alpha = 1.0\n"
         "                } else if self.aorusMusicCapsule.superview != nil {\n"
         "                    self.aorusMusicCapsule.removeFromSuperview()\n"
@@ -417,10 +440,10 @@ def _patch_call_type_sheet(tg: Path) -> None:
 
 
 def _patch_profile_tabs_tint(tg: Path) -> None:
-    """Let the profile tab bar paint its selected tab with the avatar's colour.
+    """Let the profile tab bar paint its labels white while Interface 2.0 is on.
 
     Telegram's tab bar is already the glass capsule Interface 2.0 wants, so it is kept and
-    tinted rather than replaced — substituting a simpler control would cost tab reordering,
+    recoloured rather than replaced — substituting a simpler control would cost tab reordering,
     context menus, badges, gift icons and the dozen-odd pane kinds it knows how to title.
     Both the regular and the selected copy of a tab are rendered from the same ItemComponent
     with the same colour, the selection being drawn by a lens moving across them; this makes
@@ -485,9 +508,14 @@ def _patch_profile_tabs_tint(tg: Path) -> None:
         text,
         "                    .foregroundColor: component.theme.chat.inputPanel.panelControlColor\n"
         "                ], range: NSRange(location: 0, length: titleString.length))\n",
-        "                    // AorusGram: the selected tab takes the avatar's colour under\n"
-        "                    // Interface 2.0, and the stock colour whenever it is off.\n"
-        "                    .foregroundColor: (component.isSelected ? component.aorusSelectedAccent : nil) ?? component.theme.chat.inputPanel.panelControlColor\n"
+        "                    // AorusGram: white on the tinted page under Interface 2.0, and the\n"
+        "                    // stock colour whenever it is off. White rather than the avatar's\n"
+        "                    // colour on purpose: the glass under these labels takes its look from\n"
+        "                    // the photo already, and tinting the text as well is what made the\n"
+        "                    // first version read as a coloured skin instead of as glass.\n"
+        "                    .foregroundColor: component.aorusSelectedAccent.flatMap { accent in\n"
+        "                        return component.isSelected ? accent : accent.withAlphaComponent(0.5)\n"
+        "                    } ?? component.theme.chat.inputPanel.panelControlColor\n"
         "                ], range: NSRange(location: 0, length: titleString.length))\n",
         "tabs accent colour",
     )
@@ -552,8 +580,11 @@ def _patch_profile_list_glass(tg: Path) -> None:
         "    private func updateBackgroundColor() {\n"
         "        // AorusGram: the page carries the avatar's colours the whole way down, so the\n"
         "        // list below the header continues the profile instead of meeting a flat\n"
-        "        // background partway through it.\n"
-        "        if AorusInterfaceV2.isEnabled, let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor {\n"
+        "        // background partway through it. Asked for by peer id, not read from one shared\n"
+        "        // slot: during a push two profiles lay out on every frame of the animation, and a\n"
+        "        // single slot would let each overwrite the other's colour.\n"
+        "        if AorusInterfaceV2.isEnabled, !self.isSettings,\n"
+        "           let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor(for: self.peerId.id._internalGetInt64Value()) {\n"
         "            self.backgroundColor = aorusPageColor\n"
         "            return\n"
         "        }\n",

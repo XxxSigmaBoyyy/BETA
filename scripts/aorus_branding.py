@@ -19,6 +19,7 @@ from aorus_call_proxy_udp import (
 )
 
 from profile_personalization_patch import patch_profile_personalization
+from interface_v2_patch import patch_interface_v2
 
 # ---------------------------------------------------------------------------
 # Security: opaque per-deployment keys — replace the grep-able "aorusgram_*"
@@ -24935,6 +24936,10 @@ def main() -> None:
     patch_phone_spoof_profile_display(tg)
     patch_phone_spoof_profile_header(tg)
     patch_profile_personalization(tg)
+    # After the personalization pass, never before it: the glass behind an action button is
+    # cornered from the round-button flag that pass inserts, and the section pane goes in behind
+    # nodes that pass has to have pointed at a clear fill first.
+    patch_interface_v2(tg)
     patch_chat_title_anti_spoof_status(tg)
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
