@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Push the current branch to the DD build repo and follow the Actions run it starts.
+"""Push the current branch to the build repo and follow the Actions run it starts.
 
-Run it yourself:
+Run it yourself, or let Claude run it:
 
-    python3 scripts/push_to_dd.py            # commit nothing, push HEAD, watch the build
+    python3 scripts/push_to_dd.py            # push HEAD, watch the build
     python3 scripts/push_to_dd.py --no-watch # push and print the run URL, then exit
     python3 scripts/push_to_dd.py --dispatch # no push, just start a run on the pushed branch
 
-The token is read from ~/.aorusgram/dd_token and never leaves this process: git receives it
-through an askpass helper that reads the same file, so it is not in the command line, not in
-.git/config, and not in anything this script prints.
+The token is never read by this script. It is named by path and handed to git through an
+askpass helper and to curl through a config assembled by /bin/sh, so its bytes exist only
+inside those two programs -- not in Python memory, not in argv, not in .git/config, and not
+in anything this script can print.
 """
 
 from __future__ import annotations
@@ -24,12 +25,13 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO_SLUG = "xdmitriymail-hub/DD"
+REPO_SLUG = "XxxSigmaBoyyy/BETA"
 REMOTE_URL = f"https://x-access-token@github.com/{REPO_SLUG}.git"
 API = "https://api.github.com"
-TOKEN_PATH = Path.home() / ".aorusgram" / "dd_token"
 WORKFLOW_FILE = "build-aorusgram.yml"
 ROOT = Path(__file__).resolve().parent.parent
+# In the working copy, ignored by .gitignore, and read only by git and curl.
+TOKEN_PATH = ROOT / "dd.txt"
 
 
 def fail(message: str) -> "NoReturn":  # type: ignore[valid-type]
@@ -37,26 +39,21 @@ def fail(message: str) -> "NoReturn":  # type: ignore[valid-type]
     raise SystemExit(1)
 
 
-def read_token() -> str:
-    """Token from the file, with a look at its permissions on the way past."""
+def check_token_file() -> None:
+    """Look at the file without opening it: size and mode only."""
     if not TOKEN_PATH.is_file():
-        fail(
-            f"no token at {TOKEN_PATH}\n"
-            f"       write it there and run: chmod 600 {TOKEN_PATH}"
-        )
-    mode = TOKEN_PATH.stat().st_mode
-    if mode & (stat.S_IRWXG | stat.S_IRWXO):
-        print(f"warning: {TOKEN_PATH} is readable by other users; chmod 600 it")
-    token = TOKEN_PATH.read_text(encoding="utf-8").strip()
-    if not token:
+        fail(f"no token at {TOKEN_PATH}")
+    info = TOKEN_PATH.stat()
+    if info.st_size == 0:
         fail(f"{TOKEN_PATH} is empty")
-    return token
+    if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        print(f"warning: {TOKEN_PATH} is readable by other users; chmod 600 it")
 
 
 def git(*args: str, capture: bool = True, env: dict | None = None, isolated: bool = False) -> str:
-    # isolated: talk to DD with the credential store switched off. Without this, git on macOS
-    # hands whatever github.com login is in the keychain to the server and the private repo comes
-    # back as "Repository not found" even though the token is fine.
+    # isolated: talk to the build repo with the credential store switched off. Without this, git
+    # on macOS hands whatever github.com login is in the keychain to the server and a private repo
+    # comes back as "Repository not found" even though the token is fine.
     prefix = ["-c", "credential.helper="] if isolated else []
     result = subprocess.run(
         ["git", *prefix, *args],
@@ -71,20 +68,21 @@ def git(*args: str, capture: bool = True, env: dict | None = None, isolated: boo
     return (result.stdout or "").strip() if capture else ""
 
 
-def api(token: str, path: str, method: str = "GET", body: dict | None = None) -> dict:
-    """GitHub REST through curl rather than urllib.
+def api(path: str, method: str = "GET", body: dict | None = None) -> dict:
+    """GitHub REST through curl, with the Authorization header assembled by /bin/sh.
 
-    curl trusts the system keychain, which a python.org interpreter on macOS often does not --
-    the same request from urllib fails with CERTIFICATE_VERIFY_FAILED on a stock install. The
-    token goes in through a config file on stdin, so it stays out of the command line where
-    `ps` would show it.
+    Two reasons it is shaped like this. curl trusts the system keychain, which a python.org
+    interpreter on macOS often does not -- the same request from urllib fails with
+    CERTIFICATE_VERIFY_FAILED. And `printf ... "$(cat token)" | curl --config -` keeps the token
+    inside the shell and curl: it never reaches this process, and a config on stdin never reaches
+    the command line where `ps` would show it.
     """
     with tempfile.TemporaryDirectory(prefix="aorus-api-") as holder:
         out = Path(holder) / "out.json"
-        config = [
+        lines = [
             f'url = "{API}{path}"',
             f'request = "{method}"',
-            f'header = "Authorization: Bearer {token}"',
+            "header = \"Authorization: Bearer %s\"",
             'header = "Accept: application/vnd.github+json"',
             'header = "X-GitHub-Api-Version: 2022-11-28"',
             'user-agent = "aorusgram-push"',
@@ -92,16 +90,18 @@ def api(token: str, path: str, method: str = "GET", body: dict | None = None) ->
             "silent",
             "show-error",
             "fail-with-body",
-            'write-out = "%{http_code}"',
+            'write-out = "%%{http_code}"',
         ]
         if body is not None:
             data = Path(holder) / "body.json"
             data.write_text(json.dumps(body), encoding="utf-8")
-            config.append('header = "Content-Type: application/json"')
-            config.append(f'data = "@{data}"')
+            lines.append('header = "Content-Type: application/json"')
+            lines.append(f'data = "@{data}"')
+        # printf consumes exactly one %s -- the token -- and %%{http_code} above is curl's, escaped
+        # so the shell's printf leaves it alone. $(cat) drops the file's trailing newline.
+        script = "printf '" + "\\n".join(lines) + "\\n' \"$(cat \"$1\")\" | curl --config -"
         result = subprocess.run(
-            ["curl", "--config", "-"],
-            input="\n".join(config) + "\n",
+            ["/bin/sh", "-c", script, "sh", str(TOKEN_PATH)],
             text=True,
             capture_output=True,
         )
@@ -139,7 +139,9 @@ def askpass_env(token_path: Path) -> tuple[dict, tempfile.TemporaryDirectory]:
     """An askpass helper that cats the token file, so the token is never in this env or argv."""
     holder = tempfile.TemporaryDirectory(prefix="aorus-askpass-")
     helper = Path(holder.name) / "askpass.sh"
-    helper.write_text(f'#!/bin/sh\nexec cat "{token_path}"\n', encoding="utf-8")
+    # tr, not cat: a stray CR or trailing newline in the file would otherwise be sent as part of
+    # the password and the server would answer 401.
+    helper.write_text(f"#!/bin/sh\nexec tr -d '\\r\\n' < \"{token_path}\"\n", encoding="utf-8")
     helper.chmod(0o700)
     env = dict(os.environ)
     env["GIT_ASKPASS"] = str(helper)
@@ -208,8 +210,8 @@ def push(branch: str, force: bool) -> None:
             print(f"{branch} on {REPO_SLUG} is already at {local[:12]}")
             return
         # Pinned to the sha just read rather than plain --force-with-lease, which needs a
-        # remote-tracking ref this push does not have: DD is addressed by URL so that its token
-        # never lands in .git/config.
+        # remote-tracking ref this push does not have: the build repo is addressed by URL so that
+        # its token never lands in .git/config.
         lease = f"refs/heads/{branch}:{remote_before}" if force and remote_before else None
         print(f"pushing HEAD -> {REPO_SLUG} {branch}")
         if not push_once(f"HEAD:refs/heads/{branch}", env, lease=lease):
@@ -223,36 +225,36 @@ def push(branch: str, force: bool) -> None:
         if remote != local:
             fail(
                 f"{branch} on {REPO_SLUG} is at {remote[:12] or 'nothing'}, not {local[:12]}\n"
-                "       if DD has commits yours do not, re-run with --force"
+                "       if the build repo has commits yours do not, re-run with --force"
             )
         print(f"pushed {local[:12]}")
     finally:
         holder.cleanup()
 
 
-def latest_run(token: str, branch: str) -> dict | None:
-    data = api(token, f"/repos/{REPO_SLUG}/actions/runs?branch={branch}&per_page=1")
+def latest_run(branch: str) -> dict | None:
+    data = api(f"/repos/{REPO_SLUG}/actions/runs?branch={branch}&per_page=1")
     runs = data.get("workflow_runs") or []
     return runs[0] if runs else None
 
 
-def wait_for_run(token: str, branch: str, after: str | None, timeout: float = 180.0) -> dict | None:
+def wait_for_run(branch: str, after: str | None, timeout: float = 180.0) -> dict | None:
     """The push trigger takes a few seconds to show up; anything longer means it did not fire."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        run = latest_run(token, branch)
+        run = latest_run(branch)
         if run and run.get("id") != after:
             return run
         time.sleep(5.0)
     return None
 
 
-def watch(token: str, run: dict) -> int:
+def watch(run: dict) -> int:
     run_id = run["id"]
     print(f"run {run_id}: {run['html_url']}")
     last = ""
     while True:
-        run = api(token, f"/repos/{REPO_SLUG}/actions/runs/{run_id}")
+        run = api(f"/repos/{REPO_SLUG}/actions/runs/{run_id}")
         status = run.get("status") or "?"
         conclusion = run.get("conclusion")
         line = f"{status}{f' ({conclusion})' if conclusion else ''}"
@@ -293,12 +295,11 @@ def main() -> int:
             f"         {branch} will need --dispatch to start a run"
         )
 
-    token = read_token()
+    check_token_file()
     print(f"repo: {REPO_SLUG}   branch: {branch}")
 
     if args.dispatch:
         api(
-            token,
             f"/repos/{REPO_SLUG}/actions/workflows/{WORKFLOW_FILE}/dispatches",
             method="POST",
             body={"ref": branch},
@@ -307,11 +308,11 @@ def main() -> int:
         before = None
     else:
         check_clean(args.allow_dirty)
-        previous = latest_run(token, branch)
+        previous = latest_run(branch)
         before = previous.get("id") if previous else None
         push(branch, args.force)
 
-    run = wait_for_run(token, branch, before)
+    run = wait_for_run(branch, before)
     if run is None:
         fail(
             "no run appeared within 3 minutes\n"
@@ -320,7 +321,7 @@ def main() -> int:
     if args.no_watch:
         print(f"run {run['id']}: {run['html_url']}")
         return 0
-    return watch(token, run)
+    return watch(run)
 
 
 if __name__ == "__main__":

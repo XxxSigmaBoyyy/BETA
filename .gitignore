@@ -1,1 +1,5 @@
 __pycache__/
+
+# Build-repo push token: kept in the working copy, never in a commit.
+/dd.txt
+.DS_Store
