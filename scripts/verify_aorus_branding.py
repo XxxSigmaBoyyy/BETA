@@ -2640,7 +2640,17 @@ def main() -> None:
     interface_v2_expectations = (
         (
             "submodules/TelegramPresentationData/Sources/PresentationTheme.swift",
-            ("aorusGlassListTheme", "aorusGlassProfileTheme", "AorusGlassThemeCache", "blockMarker"),
+            (
+                "aorusGlassListTheme",
+                "aorusGlassProfileTheme",
+                "AorusGlassThemeCache",
+                "blockMarker",
+                # The page ink: one source for the name, the status, the header glyphs and the
+                # selected tab, so a pale photo cannot leave white text on a white page.
+                "profilePageKey",
+                "profilePageInk",
+                "profilePageScrim",
+            ),
         ),
         # cornersImage returns nil under Interface 2.0. Those wedges are an opaque overlay painted
         # in the page colour, not a mask, so over glass they are exactly the black corners the
@@ -2662,6 +2672,13 @@ def main() -> None:
                 "aorusHidesButtonsBlur",
                 "aorusScrollingHeader",
                 "aorusOverlayPalette",
+                # The palette that actually runs: the photo is permanently expanded under
+                # Interface 2.0, so the expandedAvatar* branch is the one every profile with a
+                # picture takes, and it has to be inked like the other two.
+                "aorusOverlayInk",
+                # The photo stands still and the capsule under it is the small one.
+                "aorusStaticAvatar",
+                "aorusCompactMusic",
                 "// AorusGram: Interface 2.0 opens the photo at full width",
             ),
         ),
@@ -2671,7 +2688,7 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderButtonNode.swift",
-            ("aorusGlassBackground", "import GlassBackgroundComponent", "foregroundColor = .white"),
+            ("aorusGlassBackground", "import GlassBackgroundComponent", "AorusGlassPane.profilePageInk"),
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
@@ -2736,9 +2753,55 @@ def main() -> None:
         # only surface as a missing-argument error deep inside a CI compile.
         (
             "submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusGlassProfileTint.swift",
-            ("photoCount: Int", "sampledColors", "bottomEdgeColor"),
+            ("photoCount: Int", "sampledColors", "bottomEdgeColor", "pageKey"),
+        ),
+        # The chat's navigation bar keeps the pane behind the back button and loses the two that
+        # Interface 2.0 has no use for: the one behind the name and status, and the one behind the
+        # avatar or the ghost-mode badge that replaces it.
+        (
+            "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift",
+            ("aorusHidesTitleGlass",),
+        ),
+        (
+            "submodules/TelegramUI/Components/NavigationBarImpl/Sources/NavigationBarImpl.swift",
+            ("aorusHidesCustomButtonGlass", "singleCustomNode != nil"),
+        ),
+        # The avatar/ghost item carries a pill of its own inside the bar's right-hand pane, so both
+        # have to go or the capsule survives the one that was hidden.
+        (
+            "submodules/TelegramUI/Sources/ChatController.swift",
+            ("aorusHidesNavCapsule",),
         ),
     )
+    # AorusGram's own screens build rows out of ListViewItem subclasses that take a
+    # PresentationTheme directly, so they never pass through the ItemListPresentationData
+    # initializer the glass theme is injected into. Every one of them has to ask for the derived
+    # theme by hand, and a new screen that forgets to is a grey card sitting on a pane of glass --
+    # which is exactly how the broken sliders got shipped once.
+    for name in (
+        "AorusGramController.swift",
+        "AorusAntiSpamController.swift",
+        "AorusQuickRepliesController.swift",
+        "AorusFontPickerController.swift",
+        "AorusMasksController.swift",
+        "AorusDeviceSpoofController.swift",
+        "AccountBackupController.swift",
+    ):
+        source = tg / "submodules/AorusGramUI/Sources" / name
+        if not source.is_file():
+            err.append(f"InterfaceV2: AorusGramUI/{name} is missing")
+        elif "aorusGlassListTheme" not in source.read_text(encoding="utf-8"):
+            err.append(f"InterfaceV2: AorusGramUI/{name} does not use the glass list theme")
+
+    # The transparency slider in the profile's Personal Colors section is a Component rather than a
+    # row, and the section it sits in already draws one pane for all of its items, so this one has
+    # to paint nothing at all instead of asking for the derived theme.
+    opacity_component = tg / "submodules/AorusGramUI/Sources/Features/UI/AorusAnimatedProfileBackground.swift"
+    if not opacity_component.is_file():
+        err.append("InterfaceV2: AorusAnimatedProfileBackground.swift is missing")
+    elif "AorusInterfaceV2.isEnabled ? UIColor.clear" not in opacity_component.read_text(encoding="utf-8"):
+        err.append("InterfaceV2: the profile transparency slider still paints an opaque card")
+
     for relative_path, markers in interface_v2_expectations:
         target = tg / relative_path
         if not target.is_file():

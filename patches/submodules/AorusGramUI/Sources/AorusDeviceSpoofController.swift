@@ -839,7 +839,10 @@ private func aorusAddCustomDeviceController(
             presentationData: ItemListPresentationData(presentationData),
             entries: aorusCustomDeviceEntries(
                 state: state,
-                theme: presentationData.theme
+                // The derived theme: these rows are our own ListViewItems and take a
+                // PresentationTheme directly, so they do not reach the glass one through
+                // ItemListPresentationData.
+                theme: presentationData.theme.aorusGlassListTheme
             ),
             style: .blocks,
             animateChanges: true
@@ -1012,7 +1015,9 @@ public func aorusDeviceSpoofController(
         )
         let listState = ItemListNodeState(
             presentationData: ItemListPresentationData(presentationData),
-            entries: aorusDeviceSpoofEntries(state: state, theme: presentationData.theme),
+            // The derived theme: these rows are our own ListViewItems and take a PresentationTheme
+            // directly, so they do not reach the glass one through ItemListPresentationData.
+            entries: aorusDeviceSpoofEntries(state: state, theme: presentationData.theme.aorusGlassListTheme),
             style: .blocks,
             animateChanges: true
         )

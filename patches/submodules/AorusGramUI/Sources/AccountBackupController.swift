@@ -469,7 +469,10 @@ private func accountBackupControllerLegacy(context: AccountContext) -> ViewContr
         |> map { state -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
             let l10n = BackupL10n(lang: AorusLang.resolve(presentationData.strings.baseLanguageCode))
-            let entries = backupEntries(state: state, theme: presentationData.theme, l10n: l10n)
+            // The derived theme: the action icons below are tinted from theme.list directly rather
+            // than from the ItemListPresentationData the rows carry, so they would keep the stock
+            // accent blue while their own labels turned to ink.
+            let entries = backupEntries(state: state, theme: presentationData.theme.aorusGlassListTheme, l10n: l10n)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text(l10n.title),

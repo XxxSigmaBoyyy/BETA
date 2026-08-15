@@ -663,7 +663,9 @@ public func aorusQuickRepliesController(context: AccountContext) -> ViewControll
         |> deliverOnMainQueue
         |> map { state -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-            let entries = qrEntries(state: state, theme: presentationData.theme)
+            // The derived theme: these rows are our own ListViewItems and take a PresentationTheme
+            // directly, so they do not reach the glass one through ItemListPresentationData.
+            let entries = qrEntries(state: state, theme: presentationData.theme.aorusGlassListTheme)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text(aorusL("Быстрые ответы", "Quick Replies")),

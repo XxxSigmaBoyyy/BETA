@@ -14759,7 +14759,12 @@ final class AorusGhostAvatarNavigationNode: ASDisplayNode {
         if let glassView = self.glassView {
             glassView.frame = CGRect(origin: .zero, size: size)
             let aorusGlassOn = (UserDefaults.standard.object(forKey: "aorusgram_feature_glass_ui") as? Bool) ?? true
-            glassView.update(size: size, cornerRadius: size.height / 2.0, isDark: self.isDarkAppearance, tintColor: GlassBackgroundView.TintColor(kind: .panel), isInteractive: true, isVisible: self.ghostVisible && aorusGlassOn, transition: .immediate)
+            // Interface 2.0 shows the avatar and the ghost badge bare: this node carries a pill of
+            // its own on top of the navigation bar's right-hand pane, so hiding only that one would
+            // leave this capsule behind them. The back button's pane is a different view and keeps
+            // its own tablet.
+            let aorusHidesNavCapsule = UserDefaults.standard.bool(forKey: "aorusgram_interface_v2")
+            glassView.update(size: size, cornerRadius: size.height / 2.0, isDark: self.isDarkAppearance, tintColor: GlassBackgroundView.TintColor(kind: .panel), isInteractive: true, isVisible: self.ghostVisible && aorusGlassOn && !aorusHidesNavCapsule, transition: .immediate)
         }
         if self.ghostVisible {
             self.ghostButtonNode.frame = CGRect(x: 6.0, y: 5.0, width: 34.0, height: 34.0)

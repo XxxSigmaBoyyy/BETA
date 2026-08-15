@@ -450,7 +450,9 @@ public func aorusMasksController(context: AccountContext) -> ViewController {
         )
         let listState = ItemListNodeState(
             presentationData: ItemListPresentationData(presentationData),
-            entries: masksEntries(state: state, theme: presentationData.theme, l10n: l10n),
+            // The derived theme: these rows are our own ListViewItems and take a PresentationTheme
+            // directly, so they do not reach the glass one through ItemListPresentationData.
+            entries: masksEntries(state: state, theme: presentationData.theme.aorusGlassListTheme, l10n: l10n),
             style: .blocks
         )
         return (controllerState, (listState, arguments))

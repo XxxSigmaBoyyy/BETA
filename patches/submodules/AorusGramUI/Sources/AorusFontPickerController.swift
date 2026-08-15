@@ -749,7 +749,9 @@ public func aorusFontPickerController(context: AccountContext) -> ViewController
         |> deliverOnMainQueue
         |> map { selectedId -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-            let entries = aorusFontEntries(selectedId: selectedId, theme: presentationData.theme, highlightFontBlock: highlightFontBlock)
+            // The derived theme: these rows are our own ListViewItems and take a PresentationTheme
+            // directly, so they do not reach the glass one through ItemListPresentationData.
+            let entries = aorusFontEntries(selectedId: selectedId, theme: presentationData.theme.aorusGlassListTheme, highlightFontBlock: highlightFontBlock)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text(aorusL("Шрифт", "Font")),

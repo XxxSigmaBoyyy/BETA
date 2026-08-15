@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import TelegramPresentationData
 
 // AorusGram Interface 2.0: the avatar's colours, published for the rest of the profile screen.
 //
@@ -22,7 +23,9 @@ import UIKit
 
 public enum AorusGlassProfileTint {
     public static let key = "aorusgram_profile_tab_accent"
-    public static let pageKey = "aorusgram_profile_page_background"
+    /// The same key the peer-info screen and the derived list themes read the page colour back
+    /// from, taken from there rather than spelled out twice: the two sides cannot drift.
+    public static let pageKey = AorusGlassPane.profilePageKey
 
     /// Colour for the selected tab's label, or nil to leave the tab bar as Telegram draws it.
     public static var selectedTabColor: UIColor? {
@@ -50,11 +53,14 @@ public enum AorusGlassProfileTint {
     /// these nodes rather than a colour standing in for one. Anything painted here would sit on
     /// top of that pane and turn the system material back into a flat translucent card — which
     /// is exactly what the first version of Interface 2.0 got wrong.
+    ///
+    /// The hairline takes the page's ink, so the separators inside a section stay visible on a
+    /// pale page instead of being white on near-white.
     public static var listSectionColors: (background: UIColor, separator: UIColor)? {
         guard AorusInterfaceV2.isEnabled else {
             return nil
         }
-        return (.clear, UIColor(white: 1.0, alpha: 0.12))
+        return (.clear, AorusGlassPane.profilePageInk(0.12))
     }
 
     // MARK: - Avatar sampling
@@ -122,15 +128,15 @@ public enum AorusGlassProfileTint {
         }
     }
 
-    /// The page takes the avatar's colour; the tab labels take white.
+    /// The page takes the avatar's colour; the tab labels take whatever reads on it.
     ///
-    /// White rather than that colour: the labels sit on the tinted page, so tinting them too is
-    /// how text ends up close in tone to what is behind it. It also honours the rule the rest of
-    /// Interface 2.0 follows -- the glass is the system material, and the profile's colour shows
-    /// through it instead of being painted onto everything in front of it.
+    /// The label colour is derived from the page rather than fixed at white, because the page is no
+    /// longer forced dark. A profile whose photo ends in white paper gets a near-white page and
+    /// near-black labels; one that ends in a dark coat gets the dark page and white labels. Fixing
+    /// it at white is what made the tabs disappear under a bright photo.
     private static func apply(_ color: UIColor) {
         AorusGlassProfileTint.setPageBackgroundColor(color)
-        AorusGlassProfileTint.setSelectedTabColor(.white)
+        AorusGlassProfileTint.setSelectedTabColor(AorusGlassPane.ink(over: color))
     }
 
     /// One of a peer's photos. The count rides along so that adding or removing a photo, which
@@ -181,18 +187,25 @@ public enum AorusGlassProfileTint {
 
     /// The colour the photo ends on, which is the colour the page continues in.
     ///
-    /// Only the bottom of the photo is sampled, not the whole of it. The profile is one picture
-    /// read downwards: the expanded avatar, then the page under it, then the sections and the
-    /// gifts. For the page to read as the photo continuing rather than as a panel butted up
-    /// against it, the two have to meet in the same colour, and the only colour that satisfies
-    /// that is the one at the join. An average over the whole photo does not: a portrait against
-    /// a blue sky averages to something neither the face nor the sky ever was, and the seam shows.
+    /// Only the very bottom of the photo is sampled. The profile is one picture read downwards: the
+    /// photo, then the page under it, then the sections and the gifts. For the page to read as the
+    /// photo continuing rather than as a panel butted up against it, the two have to meet in the
+    /// same colour, and the only colour that satisfies that is the one in the last few points of
+    /// the picture.
     ///
-    /// Nothing is pinned afterwards. An earlier version kept the hue and forced brightness to
-    /// 0.17, which is why every profile came out the same near-black grey whatever the photo was.
-    /// The brightness is only kept inside a band -- bright enough not to be a black hole under a
-    /// dark photo, dark enough that white labels and hairlines stay legible under a bright one --
-    /// and both ends of that band are far enough out to leave ordinary photos untouched.
+    /// How thin the strip is decides whether the seam shows, and two earlier versions got it wrong
+    /// in the same direction. A sixth of the photo is not its bottom edge -- on a portrait it is
+    /// most of a torso, so a white shirt over a dark background came out mid-grey, met a white
+    /// photo edge, and the join was visible across the whole width of the screen. 4% is shallow
+    /// enough to be the edge and still tens of thousands of source pixels wide, so a single dark
+    /// hair or a watermark cannot decide it.
+    ///
+    /// Nothing is pinned afterwards, and this is the second half of the same bug: an earlier
+    /// version clamped brightness to 0.66 and produced the grey page under a white avatar that was
+    /// reported. The clamps that remain are only the two degenerate ends -- a page dark enough to
+    /// read as broken, or one so bright it is pure white -- and both are far enough out that no
+    /// ordinary photo reaches them. Everything readable over the page derives its ink from the
+    /// page instead, so a bright page is legible rather than avoided.
     ///
     /// Returns nil when the view has not drawn anything yet, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark.
@@ -201,11 +214,9 @@ public enum AorusGlassProfileTint {
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
         }
-        // A sixth of the photo. Wide enough that one dark eyelash or a watermark cannot decide the
-        // colour of a whole screen, shallow enough to still be the edge rather than the picture.
-        let stripHeight = max(4.0, bounds.height / 6.0)
-        let width = 8
-        let height = 4
+        let stripHeight = max(3.0, bounds.height * 0.04)
+        let width = 12
+        let height = 3
         let count = width * height * 4
         // Allocated rather than taken from an Array's buffer: the context outlives the call that
         // produces the pointer, and a pointer into an Array is only valid inside the closure it
@@ -271,8 +282,8 @@ public enum AorusGlassProfileTint {
         }
         return UIColor(
             hue: hue,
-            saturation: min(0.92, saturation),
-            brightness: max(0.09, min(0.66, brightness)),
+            saturation: saturation,
+            brightness: max(0.05, min(0.97, brightness)),
             alpha: 1.0
         )
     }

@@ -999,7 +999,9 @@ public final class AorusAnimatedProfileOpacityComponent: Component {
             transition: ComponentTransition
         ) -> CGSize {
             self.component = component
-            self.backgroundColor = component.theme.list.itemBlocksBackgroundColor
+            // Under Interface 2.0 the enclosing ListSectionComponent already draws one glass pane
+            // for the whole section, so an opaque card here would punch a grey rectangle through it.
+            self.backgroundColor = AorusInterfaceV2.isEnabled ? UIColor.clear : component.theme.list.itemBlocksBackgroundColor
 
             self.titleLabel.text = component.title
             self.titleLabel.font = Font.regular(17.0)

@@ -1506,7 +1506,12 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
         |> deliverOnMainQueue
         |> map { state, presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let l10n = AorusL10n(presentationData.strings.baseLanguageCode)
-            let entries = aorusEntries(state: state, theme: presentationData.theme, l10n: l10n)
+            // The derived theme, not the raw one. Every row Telegram itself draws reaches it
+            // through ItemListPresentationData's convenience init; the rows in this file are our
+            // own ListViewItems and take a PresentationTheme directly, so they have to ask for it
+            // here. Handed the raw theme they paint an opaque card -- which is what put a grey
+            // block behind the interval sliders on top of the pane of glass behind the section.
+            let entries = aorusEntries(state: state, theme: presentationData.theme.aorusGlassListTheme, l10n: l10n)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text("AorusGram"),

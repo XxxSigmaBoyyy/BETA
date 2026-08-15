@@ -87,6 +87,79 @@ public enum AorusGlassPane {
     /// The radius the panes are drawn with, and the one the rows have to agree with when they clip
     /// their own content.
     public static let blockCornerRadius: CGFloat = 26.0
+
+    // MARK: - Ink over the profile page
+
+    /// Where the profile header publishes the colour it sampled off the avatar. Pinned against
+    /// `AorusGlassProfileTint.pageKey`, which is the writing side.
+    ///
+    /// Read out of shared defaults rather than imported. The module that samples the avatar sits
+    /// far above this one in the build graph -- it depends on ItemListUI, which depends on this --
+    /// so an import in this direction closes a cycle and nothing links.
+    public static let profilePageKey = "aorusgram_profile_page_background"
+
+    /// Whether a colour is light enough that white text on it would be unreadable.
+    ///
+    /// Relative luminance rather than HSB brightness, because brightness is the largest of the
+    /// three channels and calls pure blue as bright as pure white. The weights are the sRGB ones:
+    /// the eye reads green as most of the light in a colour and blue as almost none of it.
+    public static func isLight(_ color: UIColor) -> Bool {
+        var red: CGFloat = 0.0
+        var green: CGFloat = 0.0
+        var blue: CGFloat = 0.0
+        var alpha: CGFloat = 0.0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+            return false
+        }
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue > 0.55
+    }
+
+    /// The colour text and icons should be drawn in over `color`.
+    ///
+    /// Not quite black on the light side: a profile page is a photograph's own colour, and pure
+    /// black over one reads as a hole punched in it where near-black reads as ink.
+    public static func ink(over color: UIColor) -> UIColor {
+        return AorusGlassPane.isLight(color) ? UIColor(white: 0.08, alpha: 1.0) : UIColor(white: 1.0, alpha: 1.0)
+    }
+
+    /// The page colour the profile is on right now, or nil before any avatar has been sampled.
+    public static var profilePageColor: UIColor? {
+        guard let value = UserDefaults.standard.object(forKey: AorusGlassPane.profilePageKey) as? Int else {
+            return nil
+        }
+        return UIColor(
+            red: CGFloat((value >> 16) & 0xff) / 255.0,
+            green: CGFloat((value >> 8) & 0xff) / 255.0,
+            blue: CGFloat(value & 0xff) / 255.0,
+            alpha: 1.0
+        )
+    }
+
+    /// True when the profile page wants light ink. Defaults to true, which is what an unsampled
+    /// page is: the theme background, and the page a photo settles on is dark far more often than
+    /// not.
+    public static var profilePageIsDark: Bool {
+        guard let color = AorusGlassPane.profilePageColor else {
+            return true
+        }
+        return !AorusGlassPane.isLight(color)
+    }
+
+    /// Ink for everything drawn over the profile page: the name, the status, the header buttons,
+    /// the selected tab. One place, so all of them flip together the moment the page does.
+    public static var profilePageInk: UIColor {
+        return AorusGlassPane.profilePageIsDark ? UIColor(white: 1.0, alpha: 1.0) : UIColor(white: 0.08, alpha: 1.0)
+    }
+
+    public static func profilePageInk(_ alpha: CGFloat) -> UIColor {
+        return AorusGlassPane.profilePageIsDark ? UIColor(white: 1.0, alpha: alpha) : UIColor(white: 0.0, alpha: alpha)
+    }
+
+    /// The fill a control gets when it needs to be a shade off the page rather than a panel on it:
+    /// the page's own ink at the alpha a pane of glass would have refracted to anyway.
+    public static var profilePageScrim: UIColor {
+        return AorusGlassPane.profilePageIsDark ? UIColor(white: 1.0, alpha: 0.12) : UIColor(white: 0.0, alpha: 0.1)
+    }
 }
 
 private final class AorusGlassThemeCache {
@@ -185,13 +258,14 @@ public extension PresentationTheme {
         return AorusGlassThemeCache.shared.derive(from: self, dark: self.overallDarkAppearance)
     }
 
-    /// The same, for the peer-info list. Always the dark pair whatever the theme is: the page
-    /// under this one is the avatar's colour, which is dark by construction.
+    /// The same, for the peer-info list. The pair is chosen by the page the list sits on rather
+    /// than by the theme: that page is the colour sampled off the avatar, so a pale photo gets
+    /// black letters on it and a dark one white, whichever theme the app is in.
     var aorusGlassProfileTheme: PresentationTheme {
         guard UserDefaults.standard.bool(forKey: aorusInterfaceV2Key) else {
             return self
         }
-        return AorusGlassThemeCache.shared.derive(from: self, dark: true)
+        return AorusGlassThemeCache.shared.derive(from: self, dark: AorusGlassPane.profilePageIsDark)
     }
 }
 '''
@@ -534,14 +608,16 @@ def _patch_glass_action_buttons(tg: Path) -> None:
             text,
             "    func update(size: CGSize, text: String, icon: PeerInfoHeaderButtonIcon, isActive: Bool, presentationData: PresentationData, backgroundColor: UIColor, foregroundColor: UIColor, fraction: CGFloat, transition: ContainedViewLayoutTransition) {\n",
             "    func update(size: CGSize, text: String, icon: PeerInfoHeaderButtonIcon, isActive: Bool, presentationData: PresentationData, backgroundColor: UIColor, foregroundColor: UIColor, fraction: CGFloat, transition: ContainedViewLayoutTransition) {\n"
-            "        // AorusGram: white in every profile under Interface 2.0. The colour the header\n"
-            "        // hands down is the theme's accent whenever the photo is not expanded -- which is\n"
-            "        // every profile that has no photo at all -- and an accent-coloured glyph on glass\n"
-            "        // is the one thing these buttons must never be. The icon is already drawn white a\n"
-            "        // few lines below; this is the label and the tint that follow it.\n"
+            "        // AorusGram: the page's own ink in every profile under Interface 2.0. The colour\n"
+            "        // the header hands down is the theme's accent whenever the photo is not expanded --\n"
+            "        // which is every profile that has no photo at all -- and an accent-coloured glyph on\n"
+            "        // glass is the one thing these buttons must never be. Ink rather than a flat white,\n"
+            "        // because the pane is over the page sampled off the photo and a pale photo makes that\n"
+            "        // page pale; the glyph is drawn as a white template and tinted from here, so this one\n"
+            "        // value carries the icon, the label and the caption together.\n"
             "        var foregroundColor = foregroundColor\n"
             "        if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") {\n"
-            "            foregroundColor = .white\n"
+            "            foregroundColor = AorusGlassPane.profilePageInk\n"
             "        }\n",
             "button white foreground",
         )
@@ -1806,73 +1882,93 @@ def _patch_overlay_palette(tg: Path) -> None:
         "            && !isSettings\n"
         "            && !isMediaOnly\n"
         "\n"
+        "        // Ink taken from the page instead of fixed at white. The page is the colour sampled\n"
+        "        // off the bottom of the photo and is no longer forced dark, so a light photo gives a\n"
+        "        // light page -- and every label, capsule and icon over it has to follow, or it comes\n"
+        "        // out white on white. Off Interface 2.0 these are the values the stock code had.\n"
+        "        let aorusOverlayInk: UIColor = aorusOverlayPalette ? AorusGlassPane.profilePageInk : UIColor.white\n"
+        "        let aorusOverlaySecondaryInk: UIColor = aorusOverlayPalette ? AorusGlassPane.profilePageInk(0.7) : UIColor(white: 1.0, alpha: 0.7)\n"
+        "        let aorusOverlayScrim: UIColor = aorusOverlayPalette ? AorusGlassPane.profilePageScrim : UIColor(white: 1.0, alpha: 0.1)\n"
+        "\n"
         "        let isLandscape = containerInset > 16.0\n",
         "overlay palette flag",
     )
     text = _replace_once(
         text,
         "        let regularNavigationContentsAccentColor: UIColor = peer?.effectiveProfileColor != nil ? .white : presentationData.theme.list.itemAccentColor\n"
-        "        let collapsedHeaderNavigationContentsAccentColor = presentationData.theme.list.itemAccentColor\n",
-        "        let regularNavigationContentsAccentColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
-        "        let collapsedHeaderNavigationContentsAccentColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemAccentColor\n",
+        "        let collapsedHeaderNavigationContentsAccentColor = presentationData.theme.list.itemAccentColor\n"
+        "        let expandedAvatarNavigationContentsAccentColor: UIColor = .white\n",
+        "        let regularNavigationContentsAccentColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? aorusOverlayInk : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderNavigationContentsAccentColor: UIColor = aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemAccentColor\n"
+        "        // The expanded palette is the one that runs for every peer with a photo now, since\n"
+        "        // Interface 2.0 keeps the photo expanded, so it is the one the ink matters most for.\n"
+        "        let expandedAvatarNavigationContentsAccentColor: UIColor = aorusOverlayInk\n",
         "overlay palette accent",
     )
     text = _replace_once(
         text,
         "        let regularNavigationContentsPrimaryColor: UIColor = peer?.effectiveProfileColor != nil ? .white : presentationData.theme.list.itemPrimaryTextColor\n"
-        "        let collapsedHeaderNavigationContentsPrimaryColor = presentationData.theme.list.itemPrimaryTextColor\n",
-        "        let regularNavigationContentsPrimaryColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemPrimaryTextColor\n"
-        "        let collapsedHeaderNavigationContentsPrimaryColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemPrimaryTextColor\n",
+        "        let collapsedHeaderNavigationContentsPrimaryColor = presentationData.theme.list.itemPrimaryTextColor\n"
+        "        let expandedAvatarNavigationContentsPrimaryColor: UIColor = .white\n",
+        "        let regularNavigationContentsPrimaryColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? aorusOverlayInk : presentationData.theme.list.itemPrimaryTextColor\n"
+        "        let collapsedHeaderNavigationContentsPrimaryColor: UIColor = aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemPrimaryTextColor\n"
+        "        let expandedAvatarNavigationContentsPrimaryColor: UIColor = aorusOverlayInk\n",
         "overlay palette primary",
     )
     text = _replace_once(
         text,
-        "        let collapsedHeaderContentButtonBackgroundColor = presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "        let collapsedHeaderContentButtonBackgroundColor = presentationData.theme.list.itemBlocksBackgroundColor\n"
+        "        let expandedAvatarContentButtonBackgroundColor: UIColor = UIColor(white: 1.0, alpha: 0.1)\n",
         "        // Same fill the expanded state uses: a card the theme picked would be opaque, and in\n"
         "        // the light theme it would be white under white text.\n"
-        "        let collapsedHeaderContentButtonBackgroundColor: UIColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.1) : presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "        let collapsedHeaderContentButtonBackgroundColor: UIColor = aorusOverlayPalette ? aorusOverlayScrim : presentationData.theme.list.itemBlocksBackgroundColor\n"
+        "        let expandedAvatarContentButtonBackgroundColor: UIColor = aorusOverlayScrim\n",
         "overlay palette collapsed capsule",
     )
     text = _replace_once(
         text,
         "        let regularContentButtonForegroundColor: UIColor = peer?.effectiveProfileColor != nil ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
-        "        let collapsedHeaderContentButtonForegroundColor = presentationData.theme.list.itemAccentColor\n",
-        "        let regularContentButtonForegroundColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
-        "        let collapsedHeaderContentButtonForegroundColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemAccentColor\n",
+        "        let collapsedHeaderContentButtonForegroundColor = presentationData.theme.list.itemAccentColor\n"
+        "        let expandedAvatarContentButtonForegroundColor: UIColor = .white\n",
+        "        let regularContentButtonForegroundColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? aorusOverlayInk : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderContentButtonForegroundColor: UIColor = aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemAccentColor\n"
+        "        let expandedAvatarContentButtonForegroundColor: UIColor = aorusOverlayInk\n",
         "overlay palette capsule label",
     )
     text = _replace_once(
         text,
         "            regularNavigationContentsSecondaryColor = presentationData.theme.list.itemSecondaryTextColor\n"
         "            regularContentButtonBackgroundColor = presentationData.theme.list.itemBlocksBackgroundColor\n",
-        "            regularNavigationContentsSecondaryColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.7) : presentationData.theme.list.itemSecondaryTextColor\n"
-        "            regularContentButtonBackgroundColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.1) : presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "            regularNavigationContentsSecondaryColor = aorusOverlayPalette ? aorusOverlaySecondaryInk : presentationData.theme.list.itemSecondaryTextColor\n"
+        "            regularContentButtonBackgroundColor = aorusOverlayPalette ? aorusOverlayScrim : presentationData.theme.list.itemBlocksBackgroundColor\n",
         "overlay palette secondary",
     )
     text = _replace_once(
         text,
-        "        let collapsedHeaderNavigationContentsSecondaryColor = presentationData.theme.list.itemSecondaryTextColor\n",
-        "        let collapsedHeaderNavigationContentsSecondaryColor: UIColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.7) : presentationData.theme.list.itemSecondaryTextColor\n",
+        "        let collapsedHeaderNavigationContentsSecondaryColor = presentationData.theme.list.itemSecondaryTextColor\n"
+        "        let expandedAvatarNavigationContentsSecondaryColor: UIColor = .white\n",
+        "        let collapsedHeaderNavigationContentsSecondaryColor: UIColor = aorusOverlayPalette ? aorusOverlaySecondaryInk : presentationData.theme.list.itemSecondaryTextColor\n"
+        "        let expandedAvatarNavigationContentsSecondaryColor: UIColor = aorusOverlayInk\n",
         "overlay palette collapsed secondary",
     )
     text = _replace_once(
         text,
         "            let isOverlay = self.isAvatarExpanded || hasBackground\n",
         "            // AorusGram: the capsule is over the avatar's colour whether or not the photo is\n"
-        "            // expanded, so the track and the artist stay white either way.\n"
+        "            // expanded, so the track and the artist take the page's ink either way.\n"
         "            let isOverlay = self.isAvatarExpanded || hasBackground || aorusOverlayPalette\n",
         "overlay palette music capsule",
     )
     text = _replace_once(
         text,
         "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n",
-        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemSecondaryTextColor)\n",
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemSecondaryTextColor)\n",
         "overlay palette subtitle arrow",
     )
     text = _replace_once(
         text,
         "            self.subtitleNode.updateTintColor(color: presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
-        "            self.subtitleNode.updateTintColor(color: aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
+        "            self.subtitleNode.updateTintColor(color: aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
         "overlay palette subtitle tint",
     )
     path.write_text(text, encoding="utf-8")
@@ -2032,6 +2128,200 @@ def _patch_component_section_glass(tg: Path) -> None:
     print("InterfaceV2: put every component section on its own pane of glass")
 
 
+def _patch_static_avatar(tg: Path) -> None:
+    """Make the photo an ordinary block: it scrolls with the content and nothing else.
+
+    Stock treats the expanded photo as a backdrop rather than as part of the page, and does three
+    things to it that a block never does. It moves the photo at half the speed of the finger, so
+    the list slides over a picture that drifts the other way. It scales the photo up while the list
+    is pulled past its top, so the picture stretches and its centre creeps downwards. And on a
+    dynamic-island device it masks the photo into the island and fades a black cover in over it as
+    the offset grows, so the top of the picture darkens on the way out.
+
+    Under Interface 2.0 all three go. What is left is the frame the layout already computes minus
+    the content offset, exactly once -- the same arithmetic the title, the status and the buttons
+    above it already use, which is why they now travel together instead of sliding apart.
+
+    The mask branch is skipped rather than emptied, and its `else` gains the one line that branch
+    owned outright: the top shadow's visibility. Everything else in there only ever set the covers
+    and the mask, which the `else` already clears.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusStaticAvatar" in text:
+        print("InterfaceV2: photo already static")
+        return
+    text = _replace_once(
+        text,
+        "        var apparentAvatarFrame: CGRect\n"
+        "        var apparentAvatarListFrame: CGRect\n"
+        "        let controlsClippingFrame: CGRect\n"
+        "        if self.isAvatarExpanded {\n"
+        "            let expandedAvatarCenter = CGPoint(x: expandedAvatarListSize.width / 2.0, y: expandedAvatarListSize.width / 2.0 - contentOffset / 2.0)\n",
+        "        // AorusGram: the photo is a block on the page, not a backdrop behind it. A block\n"
+        "        // moves by exactly what the list moved.\n"
+        "        let aorusStaticAvatar = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        let aorusAvatarScrollOffset: CGFloat = aorusStaticAvatar ? contentOffset : contentOffset / 2.0\n"
+        "        var apparentAvatarFrame: CGRect\n"
+        "        var apparentAvatarListFrame: CGRect\n"
+        "        let controlsClippingFrame: CGRect\n"
+        "        if self.isAvatarExpanded {\n"
+        "            let expandedAvatarCenter = CGPoint(x: expandedAvatarListSize.width / 2.0, y: expandedAvatarListSize.width / 2.0 - aorusAvatarScrollOffset)\n",
+        "static avatar centre",
+    )
+    text = _replace_once(
+        text,
+        "            let expandedAvatarListCenter = CGPoint(x: expandedAvatarListSize.width / 2.0, y: expandedAvatarListSize.height / 2.0 - contentOffset / 2.0)\n",
+        "            let expandedAvatarListCenter = CGPoint(x: expandedAvatarListSize.width / 2.0, y: expandedAvatarListSize.height / 2.0 - aorusAvatarScrollOffset)\n",
+        "static avatar list centre",
+    )
+    text = _replace_once(
+        text,
+        "            avatarListContainerScale = 1.0 + max(0.0, -contentOffset / avatarListContainerFrame.width)\n",
+        "            // No rubber band: a pull past the top must not stretch the picture, and with the\n"
+        "            // scale pinned at 1.0 the vertical offset derived from it below falls out at zero.\n"
+        "            avatarListContainerScale = aorusStaticAvatar ? 1.0 : 1.0 + max(0.0, -contentOffset / avatarListContainerFrame.width)\n",
+        "static avatar scale",
+    )
+    text = _replace_once(
+        text,
+        "        if deviceMetrics.hasDynamicIsland && statusBarHeight > 0.0 && self.forumTopicThreadId == nil && self.navigationTransition == nil && !isLandscape {\n"
+        "            let maskValue = max(0.0, min(1.0, contentOffset / 120.0))\n",
+        "        if !aorusStaticAvatar && deviceMetrics.hasDynamicIsland && statusBarHeight > 0.0 && self.forumTopicThreadId == nil && self.navigationTransition == nil && !isLandscape {\n"
+        "            let maskValue = max(0.0, min(1.0, contentOffset / 120.0))\n",
+        "static avatar island mask",
+    )
+    text = _replace_once(
+        text,
+        "        } else {\n"
+        "            self.avatarListNode.bottomCoverNode.isHidden = true\n"
+        "            self.avatarListNode.topCoverNode.isHidden = true\n"
+        "            self.avatarListNode.containerNode.view.mask = nil\n"
+        "        }\n",
+        "        } else {\n"
+        "            self.avatarListNode.bottomCoverNode.isHidden = true\n"
+        "            self.avatarListNode.topCoverNode.isHidden = true\n"
+        "            self.avatarListNode.containerNode.view.mask = nil\n"
+        "            // The only line the island branch owned that this one did not: the shadow that\n"
+        "            // keeps the status bar legible over a photo. Skipping the branch must not take it.\n"
+        "            self.avatarListNode.listContainerNode.topShadowNode.isHidden = !self.isAvatarExpanded\n"
+        "        }\n",
+        "static avatar top shadow",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the profile photo static")
+
+
+def _patch_compact_music(tg: Path) -> None:
+    """Shrink the saved-music capsule to the size it is in the mockup.
+
+    Stock sizes this row for a full-width strip across the bottom of the header: 24pt of content at
+    12pt type, and the capsule pass wraps it in a pill, which came out 38pt tall and read as the
+    loudest thing on the screen. The mockup has a small pill under the buttons, so the content drops
+    to 18pt at 11pt type and the header reserves proportionally less room beneath the photo for it.
+    The pill's own padding is set where the pill is created, one script earlier, and checked here.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusCompactMusic" in text:
+        print("InterfaceV2: music capsule already compact")
+        return
+    text = _replace_once(
+        text,
+        "        let musicHeight: CGFloat = hasBackground || self.isAvatarExpanded ? 24.0 : 16.0\n",
+        "        // AorusGram: read here rather than reused from the flags further down, because this\n"
+        "        // is the first line in the pass that needs it -- the height it picks feeds the inset\n"
+        "        // the whole header is measured with.\n"
+        "        let aorusCompactMusic = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        let musicHeight: CGFloat = aorusCompactMusic ? 18.0 : (hasBackground || self.isAvatarExpanded ? 24.0 : 16.0)\n",
+        "compact music height",
+    )
+    text = _replace_once(
+        text,
+        "            musicString.append(NSAttributedString(string: track ?? \"\", font: Font.semibold(12.0), textColor: isOverlay ? .white : presentationData.theme.list.itemAccentColor))\n"
+        "            musicString.append(NSAttributedString(string: \" - \\(artist)\", font: Font.regular(12.0), textColor: isOverlay ? UIColor.white.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
+        "            let aorusMusicFontSize: CGFloat = aorusCompactMusic ? 11.0 : 12.0\n"
+        "            musicString.append(NSAttributedString(string: track ?? \"\", font: Font.semibold(aorusMusicFontSize), textColor: isOverlay ? aorusOverlayInk : presentationData.theme.list.itemAccentColor))\n"
+        "            musicString.append(NSAttributedString(string: \" - \\(artist)\", font: Font.regular(aorusMusicFontSize), textColor: isOverlay ? aorusOverlayInk.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
+        "compact music font",
+    )
+    # The two glyphs in the pill, for the same reason as its text: white on a pale page is a hole
+    # in it. Outside Interface 2.0 aorusOverlayInk is UIColor.white, which is what these were.
+    text = _replace_once(
+        text,
+        "                                    component: AnyComponent(BundleIconComponent(name: \"Media Editor/SmallAudio\", tintColor: isOverlay ? .white : presentationData.theme.list.itemAccentColor))\n",
+        "                                    component: AnyComponent(BundleIconComponent(name: \"Media Editor/SmallAudio\", tintColor: isOverlay ? aorusOverlayInk : presentationData.theme.list.itemAccentColor))\n",
+        "compact music icon",
+    )
+    text = _replace_once(
+        text,
+        "                                    component: AnyComponent(BundleIconComponent(name: \"Item List/InlineTextRightArrow\", tintColor: isOverlay ? .white : presentationData.theme.list.itemSecondaryTextColor))\n",
+        "                                    component: AnyComponent(BundleIconComponent(name: \"Item List/InlineTextRightArrow\", tintColor: isOverlay ? aorusOverlayInk.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
+        "compact music arrow",
+    )
+    # The pill's padding is written by the music-capsule pass, one script earlier. Pinned rather
+    # than re-written here: the height this pass picks and the padding that pass adds are the same
+    # measurement seen from two sides, and there is no way to notice they have drifted at runtime.
+    if "insetBy(dx: -10.0, dy: -4.0)" not in text:
+        raise RuntimeError("InterfaceV2: the saved-music capsule padding is no longer the compact one")
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the saved-music capsule compact")
+
+
+def _patch_chat_nav_glass(tg: Path) -> None:
+    """Take the tablet out from behind the chat's title and its avatar, and leave the rest.
+
+    A chat's navigation bar has three panes of glass in it: one behind the back button, one behind
+    the name and status, and one behind whatever is on the right -- in a chat, the peer's avatar, or
+    the ghost-mode badge that replaces it. Interface 2.0 keeps the first and drops the other two, so
+    the name reads straight off the wallpaper and the avatar is a photo rather than a photo in a
+    lozenge.
+
+    The right-hand pane is shared with every text button in the app -- Edit, Done, Cancel, Select --
+    and those keep theirs, because a bare word floating in a navigation bar has nothing to say it is
+    a button. `singleCustomNode` is exactly that distinction: it is non-nil only for a bar item built
+    from a display node of its own, which the avatar and the ghost badge are and a title button is
+    not.
+    """
+    title = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift"
+    text = _read(title, "ChatTitleView.swift")
+    if "aorusHidesTitleGlass" in text:
+        print("InterfaceV2: chat title tablet already hidden")
+    else:
+        text = _replace_once(
+            text,
+            "        self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: false, transition: componentTransition)\n",
+            "        self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: false, transition: componentTransition)\n"
+            "        // AorusGram: no tablet behind the name and the status under Interface 2.0. Hidden\n"
+            "        // rather than left unlaid-out, so that switching the setting off puts it back with\n"
+            "        // the geometry this pass just computed.\n"
+            "        let aorusHidesTitleGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+            "        self.backgroundView.isHidden = aorusHidesTitleGlass\n",
+            "chat title glass",
+        )
+        title.write_text(text, encoding="utf-8")
+        print("InterfaceV2: hid the chat title tablet")
+
+    bar = tg / "submodules/TelegramUI/Components/NavigationBarImpl/Sources/NavigationBarImpl.swift"
+    text = _read(bar, "NavigationBarImpl.swift")
+    if "aorusHidesCustomButtonGlass" in text:
+        print("InterfaceV2: chat avatar tablet already hidden")
+        return
+    text = _replace_once(
+        text,
+        "                rightButtonsBackgroundView.background.isHidden = false\n",
+        "                // AorusGram: the chat's avatar -- and the ghost-mode badge that stands in for\n"
+        "                // it -- is a display node of its own, and Interface 2.0 shows it without a\n"
+        "                // tablet. Text buttons keep theirs: they have no shape of their own, and the\n"
+        "                // left-hand pane behind the back button is a different view entirely.\n"
+        "                let aorusHidesCustomButtonGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") && self.rightButtonNodeImpl.singleCustomNode != nil\n"
+        "                rightButtonsBackgroundView.background.isHidden = aorusHidesCustomButtonGlass\n",
+        "chat right button glass",
+    )
+    bar.write_text(text, encoding="utf-8")
+    print("InterfaceV2: hid the chat avatar tablet")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -2070,6 +2360,9 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_avatar_expansion(tg)
     _patch_keep_avatar_expanded(tg)
     _patch_overlay_palette(tg)
+    _patch_static_avatar(tg)
+    _patch_compact_music(tg)
+    _patch_chat_nav_glass(tg)
     _patch_action_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)
