@@ -1771,6 +1771,267 @@ def _patch_pane_page_background(tg: Path) -> None:
     print("InterfaceV2: gifts pane continues the page")
 
 
+def _patch_overlay_palette(tg: Path) -> None:
+    """Keep every label in a profile header white, whatever the peer happens to have.
+
+    Stock picks the header's palette from what is behind it, and it only knows two answers: the
+    theme's own accent and primary text when the header sits on the theme background, white when the
+    photo is expanded or the peer has a profile colour or a gift status. Interface 2.0 gives it a
+    third case it has no branch for -- a page painted with the avatar's own colour -- and a peer
+    with neither a profile colour nor an expanded photo lands on the first answer: near-black text
+    on that page.
+
+    The saved-music capsule is where it shows most, because it is laid out from `isOverlay`, which
+    asks the same question: a peer with music gets the track in the theme's accent blue and the
+    artist in the theme's grey, sitting on the avatar's colour, while a peer with nothing there
+    keeps the white name above it. That is the reading of "labels take the theme colour where there
+    is music, white where there is not".
+
+    So the theme-coloured ends of all three pairs go white under Interface 2.0, and the two capsule
+    fills that carried them go to the same white-on-glass the expanded state uses -- both ends, not
+    just the text, or a white label lands on a white card in the light theme. Only the values change;
+    which branch runs is left alone, because that is also what decides whether the navigation bar may
+    take the title over, and a profile that scrolls has to keep doing that.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusOverlayPalette" in text:
+        print("InterfaceV2: header labels already on the overlay palette")
+        return
+    text = _replace_once(
+        text,
+        "        let isLandscape = containerInset > 16.0\n",
+        "        // AorusGram: this header is over the avatar's colour, not over the theme's page.\n"
+        "        let aorusOverlayPalette = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "            && !isSettings\n"
+        "            && !isMediaOnly\n"
+        "\n"
+        "        let isLandscape = containerInset > 16.0\n",
+        "overlay palette flag",
+    )
+    text = _replace_once(
+        text,
+        "        let regularNavigationContentsAccentColor: UIColor = peer?.effectiveProfileColor != nil ? .white : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderNavigationContentsAccentColor = presentationData.theme.list.itemAccentColor\n",
+        "        let regularNavigationContentsAccentColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderNavigationContentsAccentColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemAccentColor\n",
+        "overlay palette accent",
+    )
+    text = _replace_once(
+        text,
+        "        let regularNavigationContentsPrimaryColor: UIColor = peer?.effectiveProfileColor != nil ? .white : presentationData.theme.list.itemPrimaryTextColor\n"
+        "        let collapsedHeaderNavigationContentsPrimaryColor = presentationData.theme.list.itemPrimaryTextColor\n",
+        "        let regularNavigationContentsPrimaryColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemPrimaryTextColor\n"
+        "        let collapsedHeaderNavigationContentsPrimaryColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemPrimaryTextColor\n",
+        "overlay palette primary",
+    )
+    text = _replace_once(
+        text,
+        "        let collapsedHeaderContentButtonBackgroundColor = presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "        // Same fill the expanded state uses: a card the theme picked would be opaque, and in\n"
+        "        // the light theme it would be white under white text.\n"
+        "        let collapsedHeaderContentButtonBackgroundColor: UIColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.1) : presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "overlay palette collapsed capsule",
+    )
+    text = _replace_once(
+        text,
+        "        let regularContentButtonForegroundColor: UIColor = peer?.effectiveProfileColor != nil ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderContentButtonForegroundColor = presentationData.theme.list.itemAccentColor\n",
+        "        let regularContentButtonForegroundColor: UIColor = (aorusOverlayPalette || peer?.effectiveProfileColor != nil) ? UIColor.white : presentationData.theme.list.itemAccentColor\n"
+        "        let collapsedHeaderContentButtonForegroundColor: UIColor = aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemAccentColor\n",
+        "overlay palette capsule label",
+    )
+    text = _replace_once(
+        text,
+        "            regularNavigationContentsSecondaryColor = presentationData.theme.list.itemSecondaryTextColor\n"
+        "            regularContentButtonBackgroundColor = presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "            regularNavigationContentsSecondaryColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.7) : presentationData.theme.list.itemSecondaryTextColor\n"
+        "            regularContentButtonBackgroundColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.1) : presentationData.theme.list.itemBlocksBackgroundColor\n",
+        "overlay palette secondary",
+    )
+    text = _replace_once(
+        text,
+        "        let collapsedHeaderNavigationContentsSecondaryColor = presentationData.theme.list.itemSecondaryTextColor\n",
+        "        let collapsedHeaderNavigationContentsSecondaryColor: UIColor = aorusOverlayPalette ? UIColor(white: 1.0, alpha: 0.7) : presentationData.theme.list.itemSecondaryTextColor\n",
+        "overlay palette collapsed secondary",
+    )
+    text = _replace_once(
+        text,
+        "            let isOverlay = self.isAvatarExpanded || hasBackground\n",
+        "            // AorusGram: the capsule is over the avatar's colour whether or not the photo is\n"
+        "            // expanded, so the track and the artist stay white either way.\n"
+        "            let isOverlay = self.isAvatarExpanded || hasBackground || aorusOverlayPalette\n",
+        "overlay palette music capsule",
+    )
+    text = _replace_once(
+        text,
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n",
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemSecondaryTextColor)\n",
+        "overlay palette subtitle arrow",
+    )
+    text = _replace_once(
+        text,
+        "            self.subtitleNode.updateTintColor(color: presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
+        "            self.subtitleNode.updateTintColor(color: aorusOverlayPalette ? UIColor.white : presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
+        "overlay palette subtitle tint",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: header labels stay white on the avatar's page")
+
+
+_SECTION_GLASS_SWIFT = '''    // MARK: - AorusGram Interface 2.0
+
+    /// Whether this section is drawn as a real pane of glass instead of a coloured card.
+    ///
+    /// A plain-style section is the page itself rather than a card standing on it, so it keeps its
+    /// colour. Everything else -- every blocks section on every screen built out of components
+    /// rather than out of `ItemListItem`s -- becomes glass, which is the same trade
+    /// `ItemListControllerNode` makes for the older screens.
+    private func aorusUsesGlass(_ configuration: Configuration) -> Bool {
+        guard AorusGlassPane.isEnabled else {
+            return false
+        }
+        if case .plain = configuration.style {
+            return false
+        }
+        return true
+    }
+
+    /// The fill the card carries, given that a pane behind it is doing the work.
+    ///
+    /// Clear, except while a row is held down: there this colour *is* the touch feedback, and it has
+    /// to sit on the glass rather than instead of it.
+    private func aorusCardColor(_ configuration: Configuration, isHighlighted: Bool, _ color: UIColor) -> UIColor {
+        if self.aorusUsesGlass(configuration), !isHighlighted {
+            return .clear
+        }
+        return color
+    }
+
+    private func aorusUpdateGlass(configuration: Configuration, size: CGSize, corners: DynamicCornerRadiusView.Corners, isVisible: Bool, transition: ComponentTransition) {
+        guard self.aorusUsesGlass(configuration), isVisible, size.width > 1.0, size.height > 1.0 else {
+            if let glassView = self.aorusGlassView {
+                self.aorusGlassView = nil
+                glassView.removeFromSuperview()
+            }
+            return
+        }
+        let glassView: GlassBackgroundView
+        if let current = self.aorusGlassView {
+            glassView = current
+        } else {
+            // Inside the card's own view, so the pane inherits the frame this section already keeps
+            // up to date and there is no second copy of that geometry to hold in step. The card is
+            // a shape layer and does not clip, so the pane cuts its own corners below.
+            glassView = GlassBackgroundView(frame: CGRect(origin: CGPoint(), size: size))
+            glassView.isUserInteractionEnabled = false
+            self.aorusGlassView = glassView
+            self.externalContentBackgroundView.insertSubview(glassView, at: 0)
+        }
+        glassView.frame = CGRect(origin: CGPoint(), size: size)
+        glassView.update(
+            size: size,
+            cornerRadii: GlassBackgroundView.CornerRadii(
+                topLeft: corners.minXMinY,
+                topRight: corners.maxXMinY,
+                bottomLeft: corners.minXMaxY,
+                bottomRight: corners.maxXMaxY
+            ),
+            isDark: configuration.theme.overallDarkAppearance,
+            tintColor: GlassBackgroundView.TintColor(kind: .clear),
+            isInteractive: false,
+            isVisible: true,
+            transition: transition
+        )
+    }
+
+'''
+
+
+def _patch_component_section_glass(tg: Path) -> None:
+    """Put the same glass behind the sections of every screen built out of components.
+
+    `ItemListControllerNode` covers the screens made of `ItemListItem`s, which is most of the app but
+    not the newer half of Settings: gifts, stars, business, the affiliate and verification screens and
+    some fifty others lay their sections out with `ListSectionComponent` instead, which draws its own
+    card and never goes through an ItemList at all. Those were the blocks still coming out flat.
+
+    One file covers all of them, because the card is drawn in exactly one place: a shape layer filled
+    with `itemBlocksBackgroundColor`. Under Interface 2.0 the fill goes clear and a `GlassBackgroundView`
+    goes inside that same view, cut with the same corners -- including the asymmetric ones a `.range`
+    section asks for, where only the rows below a given item are meant to be carded.
+    """
+    path = tg / "submodules/TelegramUI/Components/ListSectionComponent/Sources/ListSectionComponent.swift"
+    text = _read(path, "ListSectionComponent.swift")
+    if "aorusUsesGlass" in text:
+        print("InterfaceV2: component sections already on glass")
+        return
+    text = _replace_once(
+        text,
+        "import DynamicCornerRadiusView\n",
+        "import DynamicCornerRadiusView\n" + _GLASS_IMPORT,
+        "section glass import",
+    )
+    text = _replace_once(
+        text,
+        "    public let externalContentBackgroundView: DynamicCornerRadiusView\n",
+        "    public let externalContentBackgroundView: DynamicCornerRadiusView\n"
+        "    // AorusGram: built on the first pass that draws a card, so a section laid out with\n"
+        "    // Interface 2.0 off never allocates an effect view it will not show.\n"
+        "    private var aorusGlassView: GlassBackgroundView?\n",
+        "section glass property",
+    )
+    text = _replace_once(
+        text,
+        "            self.externalContentBackgroundView.updateColor(color: backgroundColor, transition: transition)\n"
+        "        } else {\n",
+        "            self.externalContentBackgroundView.updateColor(color: self.aorusCardColor(configuration, isHighlighted: itemId != nil, backgroundColor), transition: transition)\n"
+        "        } else {\n",
+        "section glass highlight colour",
+    )
+    text = _replace_once(
+        text,
+        "        self.externalContentBackgroundView.updateColor(color: backgroundColor, transition: transition)\n"
+        "        \n"
+        "        let cornerRadius: CGFloat\n",
+        "        self.externalContentBackgroundView.updateColor(color: self.aorusCardColor(configuration, isHighlighted: self.highlightedItemId != nil && configuration.extendsItemHighlightToSection, backgroundColor), transition: transition)\n"
+        "        \n"
+        "        let cornerRadius: CGFloat\n",
+        "section glass card colour",
+    )
+    text = _replace_once(
+        text,
+        "        var contentCornerRadius: CGFloat = cornerRadius\n",
+        "        var contentCornerRadius: CGFloat = cornerRadius\n"
+        "        // AorusGram: the corners the card is cut with, so the pane behind it is cut to match.\n"
+        "        var aorusCorners = DynamicCornerRadiusView.Corners(minXMinY: cornerRadius, maxXMinY: cornerRadius, minXMaxY: cornerRadius, maxXMaxY: cornerRadius)\n",
+        "section glass corners",
+    )
+    text = _replace_once(
+        text,
+        "            self.externalContentBackgroundView.update(size: backgroundFrame.size, corners: corners, transition: transition)\n",
+        "            aorusCorners = corners\n"
+        "            self.externalContentBackgroundView.update(size: backgroundFrame.size, corners: corners, transition: transition)\n",
+        "section glass range corners",
+    )
+    text = _replace_once(
+        text,
+        "        transition.setAlpha(view: self.externalContentBackgroundView, alpha: backgroundAlpha)\n",
+        "        self.aorusUpdateGlass(configuration: configuration, size: backgroundFrame.size, corners: aorusCorners, isVisible: backgroundAlpha > 0.0, transition: transition)\n"
+        "        transition.setAlpha(view: self.externalContentBackgroundView, alpha: backgroundAlpha)\n",
+        "section glass update hook",
+    )
+    text = _replace_once(
+        text,
+        "    public func update(configuration: Configuration, width: CGFloat, leftInset: CGFloat, readyItems: [ReadyItem], transition: ComponentTransition) -> UpdateResult {\n",
+        _SECTION_GLASS_SWIFT
+        + "    public func update(configuration: Configuration, width: CGFloat, leftInset: CGFloat, readyItems: [ReadyItem], transition: ComponentTransition) -> UpdateResult {\n",
+        "section glass helper",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: put every component section on its own pane of glass")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -1781,6 +2042,11 @@ def _patch_build(tg: Path) -> None:
         tg / "submodules/TelegramUI/Components/Gifts/GiftItemComponent/BUILD",
         ["//submodules/TelegramUI/Components/GlassBackgroundComponent"],
         "GiftItemComponent",
+    )
+    _add_build_deps(
+        tg / "submodules/TelegramUI/Components/ListSectionComponent/BUILD",
+        ["//submodules/TelegramUI/Components/GlassBackgroundComponent"],
+        "ListSectionComponent",
     )
 
 
@@ -1803,11 +2069,13 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_glass_placeholder_avatar(tg)
     _patch_avatar_expansion(tg)
     _patch_keep_avatar_expanded(tg)
+    _patch_overlay_palette(tg)
     _patch_action_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)
     _patch_header_button_set(tg)
     _patch_item_list_glass(tg)
+    _patch_component_section_glass(tg)
     _patch_nav_button_glass(tg)
     _patch_pane_container_glass(tg)
     _patch_pane_page_background(tg)

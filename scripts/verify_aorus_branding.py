@@ -2661,6 +2661,7 @@ def main() -> None:
                 "publishAvatarTint",
                 "aorusHidesButtonsBlur",
                 "aorusScrollingHeader",
+                "aorusOverlayPalette",
                 "// AorusGram: Interface 2.0 opens the photo at full width",
             ),
         ),
@@ -2716,6 +2717,13 @@ def main() -> None:
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift",
             ("aorusPlainPanes", "kind: aorusPlainPanes ? .clear : .panel"),
+        ),
+        # The newer half of Settings lays its sections out with components rather than with
+        # ItemListItems, so it never passes through ItemListControllerNode. Without this the gifts,
+        # stars and business screens keep flat cards while everything around them is glass.
+        (
+            "submodules/TelegramUI/Components/ListSectionComponent/Sources/ListSectionComponent.swift",
+            ("aorusUsesGlass", "aorusGlassView", "import GlassBackgroundComponent"),
         ),
         # The band under the profile tabs. This pane paints its own opaque background and fades
         # the list into it, both in the theme's blocks colour, which is the black the gifts tab
