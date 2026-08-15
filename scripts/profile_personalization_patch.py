@@ -342,11 +342,20 @@ def _patch_music_capsule(tg: Path) -> None:
         "                        self.aorusMusicCapsule.isUserInteractionEnabled = false\n"
         "                        self.regularContentNode.view.addSubview(self.aorusMusicCapsule)\n"
         "                    }\n"
-        "                    // A small pill, per the mockup: the row inside it is 18pt of 11pt type,\n"
-        "                    // and 4pt of padding is what turns that into a capsule rather than into\n"
+        "                    // A small pill, per the mockup: the row inside it is 16pt of 11pt type,\n"
+        "                    // and 3pt of padding is what turns that into a capsule rather than into\n"
         "                    // the 38pt banner the first version drew across the bottom of the header.\n"
-        "                    let aorusCapsuleFrame = musicFrame.insetBy(dx: -10.0, dy: -4.0)\n"
-        "                    musicTransition.updateFrame(view: self.aorusMusicCapsule, frame: aorusCapsuleFrame)\n"
+        "                    let aorusCapsuleFrame = musicFrame.insetBy(dx: -12.0, dy: -3.0)\n"
+        "                    // Additive when the row is additive, and never the plain path while the\n"
+        "                    // row takes the additive one. That mismatch is what made the capsule\n"
+        "                    // slide out from under its own text on every scroll frame -- the row's\n"
+        "                    // frame was being animated from its centre while the pill jumped\n"
+        "                    // straight to the new one.\n"
+        "                    if additive {\n"
+        "                        musicTransition.updateFrameAdditiveToCenter(view: self.aorusMusicCapsule, frame: aorusCapsuleFrame)\n"
+        "                    } else {\n"
+        "                        musicTransition.updateFrame(view: self.aorusMusicCapsule, frame: aorusCapsuleFrame)\n"
+        "                    }\n"
         "                    self.aorusMusicCapsule.update(\n"
         "                        size: aorusCapsuleFrame.size,\n"
         "                        cornerRadius: aorusCapsuleFrame.height * 0.5,\n"
@@ -356,7 +365,15 @@ def _patch_music_capsule(tg: Path) -> None:
         "                        isVisible: true,\n"
         "                        transition: .immediate\n"
         "                    )\n"
-        "                    self.aorusMusicCapsule.alpha = 1.0\n"
+        "                    // The row's own alpha, to the point of using the same two branches and\n"
+        "                    // the same curve. Pinned at 1.0 the glass stayed behind as a bare\n"
+        "                    // lozenge once the header collapsed the text out from inside it, which\n"
+        "                    // is the artefact that showed while scrolling.\n"
+        "                    if let _ = self.navigationTransition {\n"
+        "                        transition.updateAlpha(layer: self.aorusMusicCapsule.layer, alpha: 1.0 - transitionFraction)\n"
+        "                    } else {\n"
+        "                        ContainedViewLayoutTransition.animated(duration: 0.2, curve: .easeInOut).updateAlpha(layer: self.aorusMusicCapsule.layer, alpha: backgroundBannerAlpha)\n"
+        "                    }\n"
         "                } else if self.aorusMusicCapsule.superview != nil {\n"
         "                    self.aorusMusicCapsule.removeFromSuperview()\n"
         "                }\n"
@@ -371,6 +388,20 @@ def _patch_music_capsule(tg: Path) -> None:
         "        let aorusInterfaceV2Enabled = UserDefaults.standard.bool(forKey: \"aorusgram_interface_v2\")\n"
         "        if let currentSavedMusic {\n",
         "music capsule flag",
+    )
+    # The peer stops sharing a track, or the header is reused for one that never did: the row is
+    # torn down here and the capsule has to go with it, or the glass stays on screen with nothing
+    # inside it.
+    text = _replace_once(
+        text,
+        "        } else {\n"
+        "            if let musicBackground = self.musicBackground {\n",
+        "        } else {\n"
+        "            if self.aorusMusicCapsule.superview != nil {\n"
+        "                self.aorusMusicCapsule.removeFromSuperview()\n"
+        "            }\n"
+        "            if let musicBackground = self.musicBackground {\n",
+        "music capsule teardown",
     )
     path.write_text(text, encoding="utf-8")
     print("MusicCapsule: patched PeerInfoHeaderNode")
@@ -582,17 +613,61 @@ def _patch_profile_list_glass(tg: Path) -> None:
     screen = _replace_once(
         screen,
         "    private func updateBackgroundColor() {\n",
+        "    // AorusGram: the photo's lower half, stretched behind the entire screen.\n"
+        "    //\n"
+        "    // A single colour was not enough on its own. The photo does not end in one colour, so a\n"
+        "    // flat page met it in a visible line right where the picture stopped, and the tabs and\n"
+        "    // the gifts below sat on a different shade again. This is the same pixels the colour is\n"
+        "    // averaged from, stretched: a dozen pixels across, linearly filtered, which is a soft\n"
+        "    // blur for the price of a tiny texture.\n"
+        "    //\n"
+        "    // Found by tag rather than held in a property: this file is patched, and a stored\n"
+        "    // property means an initialiser to patch as well. It is inserted at the very back, so\n"
+        "    // the header, the list, the tabs and the panes all keep drawing over it.\n"
+        "    //\n"
+        "    // The frame is reassigned on every call, not left to the autoresizing mask alone: this\n"
+        "    // runs from containerLayoutUpdated, and the first call can land while the node still has\n"
+        "    // empty bounds, where a proportional mask keeps a zero-sized view zero-sized forever.\n"
+        "    private func aorusUpdatePageBackdrop(image: UIImage?) {\n"
+        "        let aorusBackdropTag = 0x41475042\n"
+        "        var backdrop = self.view.subviews.first(where: { $0.tag == aorusBackdropTag }) as? UIImageView\n"
+        "        guard let image else {\n"
+        "            backdrop?.removeFromSuperview()\n"
+        "            return\n"
+        "        }\n"
+        "        if backdrop == nil {\n"
+        "            let imageView = UIImageView()\n"
+        "            imageView.tag = aorusBackdropTag\n"
+        "            imageView.isUserInteractionEnabled = false\n"
+        "            imageView.contentMode = .scaleToFill\n"
+        "            imageView.layer.magnificationFilter = .linear\n"
+        "            imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
+        "            self.view.insertSubview(imageView, at: 0)\n"
+        "            backdrop = imageView\n"
+        "        }\n"
+        "        if let backdrop, backdrop.frame != self.view.bounds {\n"
+        "            backdrop.frame = self.view.bounds\n"
+        "        }\n"
+        "        if backdrop?.image !== image {\n"
+        "            backdrop?.image = image\n"
+        "        }\n"
+        "    }\n"
+        "\n"
         "    private func updateBackgroundColor() {\n"
         "        // AorusGram: the page carries the avatar's colours the whole way down, so the\n"
         "        // list below the header continues the profile instead of meeting a flat\n"
         "        // background partway through it. Asked for by peer id, not read from one shared\n"
         "        // slot: during a push two profiles lay out on every frame of the animation, and a\n"
         "        // single slot would let each overwrite the other's colour.\n"
-        "        if AorusInterfaceV2.isEnabled, !self.isSettings,\n"
-        "           let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor(for: self.peerId.id._internalGetInt64Value()) {\n"
-        "            self.backgroundColor = aorusPageColor\n"
-        "            return\n"
-        "        }\n",
+        "        if AorusInterfaceV2.isEnabled, !self.isSettings {\n"
+        "            let aorusPeerId = self.peerId.id._internalGetInt64Value()\n"
+        "            if let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor(for: aorusPeerId) {\n"
+        "                self.backgroundColor = aorusPageColor\n"
+        "                self.aorusUpdatePageBackdrop(image: AorusGlassProfileTint.pageBackgroundImage(for: aorusPeerId))\n"
+        "                return\n"
+        "            }\n"
+        "        }\n"
+        "        self.aorusUpdatePageBackdrop(image: nil)\n",
         "screen background colour",
     )
     screen_path.write_text(screen, encoding="utf-8")

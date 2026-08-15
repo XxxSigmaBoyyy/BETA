@@ -74,6 +74,22 @@ public enum AorusGlassProfileTint {
         return AorusGlassProfileTint.pageColors[peerId]
     }
 
+    /// The photo's lower half, reduced to a handful of pixels, for the page to stretch behind the
+    /// whole screen -- sections, tabs, gifts and all.
+    ///
+    /// A flat colour was not enough. The photo does not end in one colour, it ends in a gradient,
+    /// and butting a single colour against it drew a line across the screen exactly where the
+    /// picture stopped. This is the same pixels the colour is averaged from, kept as an image
+    /// instead of collapsed to a number.
+    ///
+    /// The blur is the scaling. The bitmap is a dozen pixels across, and stretching it over a
+    /// phone screen with linear filtering *is* a wide, soft blur -- one that costs a 12x24
+    /// texture and no filter pass at all, where CIGaussianBlur over a full-screen image would
+    /// cost one on every photo change.
+    public static func pageBackgroundImage(for peerId: Int64) -> UIImage? {
+        return AorusGlassProfileTint.pageImages[peerId]
+    }
+
     /// Sample the photo as drawn and keep the result as this peer's page colour.
     ///
     /// Sampling the rendered view is the whole point: the page has to match the photo, and a
@@ -91,38 +107,51 @@ public enum AorusGlassProfileTint {
     /// changes. The header publishes this from every layout pass, so calling it unconditionally
     /// would be a layout loop; never calling it would leave the page on the previous photo's
     /// colour until something unrelated happened to lay the screen out again.
-    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, onUpdate: @escaping () -> Void) {
+    /// `isFullPhoto` says whether `view` is the full-width photo or the small round avatar the
+    /// header falls back to before the expanded page's node exists. Only the full-width one is
+    /// worth an image: the round one is a centre crop behind a circular mask, so its lower half is
+    /// the middle of the picture with transparent corners. A colour-only sample is kept, but it is
+    /// marked as such and upgraded the moment the real photo is available.
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
         let key = PhotoKey(peerId: peerId, photo: photo, photoCount: photoCount)
-        if let existing = AorusGlassProfileTint.sampledColors[key] {
+        if let existing = AorusGlassProfileTint.sampledColors[key], existing.image != nil || !isFullPhoto {
             AorusGlassProfileTint.adopt(existing, for: peerId, onUpdate: onUpdate)
             return
         }
         guard let view else {
             return
         }
-        AorusGlassProfileTint.sample(key: key, view: view, attempt: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sample(key: key, view: view, isFullPhoto: isFullPhoto, attempt: 0, onUpdate: onUpdate)
     }
 
-    /// Make `color` the page colour for this peer, and ask for a repaint if that is a change.
+    /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
     ///
     /// The repaint is asked for on the next runloop pass rather than here: the caller is usually
     /// in the middle of the header's layout, and laying the screen out again from inside that pass
     /// is re-entrancy the node hierarchy has no reason to tolerate.
-    private static func adopt(_ color: UIColor, for peerId: Int64, onUpdate: @escaping () -> Void) {
-        guard AorusGlassProfileTint.pageColors[peerId] != color else {
-            AorusGlassProfileTint.apply(color)
+    private static func adopt(_ sample: Sample, for peerId: Int64, onUpdate: @escaping () -> Void) {
+        let hadColor = AorusGlassProfileTint.pageColors[peerId] == sample.color
+        let hadImage = AorusGlassProfileTint.pageImages[peerId] === sample.image
+        guard !hadColor || !hadImage else {
+            AorusGlassProfileTint.apply(sample.color)
             return
         }
         // Capped so a session spent opening profiles cannot grow this without bound; a dropped
         // entry only costs one resample.
         if AorusGlassProfileTint.pageColors.count > 32 {
             AorusGlassProfileTint.pageColors.removeAll()
+            AorusGlassProfileTint.pageImages.removeAll()
         }
-        AorusGlassProfileTint.pageColors[peerId] = color
-        AorusGlassProfileTint.apply(color)
+        AorusGlassProfileTint.pageColors[peerId] = sample.color
+        if let image = sample.image {
+            AorusGlassProfileTint.pageImages[peerId] = image
+        } else {
+            AorusGlassProfileTint.pageImages.removeValue(forKey: peerId)
+        }
+        AorusGlassProfileTint.apply(sample.color)
         DispatchQueue.main.async {
             onUpdate()
         }
@@ -147,21 +176,34 @@ public enum AorusGlassProfileTint {
         let photoCount: Int
     }
 
+    /// One photo's contribution to the page: the colour it ends on, and the same lower region kept
+    /// as a tiny image. `image` is nil when only the round fallback avatar was available.
+    private struct Sample {
+        let color: UIColor
+        let image: UIImage?
+    }
+
     /// What the page is painted with right now, per peer on screen.
     private static var pageColors: [Int64: UIColor] = [:]
+    /// The stretched backdrop for each of those, dropped together with the colours.
+    private static var pageImages: [Int64: UIImage] = [:]
     /// What each individual photo sampled to, so paging back and forth never resamples.
-    private static var sampledColors: [PhotoKey: UIColor] = [:]
+    private static var sampledColors: [PhotoKey: Sample] = [:]
     private static var pendingKeys = Set<PhotoKey>()
 
-    private static func sample(key: PhotoKey, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
+    private static func sample(key: PhotoKey, view: UIView, isFullPhoto: Bool, attempt: Int, onUpdate: @escaping () -> Void) {
         if let color = AorusGlassProfileTint.bottomEdgeColor(of: view) {
             AorusGlassProfileTint.pendingKeys.remove(key)
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
                 AorusGlassProfileTint.sampledColors.removeAll()
             }
-            AorusGlassProfileTint.sampledColors[key] = color
-            AorusGlassProfileTint.adopt(color, for: key.peerId, onUpdate: onUpdate)
+            let sample = Sample(
+                color: color,
+                image: isFullPhoto ? AorusGlassProfileTint.lowerRegionImage(of: view) : nil
+            )
+            AorusGlassProfileTint.sampledColors[key] = sample
+            AorusGlassProfileTint.adopt(sample, for: key.peerId, onUpdate: onUpdate)
             return
         }
         // Nothing to sample yet: the photo is still decoding. Retried on a delay rather than
@@ -181,8 +223,67 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(key: key, view: view, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sample(key: key, view: view, isFullPhoto: isFullPhoto, attempt: attempt + 1, onUpdate: onUpdate)
         }
+    }
+
+    /// The photo's lower region as a 12x24 image, mirrored, to be stretched over the page behind
+    /// everything.
+    ///
+    /// The region is the bottom 55% and not the whole picture: the page begins where the photo
+    /// ends, so what continues downwards has to be what was at the bottom, not an average of the
+    /// face above it.
+    ///
+    /// It is returned upside down, and that is the point. The page's *top* is the edge that has to
+    /// disappear into the photo, so the row that meets the photo has to be the photo's own last
+    /// row; below it the page then drifts back up through the same colours. Kept the right way up
+    /// instead, the join fell between the photo's bottom and the middle of the region and drew the
+    /// very line this exists to remove.
+    ///
+    /// Rows are ordered top-down here, the reverse of the strip average, because this bitmap is
+    /// kept as a picture rather than reduced to one number: the context is flipped once so that
+    /// the image comes out the same way up as the photo, and the mirror is then asked for on the
+    /// UIImage rather than by transforming twice.
+    private static func lowerRegionImage(of view: UIView) -> UIImage? {
+        let bounds = view.bounds
+        guard bounds.width >= 8.0, bounds.height >= 8.0 else {
+            return nil
+        }
+        let regionHeight = max(8.0, bounds.height * 0.55)
+        let width = 12
+        let height = 24
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        // The bitmap is CoreGraphics' own, unlike bottomEdgeColor's, which reads the pixels back and
+        // so has to supply the buffer. makeImage's copy of it is copy-on-write, and a buffer this
+        // function had allocated and freed on the way out would be a copy that never happened.
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        // The photo is drawn on an opaque base: the picture can have transparent corners under its
+        // mask, and a stretched backdrop with holes in it would show the theme background through.
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(origin: CGPoint(), size: CGSize(width: width, height: height)))
+        // Read bottom up, as in bottomEdgeColor: bring the region's top-left to the origin, scale
+        // into the view's own points, then flip for a bitmap context counting y upwards.
+        context.translateBy(x: 0.0, y: CGFloat(height))
+        context.scaleBy(x: CGFloat(width) / bounds.width, y: -CGFloat(height) / regionHeight)
+        context.translateBy(x: 0.0, y: -(bounds.height - regionHeight))
+        view.layer.render(in: context)
+        guard let image = context.makeImage() else {
+            return nil
+        }
+        // downMirrored is the vertical flip: 180 degrees and then mirrored across the vertical axis
+        // leaves the columns where they were and reverses the rows, which is exactly the mirror the
+        // page needs.
+        return UIImage(cgImage: image, scale: 1.0, orientation: .downMirrored)
     }
 
     /// The colour the photo ends on, which is the colour the page continues in.

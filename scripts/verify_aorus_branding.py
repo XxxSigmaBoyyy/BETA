@@ -2650,6 +2650,9 @@ def main() -> None:
                 "profilePageKey",
                 "profilePageInk",
                 "profilePageScrim",
+                # The profile's personal-channel row is a real ChatListItem, so its greys come from
+                # theme.chatList and not theme.list -- it needs its own derivation.
+                "theme.chatList.withUpdated",
             ),
         ),
         # cornersImage returns nil under Interface 2.0. Those wedges are an opaque overlay painted
@@ -2676,9 +2679,17 @@ def main() -> None:
                 # Interface 2.0, so the expandedAvatar* branch is the one every profile with a
                 # picture takes, and it has to be inked like the other two.
                 "aorusOverlayInk",
-                # The photo stands still and the capsule under it is the small one.
+                # The photo stands still and the capsule under it is the small one, lifted clear of
+                # the join between the picture and the page.
                 "aorusStaticAvatar",
                 "aorusCompactMusic",
+                "aorusMusicLift",
+                "insetBy(dx: -12.0, dy: -3.0)",
+                # The pill takes the row's own frame path and the row's own alpha. Pinned at 1.0 and
+                # moved non-additively it slid out from under its text and stayed behind as a bare
+                # lozenge, which is what "becomes an artefact while scrolling" was.
+                "updateFrameAdditiveToCenter(view: self.aorusMusicCapsule",
+                "updateAlpha(layer: self.aorusMusicCapsule.layer, alpha: backgroundBannerAlpha)",
                 "// AorusGram: Interface 2.0 opens the photo at full width",
             ),
         ),
@@ -2692,7 +2703,14 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
-            ("aorusPublishAvatarTint", "aorusKeepsAvatarExpanded"),
+            (
+                "aorusPublishAvatarTint",
+                "aorusKeepsAvatarExpanded",
+                # The page is the photo's own lower half stretched behind the whole screen, not one
+                # flat colour: a colour alone met the picture in a visible line.
+                "aorusUpdatePageBackdrop",
+                "AorusGlassProfileTint.pageBackgroundImage",
+            ),
         ),
         (
             "submodules/AvatarNode/Sources/AvatarNode.swift",
@@ -2753,24 +2771,56 @@ def main() -> None:
         # only surface as a missing-argument error deep inside a CI compile.
         (
             "submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusGlassProfileTint.swift",
-            ("photoCount: Int", "sampledColors", "bottomEdgeColor", "pageKey"),
+            (
+                "photoCount: Int",
+                "sampledColors",
+                "bottomEdgeColor",
+                "pageKey",
+                # The stretched backdrop, and the flag that keeps it from being sampled off the
+                # round centre-cropped fallback avatar.
+                "pageBackgroundImage",
+                "lowerRegionImage",
+                "isFullPhoto",
+            ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that
         # Interface 2.0 has no use for: the one behind the name and status, and the one behind the
         # avatar or the ghost-mode badge that replaces it.
         (
             "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift",
-            ("aorusHidesTitleGlass",),
+            ("aorusHidesTitleGlass", "isVisible: !aorusHidesTitleGlass"),
         ),
         (
             "submodules/TelegramUI/Components/NavigationBarImpl/Sources/NavigationBarImpl.swift",
-            ("aorusHidesCustomButtonGlass", "singleCustomNode != nil"),
+            (
+                "aorusHidesCustomButtonGlass",
+                "singleCustomNode != nil",
+                # isVisible and not isHidden: the bar button is a subview of this container's own
+                # contentView, so hiding the container took the avatar and the ghost badge with it.
+                "isVisible: !aorusHidesCustomButtonGlass",
+            ),
         ),
         # The avatar/ghost item carries a pill of its own inside the bar's right-hand pane, so both
         # have to go or the capsule survives the one that was hidden.
         (
             "submodules/TelegramUI/Sources/ChatController.swift",
             ("aorusHidesNavCapsule",),
+        ),
+        # The menu a *tap* on a username opens is the older ContextMenuNode, which paints a flat
+        # grey rectangle unless it is told it is blurred. Both files, because the flag and the
+        # material it selects live one in each.
+        (
+            "submodules/Display/Source/ContextMenuContainerNode.swift",
+            ("aorusGlassMenu", "UIGlassEffect(style: .regular)"),
+        ),
+        (
+            "submodules/TelegramUI/Components/ContextMenuScreen/Sources/ContextMenuNode.swift",
+            (
+                "aorusBlurredMenu",
+                "ContextMenuContainerNode(isBlurred: aorusBlurredMenu",
+                # A rasterized fade would flatten the material into a grey slab.
+                "if !self.blurred {",
+            ),
         ),
     )
     # AorusGram's own screens build rows out of ListViewItem subclasses that take a

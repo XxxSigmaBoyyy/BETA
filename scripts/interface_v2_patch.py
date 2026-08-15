@@ -201,7 +201,12 @@ private final class AorusGlassThemeCache {
 
         let list = theme.list.withUpdated(
             itemPrimaryTextColor: ink,
-            itemSecondaryTextColor: aorusInk(0.65),
+            // Full ink, not a dimmed shade of it. Interface 2.0 is one page of ink over one page
+            // of colour, and every grey in the middle read as a third colour that belonged to
+            // neither -- the phone number under a name, a section title, the caption under a
+            // switch. Only the two placeholder shades below stay dim, because a field with no
+            // value in it and a row that cannot be tapped are states rather than text.
+            itemSecondaryTextColor: ink,
             itemDisabledTextColor: aorusInk(0.35),
             itemAccentColor: ink,
             itemPlaceholderTextColor: aorusInk(0.4),
@@ -215,9 +220,30 @@ private final class AorusGlassThemeCache {
             itemBlocksSeparatorColor: hairline,
             itemPlainSeparatorColor: hairline,
             disclosureArrowColor: aorusInk(0.35),
-            sectionHeaderTextColor: aorusInk(0.6),
-            freeTextColor: aorusInk(0.55),
+            sectionHeaderTextColor: ink,
+            freeTextColor: ink,
             controlSecondaryColor: aorusInk(0.2)
+        )
+        // A profile can contain a chat-list row: the personal channel a user pins to their page is
+        // a real ChatListItem, laid out by ChatListUI inside a peer-info section. It takes its
+        // colours from here and not from theme.list, which is why its last post stayed grey while
+        // everything around it turned white -- the one complaint this block was reported for.
+        let chatList = theme.chatList.withUpdated(
+            itemSeparatorColor: hairline,
+            itemBackgroundColor: .clear,
+            pinnedItemBackgroundColor: .clear,
+            itemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
+            pinnedItemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
+            titleColor: ink,
+            secretTitleColor: ink,
+            dateTextColor: ink,
+            authorNameColor: ink,
+            messageTextColor: ink,
+            messageHighlightedTextColor: ink,
+            messageDraftTextColor: ink,
+            checkmarkColor: ink,
+            muteIconColor: aorusInk(0.5),
+            sectionHeaderTextColor: ink
         )
         let derived = PresentationTheme(
             name: theme.name,
@@ -228,7 +254,7 @@ private final class AorusGlassThemeCache {
             passcode: theme.passcode,
             rootController: theme.rootController,
             list: list,
-            chatList: theme.chatList,
+            chatList: chatList,
             chat: theme.chat,
             actionSheet: theme.actionSheet,
             contextMenu: theme.contextMenu,
@@ -694,13 +720,17 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "        let listContainerNode = self.avatarListNode.listContainerNode\n"
             "        var photo = 0\n"
             "        // The collapsed avatar is always the first of the peer's photos, so it is the\n"
-            "        // right thing to sample until the gallery has pages of its own.\n"
+            "        // right thing to sample until the gallery has pages of its own. It is only good\n"
+            "        // for the colour though: it is a centre crop behind a circular mask, so the\n"
+            "        // stretched backdrop has to wait for the full-width photo.\n"
             "        var sampledView: UIView? = self.avatarListNode.avatarContainerNode.avatarNode.view\n"
+            "        var isFullPhoto = false\n"
             "        if let currentEntry = listContainerNode.currentEntry,\n"
             "           let currentIndex = listContainerNode.galleryEntries.firstIndex(of: currentEntry) {\n"
             "            photo = currentIndex\n"
             "            if let itemNode = listContainerNode.currentItemNode {\n"
             "                sampledView = itemNode.imageNode.view\n"
+            "                isFullPhoto = true\n"
             "            } else if currentIndex != 0 {\n"
             "                // The page exists but its node has not been built yet. Nothing to sample:\n"
             "                // the round avatar below it is a different photo, and sampling that would\n"
@@ -714,6 +744,7 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "            photo: photo,\n"
             "            photoCount: listContainerNode.galleryEntries.count,\n"
             "            view: sampledView,\n"
+            "            isFullPhoto: isFullPhoto,\n"
             "            onUpdate: { [weak self] in\n"
             "                self?.requestUpdateLayout?(false)\n"
             "            }\n"
@@ -2218,8 +2249,12 @@ def _patch_compact_music(tg: Path) -> None:
     Stock sizes this row for a full-width strip across the bottom of the header: 24pt of content at
     12pt type, and the capsule pass wraps it in a pill, which came out 38pt tall and read as the
     loudest thing on the screen. The mockup has a small pill under the buttons, so the content drops
-    to 18pt at 11pt type and the header reserves proportionally less room beneath the photo for it.
+    to 16pt at 11pt type and the header reserves proportionally less room beneath the photo for it.
     The pill's own padding is set where the pill is created, one script earlier, and checked here.
+
+    It is also lifted clear of the bottom of the photo. Stock bottom-aligns the row to the header,
+    which for a pill means its lower quarter hangs over the join between the picture and the page --
+    reported as looking unfinished, and it did. 12pt puts the whole capsule inside the photo.
     """
     path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
     text = _read(path, "PeerInfoHeaderNode.swift")
@@ -2233,7 +2268,7 @@ def _patch_compact_music(tg: Path) -> None:
         "        // is the first line in the pass that needs it -- the height it picks feeds the inset\n"
         "        // the whole header is measured with.\n"
         "        let aorusCompactMusic = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
-        "        let musicHeight: CGFloat = aorusCompactMusic ? 18.0 : (hasBackground || self.isAvatarExpanded ? 24.0 : 16.0)\n",
+        "        let musicHeight: CGFloat = aorusCompactMusic ? 16.0 : (hasBackground || self.isAvatarExpanded ? 24.0 : 16.0)\n",
         "compact music height",
     )
     text = _replace_once(
@@ -2262,8 +2297,19 @@ def _patch_compact_music(tg: Path) -> None:
     # The pill's padding is written by the music-capsule pass, one script earlier. Pinned rather
     # than re-written here: the height this pass picks and the padding that pass adds are the same
     # measurement seen from two sides, and there is no way to notice they have drifted at runtime.
-    if "insetBy(dx: -10.0, dy: -4.0)" not in text:
+    if "insetBy(dx: -12.0, dy: -3.0)" not in text:
         raise RuntimeError("InterfaceV2: the saved-music capsule padding is no longer the compact one")
+    # Lifted off the bottom edge of the photo. The clearance is exact: the buttons above end
+    # 16 + bottomInset points above the header's bottom, bottomInset is this row's own 16, and the
+    # pill is 22 tall with its padding -- so 10 leaves 3 points under the buttons and 7 above the
+    # join. The x term is the capsule pass's centring, which is why this anchors on its line.
+    text = _replace_once(
+        text,
+        "            let musicFrame = CGRect(origin: CGPoint(x: aorusMusicX, y: (apparentBackgroundHeight - backgroundHeight) + backgroundHeight - musicHeight - (hasBackground || self.isAvatarExpanded ? 0.0 : 4.0)), size: musicSize)\n",
+        "            let aorusMusicLift: CGFloat = aorusCompactMusic ? 10.0 : 0.0\n"
+        "            let musicFrame = CGRect(origin: CGPoint(x: aorusMusicX, y: (apparentBackgroundHeight - backgroundHeight) + backgroundHeight - musicHeight - (hasBackground || self.isAvatarExpanded ? 0.0 : 4.0) - aorusMusicLift), size: musicSize)\n",
+        "compact music lift",
+    )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: made the saved-music capsule compact")
 
@@ -2291,11 +2337,13 @@ def _patch_chat_nav_glass(tg: Path) -> None:
         text = _replace_once(
             text,
             "        self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: false, transition: componentTransition)\n",
-            "        self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: false, transition: componentTransition)\n"
-            "        // AorusGram: no tablet behind the name and the status under Interface 2.0. Hidden\n"
-            "        // rather than left unlaid-out, so that switching the setting off puts it back with\n"
-            "        // the geometry this pass just computed.\n"
+            "        // AorusGram: no tablet behind the name and the status under Interface 2.0. The pane\n"
+            "        // is told not to draw *and* hidden: isVisible is what actually takes the glass\n"
+            "        // away, and isHidden keeps a stale snapshot of it from showing through during a\n"
+            "        // push. It is still laid out, so switching the setting off puts it back with the\n"
+            "        // geometry this pass just computed.\n"
             "        let aorusHidesTitleGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+            "        self.backgroundView.update(size: backgroundFrame.size, cornerRadius: backgroundFrame.height * 0.5, isDark: self.theme.overallDarkAppearance, tintColor: .init(kind: .panel), isInteractive: false, isVisible: !aorusHidesTitleGlass, transition: componentTransition)\n"
             "        self.backgroundView.isHidden = aorusHidesTitleGlass\n",
             "chat title glass",
         )
@@ -2309,17 +2357,117 @@ def _patch_chat_nav_glass(tg: Path) -> None:
         return
     text = _replace_once(
         text,
-        "                rightButtonsBackgroundView.background.isHidden = false\n",
+        "                rightButtonsBackgroundView.background.isHidden = false\n"
+        "                rightButtonsBackgroundView.background.update(size: rightButtonsBackgroundFrame.size, cornerRadius: rightButtonsBackgroundFrame.height * 0.5, isDark: self.presentationData.theme.overallDarkAppearance, tintColor: rightButtonsColor, isInteractive: true, transition: rightButtonsBackgroundTransition)\n",
+        "                rightButtonsBackgroundView.background.isHidden = false\n"
         "                // AorusGram: the chat's avatar -- and the ghost-mode badge that stands in for\n"
         "                // it -- is a display node of its own, and Interface 2.0 shows it without a\n"
         "                // tablet. Text buttons keep theirs: they have no shape of their own, and the\n"
         "                // left-hand pane behind the back button is a different view entirely.\n"
+        "                //\n"
+        "                // isVisible and not isHidden: the button is added to this container's own\n"
+        "                // contentView, so hiding the container takes the avatar with it, which is how\n"
+        "                // the first version of this made both the avatar and the badge disappear.\n"
         "                let aorusHidesCustomButtonGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") && self.rightButtonNodeImpl.singleCustomNode != nil\n"
-        "                rightButtonsBackgroundView.background.isHidden = aorusHidesCustomButtonGlass\n",
+        "                rightButtonsBackgroundView.background.update(size: rightButtonsBackgroundFrame.size, cornerRadius: rightButtonsBackgroundFrame.height * 0.5, isDark: self.presentationData.theme.overallDarkAppearance, tintColor: rightButtonsColor, isInteractive: true, isVisible: !aorusHidesCustomButtonGlass, transition: rightButtonsBackgroundTransition)\n",
         "chat right button glass",
     )
     bar.write_text(text, encoding="utf-8")
     print("InterfaceV2: hid the chat avatar tablet")
+
+
+def _patch_legacy_menu_glass(tg: Path) -> None:
+    """Give the old-style tap menu the real material, the one a username in a profile opens.
+
+    Telegram has two context menus. The one a long press opens is ContextControllerImpl, which is
+    already glass on iOS 26. The one a *tap* on a username, a phone number or a link opens is the
+    older ContextMenuNode, and it paints a flat 0x2f2f2f rectangle -- which under Interface 2.0 is
+    the one obviously opaque panel left on the profile.
+
+    Both halves of it are already written. The container takes an isBlurred flag that swaps its
+    fill for an effect view, and every row takes the same flag and swaps its opaque grey for a
+    translucent highlight; nothing else in either class depends on it. So this pass turns that flag
+    on and upgrades the effect behind it from UIBlurEffect to UIGlassEffect, leaving the arrow, the
+    mask that cuts it, the paging and the layout exactly as they were.
+    """
+    container = tg / "submodules/Display/Source/ContextMenuContainerNode.swift"
+    text = _read(container, "ContextMenuContainerNode.swift")
+    if "aorusGlassMenu" in text:
+        print("InterfaceV2: legacy menu container already glass")
+    else:
+        text = _replace_once(
+            text,
+            "        if isBlurred {\n"
+            "            let effectView = UIVisualEffectView(effect: UIBlurEffect(style: isDark ? .dark : .light))\n"
+            "            self.containerNode.view.addSubview(effectView)\n"
+            "            self.effectView = effectView\n"
+            "        } else {\n",
+            "        if isBlurred {\n"
+            "            // AorusGram: the system material under Interface 2.0, the stock blur before\n"
+            "            // it and on anything older than iOS 26. The corner radius matches the one the\n"
+            "            // mask below cuts, so the glass edge lands on the shape that is actually\n"
+            "            // visible; the arrow keeps its own edge from the mask.\n"
+            "            let aorusGlassMenu = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+            "            let effectView: UIVisualEffectView\n"
+            "            if #available(iOS 26.0, *), aorusGlassMenu {\n"
+            "                effectView = UIVisualEffectView(effect: UIGlassEffect(style: .regular))\n"
+            "                effectView.cornerConfiguration = .corners(radius: UICornerRadius(floatLiteral: 10.0))\n"
+            "            } else {\n"
+            "                effectView = UIVisualEffectView(effect: UIBlurEffect(style: isDark ? .dark : .light))\n"
+            "            }\n"
+            "            self.containerNode.view.addSubview(effectView)\n"
+            "            self.effectView = effectView\n"
+            "        } else {\n",
+            "legacy menu container glass",
+        )
+        container.write_text(text, encoding="utf-8")
+        print("InterfaceV2: made the legacy menu container glass")
+
+    node = tg / "submodules/TelegramUI/Components/ContextMenuScreen/Sources/ContextMenuNode.swift"
+    text = _read(node, "ContextMenuNode.swift")
+    if "aorusBlurredMenu" in text:
+        print("InterfaceV2: legacy menu already blurred")
+        return
+    # A separate name rather than shadowing the parameter: the flag has to reach the container and
+    # every row, and a local of the same name as the argument is the kind of thing that reads as a
+    # typo in review.
+    text = _replace_once(
+        text,
+        "        self.blurred = blurred\n"
+        "        self.isDark = isDark\n",
+        "        // AorusGram: a tap menu is glass under Interface 2.0, the same as the long-press one\n"
+        "        // has been since iOS 26. One flag, because the container and the rows both already\n"
+        "        // take it.\n"
+        "        let aorusBlurredMenu = blurred || UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        self.blurred = aorusBlurredMenu\n"
+        "        self.isDark = isDark\n",
+        "legacy menu blurred flag",
+    )
+    text = _replace_once(
+        text,
+        "        self.containerNode = ContextMenuContainerNode(isBlurred: blurred, isDark: isDark)\n",
+        "        self.containerNode = ContextMenuContainerNode(isBlurred: aorusBlurredMenu, isDark: isDark)\n",
+        "legacy menu container flag",
+    )
+    text = _replace_once(
+        text,
+        "            return ContextMenuActionNode(action: action, blurred: blurred, isDark: isDark)\n",
+        "            return ContextMenuActionNode(action: action, blurred: aorusBlurredMenu, isDark: isDark)\n",
+        "legacy menu action flag",
+    )
+    # Rasterizing the fade is a group-opacity optimisation from when this menu was a flat grey
+    # rectangle. Flattening a UIVisualEffectView into a bitmap is how a material comes out as a grey
+    # slab for the length of the animation, so a menu that is blurred at all now skips it -- the
+    # existing dark case already did, and the light one only ever rasterized a blur.
+    for _ in range(2):
+        text = _replace_once(
+            text,
+            "        if !(self.blurred && self.isDark) {\n",
+            "        if !self.blurred {\n",
+            "legacy menu fade rasterization",
+        )
+    node.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the legacy menu rows translucent")
 
 
 def _patch_build(tg: Path) -> None:
@@ -2363,6 +2511,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_static_avatar(tg)
     _patch_compact_music(tg)
     _patch_chat_nav_glass(tg)
+    _patch_legacy_menu_glass(tg)
     _patch_action_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)
