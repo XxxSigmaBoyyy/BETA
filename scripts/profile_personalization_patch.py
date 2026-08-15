@@ -158,41 +158,6 @@ def _patch_profile_header(tg: Path) -> None:
     print("ProfilePersonalization: patched PeerInfoHeaderNode")
 
 
-def _patch_expanded_avatar_default(tg: Path) -> None:
-    """Open a profile with the photo already at full width under Interface 2.0.
-
-    This flips Telegram's own expanded state rather than drawing a replacement header.
-    That distinction is the whole point: the carousel keeps swiping between photos, the
-    image is the full-resolution one the gallery uses, the badges and the emoji in a name
-    keep rendering, context menus keep their anchors, and the header still collapses with
-    the scroll. A redrawn header has to reinvent every one of those, and the first attempt
-    got all of them wrong.
-    """
-    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
-    if not path.is_file():
-        raise RuntimeError("ExpandedAvatar: PeerInfoHeaderNode.swift is missing")
-    text = path.read_text(encoding="utf-8")
-    if "// AorusGram: Interface 2.0 opens the photo at full width" in text:
-        print("ExpandedAvatar: already patched")
-        return
-    text = _replace_once(
-        text,
-        "        self.isAvatarExpanded = avatarInitiallyExpanded\n",
-        "        // AorusGram: Interface 2.0 opens the photo at full width straight away.\n"
-        "        // Settings and media-only headers keep the stock behaviour: neither has a\n"
-        "        // photo carousel to expand, so forcing the state there would only break\n"
-        "        // their layout.\n"
-        "        if !isSettings, !isMediaOnly, UserDefaults.standard.bool(forKey: \"aorusgram_interface_v2\") {\n"
-        "            self.isAvatarExpanded = true\n"
-        "        } else {\n"
-        "            self.isAvatarExpanded = avatarInitiallyExpanded\n"
-        "        }\n",
-        "expanded avatar default",
-    )
-    path.write_text(text, encoding="utf-8")
-    print("ExpandedAvatar: patched PeerInfoHeaderNode")
-
-
 def _patch_round_action_buttons(tg: Path) -> None:
     """Draw the profile action row as circles of icons under Interface 2.0.
 
@@ -1198,8 +1163,6 @@ def _patch_build(tg: Path) -> None:
 
 def patch_profile_personalization(tg: Path) -> None:
     _patch_profile_header(tg)
-    # After the header patch: the glass property is anchored on the one it inserts.
-    _patch_expanded_avatar_default(tg)
     _patch_round_action_buttons(tg)
     _patch_music_capsule(tg)
     _patch_call_type_sheet(tg)

@@ -1035,104 +1035,105 @@ def _patch_action_sheet_glass(tg: Path) -> None:
 
 
 def _patch_avatar_expansion(tg: Path) -> None:
-    """Keep the photo at full width while scrolling, and never expand one that is not there.
+    """Let the header scroll away at its own size instead of folding into the navigation bar.
 
-    Three halves of the same complaint. The header is built before the peer is loaded, so the
-    Interface 2.0 flag alone cannot tell whether there is a photo to expand -- and expanding a
-    profile that has none is what breaks its layout. The correction happens the moment the
-    peer arrives. Separately, Telegram collapses the expanded photo as soon as the list scrolls
-    a single point; Interface 2.0 leaves it expanded and simply lets it scroll away, which is
-    what keeps the scroll native rather than pinning anything to the top. And each of the screen's
-    own reasons to collapse -- coming back from the gallery, cancelling an edit -- has to hand the
-    photo back afterwards, since the mode never opens on a small one.
+    Two things had to change together. Interface 2.0 used to open every profile in Telegram's
+    *expanded* state -- the photo at full width, edge to edge, with the name written across it.
+    That state is a caption over a picture, and it reads as a banner stuck onto the top of the
+    screen rather than a profile with a photo in it. So the profile now opens in the state
+    Telegram itself opens in: the round photo above a centred name, which is the native
+    arrangement, and dragging down still opens the carousel.
+
+    What stays from the old behaviour is the part that was right. Stock shrinks that photo to
+    0.55 and locks the name under the status bar the moment the list moves, which is the other
+    half of "stuck on" -- the header stops being content and becomes chrome. Holding the
+    collapse fraction at zero leaves every size alone and lets the whole header travel with the
+    list: `avatarScale` becomes 1, `avatarOffset` and `apparentTitleLockOffset` become 0, and
+    the offset applied to the three labels becomes the scroll offset itself. The photo then
+    slides up behind the dynamic island through the clipping node that is already there, and
+    the labels, which have no such node, fade over the last stretch before they would be drawn
+    across the status bar.
+
+    Settings keeps the stock header: its own avatar is small and it has no photo to preserve.
     """
-    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift"
-    text = _read(path, "PeerInfoScreen.swift")
-    if "aorusKeepsAvatarExpanded" in text:
-        print("InterfaceV2: avatar expansion already patched")
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusScrollingHeader" in text:
+        print("InterfaceV2: header already scrolls at full size")
         return
+    # The same two lines appear in the expanded branch, so the anchor starts at the centred
+    # titleFrame that only the collapsed branch computes.
     text = _replace_once(
         text,
-        "            } else if offsetY >= 1.0 {\n"
-        "                shouldBeExpanded = false\n"
-        "                self.canOpenAvatarByDragging = false\n"
+        "            titleFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((width - titleSize.width) / 2.0), y: avatarFrame.maxY + 9.0 + (subtitleSize.height.isZero ? 11.0 : 0.0)), size: titleSize)\n"
+        "            \n"
+        "            var titleCollapseOffset = titleFrame.midY - statusBarHeight - titleLockOffset\n"
+        "            if case .regular = metrics.widthClass, !isSettings, !isMyProfile {\n"
+        "                titleCollapseOffset -= 7.0\n"
+        "            }\n"
+        "            titleOffset = -min(titleCollapseOffset, contentOffset)\n"
+        "            titleCollapseFraction = max(0.0, min(1.0, contentOffset / titleCollapseOffset))\n",
+        "            titleFrame = CGRect(origin: CGPoint(x: floorToScreenPixels((width - titleSize.width) / 2.0), y: avatarFrame.maxY + 9.0 + (subtitleSize.height.isZero ? 11.0 : 0.0)), size: titleSize)\n"
+        "            \n"
+        "            var titleCollapseOffset = titleFrame.midY - statusBarHeight - titleLockOffset\n"
+        "            if case .regular = metrics.widthClass, !isSettings, !isMyProfile {\n"
+        "                titleCollapseOffset -= 7.0\n"
+        "            }\n"
+        "            if aorusScrollingHeader {\n"
+        "                // AorusGram: the header scrolls, and that is all it does. Every size in it\n"
+        "                // is derived from this fraction -- the photo to 0.55, the name to 0.6, the\n"
+        "                // lock offset under the status bar -- so holding it at zero is what keeps\n"
+        "                // the photo the size it was drawn at and moves the whole header with the\n"
+        "                // list instead of folding it into the navigation bar.\n"
+        "                titleOffset = -contentOffset\n"
+        "                titleCollapseFraction = 0.0\n"
+        "            } else {\n"
+        "                titleOffset = -min(titleCollapseOffset, contentOffset)\n"
+        "                titleCollapseFraction = max(0.0, min(1.0, contentOffset / titleCollapseOffset))\n"
         "            }\n",
-        "            } else if offsetY >= 1.0 {\n"
-        "                // AorusGram: Interface 2.0 keeps the photo at full width for the whole\n"
-        "                // scroll instead of shrinking it into the corner on the first point of\n"
-        "                // movement. Nothing is pinned and no offsets are faked -- the header just\n"
-        "                // keeps the size it already had and scrolls with the content.\n"
-        "                let aorusKeepsAvatarExpanded = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
-        "                    && !self.isSettings\n"
-        "                    && self.chatLocation.threadId == nil\n"
-        "                    && self.state.updatingAvatar == nil\n"
-        "                    && !self.state.isEditing\n"
-        "                    && self.data?.peer?.smallProfileImage != nil\n"
-        "                if !aorusKeepsAvatarExpanded {\n"
-        "                    shouldBeExpanded = false\n"
-        "                }\n"
-        "                self.canOpenAvatarByDragging = false\n"
-        "            }\n",
-        "keep avatar expanded",
+        "scrolling header collapse fraction",
     )
     text = _replace_once(
         text,
-        "        self.data = data\n",
-        "        self.data = data\n"
-        "        // AorusGram: the header opens expanded under Interface 2.0, which is right for a\n"
-        "        // peer with a photo and wrong for one without -- and at init, before this peer\n"
-        "        // existed, there was no way to tell the two apart. Corrected here, on the pass\n"
-        "        // that first learns there is no photo, before it can be laid out that way.\n"
-        "        if self.headerNode.isAvatarExpanded, !self.isSettings, !self.isMediaOnly,\n"
-        "           UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
-        "           data.peer?.smallProfileImage == nil {\n"
-        "            self.headerNode.ignoreCollapse = true\n"
-        "            self.headerNode.updateIsAvatarExpanded(false, transition: .immediate)\n"
-        "            self.headerNode.ignoreCollapse = false\n"
-        "            self.updateNavigationExpansionPresentation(isExpanded: false, animated: false)\n"
-        "        }\n",
-        "collapse without photo",
+        "        let titleOffset: CGFloat\n"
+        "        let titleCollapseFraction: CGFloat\n",
+        "        let titleOffset: CGFloat\n"
+        "        let titleCollapseFraction: CGFloat\n"
+        "        // Settings is left with the stock header: its avatar is small to begin with and\n"
+        "        // there is no photo there worth keeping at full size.\n"
+        "        let aorusScrollingHeader = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "            && !isSettings\n",
+        "scrolling header flag",
     )
+    # updateFrameAdditiveToCenter, not updateFrameAdditive: that is the collapsed branch, and the
+    # expanded one has a clipping node of its own to take the labels off screen.
     text = _replace_once(
         text,
-        "    fileprivate func resetHeaderExpansion() {\n"
-        "        if self.headerNode.isAvatarExpanded {\n",
-        "    fileprivate func resetHeaderExpansion() {\n"
-        "        // AorusGram: returning from the avatar gallery calls this, and under Interface 2.0\n"
-        "        // collapsing there would leave the photo small until the user dragged it back --\n"
-        "        // the one thing the mode exists to stop. The settings screen still resets, which is\n"
-        "        // where the other caller lives.\n"
-        "        if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
-        "           !self.isSettings,\n"
-        "           self.chatLocation.threadId == nil,\n"
-        "           self.data?.peer?.smallProfileImage != nil {\n"
-        "            return\n"
-        "        }\n"
-        "        if self.headerNode.isAvatarExpanded {\n",
-        "keep avatar expanded after gallery",
-    )
-    text = _replace_once(
-        text,
-        "                    strongSelf.state = strongSelf.state.withIsEditing(false).withUpdatingBio(nil).withUpdatingBirthDate(nil).withIsEditingBirthDate(false).withUpdatingNote(nil)\n"
-        "                    if let (layout, navigationHeight) = strongSelf.validLayout {\n",
-        "                    strongSelf.state = strongSelf.state.withIsEditing(false).withUpdatingBio(nil).withUpdatingBirthDate(nil).withIsEditingBirthDate(false).withUpdatingNote(nil)\n"
-        "                    // AorusGram: activateEdit collapsed the photo to make room for the\n"
-        "                    // editing header, and leaving edit mode has to put it back. Without this,\n"
-        "                    // Edit then Cancel is a way to reach a small-photo profile that Interface\n"
-        "                    // 2.0 never opens on and offers no way back from.\n"
-        "                    if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
-        "                       !strongSelf.headerNode.isAvatarExpanded,\n"
-        "                       !strongSelf.isSettings, !strongSelf.isMediaOnly,\n"
-        "                       strongSelf.chatLocation.threadId == nil,\n"
-        "                       strongSelf.data?.peer?.smallProfileImage != nil {\n"
-        "                        strongSelf.headerNode.updateIsAvatarExpanded(true, transition: .immediate)\n"
-        "                        strongSelf.updateNavigationExpansionPresentation(isExpanded: true, animated: false)\n"
+        "                    var usernameCenter = rawUsernameFrame.center\n"
+        "                    usernameCenter.x = rawTitleFrame.center.x + (usernameCenter.x - rawTitleFrame.center.x) * subtitleScale\n"
+        "                    transition.updateFrameAdditiveToCenter(node: self.usernameNodeContainer, frame: CGRect(origin: usernameCenter, size: CGSize()).offsetBy(dx: 0.0, dy: titleOffset))\n"
+        "                }\n",
+        "                    var usernameCenter = rawUsernameFrame.center\n"
+        "                    usernameCenter.x = rawTitleFrame.center.x + (usernameCenter.x - rawTitleFrame.center.x) * subtitleScale\n"
+        "                    transition.updateFrameAdditiveToCenter(node: self.usernameNodeContainer, frame: CGRect(origin: usernameCenter, size: CGSize()).offsetBy(dx: 0.0, dy: titleOffset))\n"
+        "                    if aorusScrollingHeader {\n"
+        "                        // AorusGram: each label fades out as it reaches the status bar. The\n"
+        "                        // photo has the clipping node above to take it behind the dynamic\n"
+        "                        // island; these three are siblings of it and would otherwise carry on\n"
+        "                        // over the clock. Recomputed every pass, so scrolling back brings\n"
+        "                        // them all the way back.\n"
+        "                        let aorusLabelAlpha: (CGRect) -> CGFloat = { frame in\n"
+        "                            return max(0.0, min(1.0, (frame.minY + titleOffset - statusBarHeight) / 20.0))\n"
+        "                        }\n"
+        "                        transition.updateAlpha(node: self.titleNodeContainer, alpha: aorusLabelAlpha(rawTitleFrame))\n"
+        "                        transition.updateAlpha(node: self.subtitleNodeContainer, alpha: aorusLabelAlpha(rawSubtitleFrame))\n"
+        "                        transition.updateAlpha(node: self.usernameNodeContainer, alpha: aorusLabelAlpha(rawUsernameFrame))\n"
         "                    }\n"
-        "                    if let (layout, navigationHeight) = strongSelf.validLayout {\n",
-        "re-expand avatar after editing",
+        "                }\n",
+        "scrolling header label fade",
     )
     path.write_text(text, encoding="utf-8")
-    print("InterfaceV2: patched avatar expansion")
+    print("InterfaceV2: header scrolls at full size")
 
 
 def _patch_undo_glass(tg: Path) -> None:

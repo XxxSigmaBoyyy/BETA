@@ -2653,7 +2653,7 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift",
-            ("aorusCentredHeader", "publishAvatarTint", "aorusHidesButtonsBlur"),
+            ("aorusCentredHeader", "publishAvatarTint", "aorusHidesButtonsBlur", "aorusScrollingHeader"),
         ),
         (
             "submodules/TelegramUI/Components/MultiScaleTextNode/Sources/MultiScaleTextNode.swift",
@@ -2665,7 +2665,7 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
-            ("aorusKeepsAvatarExpanded", "aorusPublishAvatarTint"),
+            ("aorusPublishAvatarTint",),
         ),
         (
             "submodules/AvatarNode/Sources/AvatarNode.swift",
