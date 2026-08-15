@@ -2642,6 +2642,10 @@ def main() -> None:
             "submodules/TelegramPresentationData/Sources/PresentationTheme.swift",
             ("aorusGlassListTheme", "aorusGlassProfileTheme", "AorusGlassThemeCache"),
         ),
+        (
+            "submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesItemList.swift",
+            ("AorusGlassPane.isGlassList", "aorusGlassPaneImage"),
+        ),
         ("submodules/ItemListUI/Sources/ItemListItem.swift", ("theme.aorusGlassListTheme",)),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenItemSectionContainerNode.swift",
@@ -2652,14 +2656,33 @@ def main() -> None:
             ("aorusCentredHeader", "publishAvatarTint", "aorusHidesButtonsBlur"),
         ),
         (
+            "submodules/TelegramUI/Components/MultiScaleTextNode/Sources/MultiScaleTextNode.swift",
+            ("aorusTextOriginX",),
+        ),
+        (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderButtonNode.swift",
-            ("aorusGlassBackground", "import GlassBackgroundComponent"),
+            ("aorusGlassBackground", "import GlassBackgroundComponent", "foregroundColor = .white"),
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
-            ("aorusKeepsAvatarExpanded",),
+            ("aorusKeepsAvatarExpanded", "aorusPublishAvatarTint"),
         ),
-        ("submodules/AvatarNode/Sources/AvatarNode.swift", ("aorusPlaceholderColors", "aorusLetterColor")),
+        (
+            "submodules/AvatarNode/Sources/AvatarNode.swift",
+            ("aorusPlaceholderColors", "aorusLetterColor", "aorusHasGlassBackdrop"),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift",
+            ("aorusUpdateGlassPlaceholder", "aorusHasGlassBackdrop", "import GlassBackgroundComponent"),
+        ),
+        (
+            "submodules/Display/Source/ActionSheetTheme.swift",
+            ("aorusGlassSheet",),
+        ),
+        (
+            "submodules/Display/Source/ActionSheetItemGroupNode.swift",
+            ("UIGlassEffect(style: .regular)",),
+        ),
         (
             "submodules/UndoUI/Sources/UndoOverlayControllerNode.swift",
             ("aorusGlassToast", "import GlassBackgroundComponent"),
@@ -2675,6 +2698,12 @@ def main() -> None:
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNavigationButtonContainerNode.swift",
             ("aorusPlainNavGlass",),
+        ),
+        # The header calls this with photo:/photoCount:, so a stale copy of the table here would
+        # only surface as a missing-argument error deep inside a CI compile.
+        (
+            "submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusGlassProfileTint.swift",
+            ("photoCount: Int", "sampledColors"),
         ),
     )
     for relative_path, markers in interface_v2_expectations:

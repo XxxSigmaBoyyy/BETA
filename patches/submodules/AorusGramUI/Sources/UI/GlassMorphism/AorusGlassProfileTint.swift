@@ -68,27 +68,58 @@ public enum AorusGlassProfileTint {
         return AorusGlassProfileTint.pageColors[peerId]
     }
 
-    /// Sample the avatar as drawn and keep the result as this peer's page colour.
+    /// Sample the photo as drawn and keep the result as this peer's page colour.
     ///
     /// Sampling the rendered view is the whole point: the page has to match the photo, and a
     /// photo has no palette entry to look up. A peer with no photo lands here too and yields
     /// the frosted grey of its lettered placeholder, which is the right page for it.
     ///
-    /// `onUpdate` is called only when a retry finds the colour, never on the synchronous path.
-    /// The caller is the header's layout pass, and the screen repaints its background at the end
-    /// of that same pass, so a callback there would be a redundant second layout.
-    public static func publishAvatarTint(for peerId: Int64, view: UIView?, onUpdate: @escaping () -> Void) {
+    /// `photo` says *which* of the peer's photos is on screen, and `photoCount` how many there
+    /// are. A peer with three avatars therefore gets three page colours, and paging to the second
+    /// one repaints the page in the second one's colour. Each is memoised under its own key, so
+    /// paging back is instant and costs no second snapshot; the count is part of the key because
+    /// an index means something different once a photo has been added or removed, and including
+    /// it retires the whole peer's memo the moment that happens.
+    ///
+    /// `onUpdate` asks for one more layout, and is called only when the page colour actually
+    /// changes. The header publishes this from every layout pass, so calling it unconditionally
+    /// would be a layout loop; never calling it would leave the page on the previous photo's
+    /// colour until something unrelated happened to lay the screen out again.
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
-        if let existing = AorusGlassProfileTint.pageColors[peerId] {
-            AorusGlassProfileTint.apply(existing)
+        let key = PhotoKey(peerId: peerId, photo: photo, photoCount: photoCount)
+        if let existing = AorusGlassProfileTint.sampledColors[key] {
+            AorusGlassProfileTint.adopt(existing, for: peerId, onUpdate: onUpdate)
             return
         }
         guard let view else {
             return
         }
-        AorusGlassProfileTint.sample(peerId: peerId, view: view, attempt: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sample(key: key, view: view, attempt: 0, onUpdate: onUpdate)
+    }
+
+    /// Make `color` the page colour for this peer, and ask for a repaint if that is a change.
+    ///
+    /// The repaint is asked for on the next runloop pass rather than here: the caller is usually
+    /// in the middle of the header's layout, and laying the screen out again from inside that pass
+    /// is re-entrancy the node hierarchy has no reason to tolerate.
+    private static func adopt(_ color: UIColor, for peerId: Int64, onUpdate: @escaping () -> Void) {
+        guard AorusGlassProfileTint.pageColors[peerId] != color else {
+            AorusGlassProfileTint.apply(color)
+            return
+        }
+        // Capped so a session spent opening profiles cannot grow this without bound; a dropped
+        // entry only costs one resample.
+        if AorusGlassProfileTint.pageColors.count > 32 {
+            AorusGlassProfileTint.pageColors.removeAll()
+        }
+        AorusGlassProfileTint.pageColors[peerId] = color
+        AorusGlassProfileTint.apply(color)
+        DispatchQueue.main.async {
+            onUpdate()
+        }
     }
 
     /// The page takes the avatar's colour; the tab labels take white.
@@ -102,42 +133,49 @@ public enum AorusGlassProfileTint {
         AorusGlassProfileTint.setSelectedTabColor(.white)
     }
 
-    private static var pageColors: [Int64: UIColor] = [:]
-    private static var pendingPeerIds = Set<Int64>()
+    /// One of a peer's photos. The count rides along so that adding or removing a photo, which
+    /// renumbers the rest, retires the memo instead of matching the wrong picture.
+    private struct PhotoKey: Hashable {
+        let peerId: Int64
+        let photo: Int
+        let photoCount: Int
+    }
 
-    private static func sample(peerId: Int64, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
+    /// What the page is painted with right now, per peer on screen.
+    private static var pageColors: [Int64: UIColor] = [:]
+    /// What each individual photo sampled to, so paging back and forth never resamples.
+    private static var sampledColors: [PhotoKey: UIColor] = [:]
+    private static var pendingKeys = Set<PhotoKey>()
+
+    private static func sample(key: PhotoKey, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
         if let color = AorusGlassProfileTint.averageColor(of: view) {
-            AorusGlassProfileTint.pendingPeerIds.remove(peerId)
-            // Capped so a session spent scrolling through a large group's members cannot grow
-            // this without bound; a dropped entry only costs one resample.
-            if AorusGlassProfileTint.pageColors.count > 32 {
-                AorusGlassProfileTint.pageColors.removeAll()
+            AorusGlassProfileTint.pendingKeys.remove(key)
+            // Capped for the same reason as pageColors, with room for a few photos per peer.
+            if AorusGlassProfileTint.sampledColors.count > 96 {
+                AorusGlassProfileTint.sampledColors.removeAll()
             }
-            AorusGlassProfileTint.pageColors[peerId] = color
-            AorusGlassProfileTint.apply(color)
-            if attempt > 0 {
-                onUpdate()
-            }
+            AorusGlassProfileTint.sampledColors[key] = color
+            AorusGlassProfileTint.adopt(color, for: key.peerId, onUpdate: onUpdate)
             return
         }
         // Nothing to sample yet: the photo is still decoding. Retried on a delay rather than
         // from the next layout pass, because a profile that is simply sitting there gets no
         // further passes, and drawing the avatar on every pass of one that is being scrolled
         // would cost a snapshot per frame.
-        if attempt == 0, AorusGlassProfileTint.pendingPeerIds.contains(peerId) {
+        if attempt == 0, AorusGlassProfileTint.pendingKeys.contains(key) {
             return
         }
         guard attempt < 6 else {
-            AorusGlassProfileTint.pendingPeerIds.remove(peerId)
+            AorusGlassProfileTint.pendingKeys.remove(key)
             return
         }
-        AorusGlassProfileTint.pendingPeerIds.insert(peerId)
+        AorusGlassProfileTint.pendingKeys.insert(key)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak view] in
-            guard let view, AorusGlassProfileTint.pageColors[peerId] == nil else {
-                AorusGlassProfileTint.pendingPeerIds.remove(peerId)
+            guard let view, AorusGlassProfileTint.sampledColors[key] == nil else {
+                AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(peerId: peerId, view: view, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sample(key: key, view: view, attempt: attempt + 1, onUpdate: onUpdate)
         }
     }
 
