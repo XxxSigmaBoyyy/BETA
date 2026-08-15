@@ -2699,6 +2699,10 @@ def main() -> None:
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNavigationButtonContainerNode.swift",
             ("aorusPlainNavGlass",),
         ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift",
+            ("aorusPlainPanes", "kind: aorusPlainPanes ? .clear : .panel"),
+        ),
         # The header calls this with photo:/photoCount:, so a stale copy of the table here would
         # only surface as a missing-argument error deep inside a CI compile.
         (

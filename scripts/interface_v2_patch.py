@@ -1556,6 +1556,53 @@ def _patch_gift_glass(tg: Path) -> None:
     print("InterfaceV2: made the gift cards glass")
 
 
+def _patch_pane_container_glass(tg: Path) -> None:
+    """Carry the page under the tabs, so the profile has no edge across it.
+
+    The pane container paints a block of `list.blocksBackgroundColor` over everything from the
+    tabs strip down. On a page tinted from the avatar that block is a hard horizontal edge
+    partway down the profile -- the seam. Going transparent instead continues whatever the screen
+    is painted with, which is the tint on a profile and the theme colour everywhere else, without
+    this node having to know either.
+
+    The tabs themselves are already real glass upstream, but asked for as `.panel`, which is the
+    variant that brings a tint and a rim. Interface 2.0 asks for the plain material here for the
+    same reason it does behind the navigation buttons.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift"
+    text = _read(path, "PeerInfoPaneContainerNode.swift")
+    if "aorusPlainPanes" in text:
+        print("InterfaceV2: pane container already continues the page")
+        return
+    text = _replace_once(
+        text,
+        "        self.backgroundColor = backgroundColor\n",
+        "        // AorusGram: under Interface 2.0 the panes continue the page rather than covering\n"
+        "        // it. Cleared rather than tinted here: the screen behind is already painted with\n"
+        "        // the avatar's colour, so transparency inherits it and stays right through a\n"
+        "        // push, when the colour belongs to whichever profile is being laid out.\n"
+        "        let aorusPlainPanes = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "        if aorusPlainPanes {\n"
+        "            // Opaque is what an ASDisplayNode is by default, and this one has always had\n"
+        "            // a colour to justify it. Painting nothing while keeping the flag is how a\n"
+        "            // node ends up showing black instead of what is behind it.\n"
+        "            self.isOpaque = false\n"
+        "            self.backgroundColor = nil\n"
+        "        } else {\n"
+        "            self.backgroundColor = backgroundColor\n"
+        "        }\n",
+        "pane container background",
+    )
+    text = _replace_once(
+        text,
+        "        self.tabsBackgroundView.update(size: tabContainerFrame.size, cornerRadius: tabContainerFrame.height * 0.5, isDark: presentationData.theme.overallDarkAppearance, tintColor: .init(kind: .panel), transition: ComponentTransition(transition))\n",
+        "        self.tabsBackgroundView.update(size: tabContainerFrame.size, cornerRadius: tabContainerFrame.height * 0.5, isDark: presentationData.theme.overallDarkAppearance, tintColor: .init(kind: aorusPlainPanes ? .clear : .panel), transition: ComponentTransition(transition))\n",
+        "tabs glass tint",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: pane container continues the page")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -1593,4 +1640,5 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_header_button_set(tg)
     _patch_item_list_glass(tg)
     _patch_nav_button_glass(tg)
+    _patch_pane_container_glass(tg)
     _patch_build(tg)
