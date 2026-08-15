@@ -2640,11 +2640,14 @@ def main() -> None:
     interface_v2_expectations = (
         (
             "submodules/TelegramPresentationData/Sources/PresentationTheme.swift",
-            ("aorusGlassListTheme", "aorusGlassProfileTheme", "AorusGlassThemeCache"),
+            ("aorusGlassListTheme", "aorusGlassProfileTheme", "AorusGlassThemeCache", "blockMarker"),
         ),
+        # cornersImage returns nil under Interface 2.0. Those wedges are an opaque overlay painted
+        # in the page colour, not a mask, so over glass they are exactly the black corners the
+        # blocks used to show.
         (
             "submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesItemList.swift",
-            ("AorusGlassPane.isGlassList", "aorusGlassPaneImage"),
+            ("aorusNoCornerWedges",),
         ),
         ("submodules/ItemListUI/Sources/ItemListItem.swift", ("theme.aorusGlassListTheme",)),
         (
@@ -2653,7 +2656,13 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift",
-            ("aorusCentredHeader", "publishAvatarTint", "aorusHidesButtonsBlur", "aorusScrollingHeader"),
+            (
+                "aorusCentredHeader",
+                "publishAvatarTint",
+                "aorusHidesButtonsBlur",
+                "aorusScrollingHeader",
+                "// AorusGram: Interface 2.0 opens the photo at full width",
+            ),
         ),
         (
             "submodules/TelegramUI/Components/MultiScaleTextNode/Sources/MultiScaleTextNode.swift",
@@ -2665,7 +2674,7 @@ def main() -> None:
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
-            ("aorusPublishAvatarTint",),
+            ("aorusPublishAvatarTint", "aorusKeepsAvatarExpanded"),
         ),
         (
             "submodules/AvatarNode/Sources/AvatarNode.swift",
@@ -2693,7 +2702,12 @@ def main() -> None:
         ),
         (
             "submodules/ItemListUI/Sources/ItemListControllerNode.swift",
-            ("aorusUpdateListGlass", "aorusGlassBackgroundView", "import GlassBackgroundComponent"),
+            (
+                "aorusUpdateListGlass",
+                "aorusGlassPanes",
+                "AorusGlassPane.blockMarker",
+                "import GlassBackgroundComponent",
+            ),
         ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNavigationButtonContainerNode.swift",
@@ -2703,11 +2717,18 @@ def main() -> None:
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift",
             ("aorusPlainPanes", "kind: aorusPlainPanes ? .clear : .panel"),
         ),
+        # The band under the profile tabs. This pane paints its own opaque background and fades
+        # the list into it, both in the theme's blocks colour, which is the black the gifts tab
+        # used to show under a tinted page.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/PeerInfoGiftsPaneNode.swift",
+            ("aorusContinuesPage",),
+        ),
         # The header calls this with photo:/photoCount:, so a stale copy of the table here would
         # only surface as a missing-argument error deep inside a CI compile.
         (
             "submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusGlassProfileTint.swift",
-            ("photoCount: Int", "sampledColors"),
+            ("photoCount: Int", "sampledColors", "bottomEdgeColor"),
         ),
     )
     for relative_path, markers in interface_v2_expectations:

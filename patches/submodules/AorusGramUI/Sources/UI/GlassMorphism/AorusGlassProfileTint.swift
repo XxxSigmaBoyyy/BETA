@@ -148,7 +148,7 @@ public enum AorusGlassProfileTint {
     private static var pendingKeys = Set<PhotoKey>()
 
     private static func sample(key: PhotoKey, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
-        if let color = AorusGlassProfileTint.averageColor(of: view) {
+        if let color = AorusGlassProfileTint.bottomEdgeColor(of: view) {
             AorusGlassProfileTint.pendingKeys.remove(key)
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
@@ -179,15 +179,33 @@ public enum AorusGlassProfileTint {
         }
     }
 
+    /// The colour the photo ends on, which is the colour the page continues in.
+    ///
+    /// Only the bottom of the photo is sampled, not the whole of it. The profile is one picture
+    /// read downwards: the expanded avatar, then the page under it, then the sections and the
+    /// gifts. For the page to read as the photo continuing rather than as a panel butted up
+    /// against it, the two have to meet in the same colour, and the only colour that satisfies
+    /// that is the one at the join. An average over the whole photo does not: a portrait against
+    /// a blue sky averages to something neither the face nor the sky ever was, and the seam shows.
+    ///
+    /// Nothing is pinned afterwards. An earlier version kept the hue and forced brightness to
+    /// 0.17, which is why every profile came out the same near-black grey whatever the photo was.
+    /// The brightness is only kept inside a band -- bright enough not to be a black hole under a
+    /// dark photo, dark enough that white labels and hairlines stay legible under a bright one --
+    /// and both ends of that band are far enough out to leave ordinary photos untouched.
+    ///
     /// Returns nil when the view has not drawn anything yet, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark.
-    private static func averageColor(of view: UIView) -> UIColor? {
+    private static func bottomEdgeColor(of view: UIView) -> UIColor? {
         let bounds = view.bounds
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
         }
+        // A sixth of the photo. Wide enough that one dark eyelash or a watermark cannot decide the
+        // colour of a whole screen, shallow enough to still be the edge rather than the picture.
+        let stripHeight = max(4.0, bounds.height / 6.0)
         let width = 8
-        let height = 8
+        let height = 4
         let count = width * height * 4
         // Allocated rather than taken from an Array's buffer: the context outlives the call that
         // produces the pointer, and a pointer into an Array is only valid inside the closure it
@@ -210,7 +228,14 @@ public enum AorusGlassProfileTint {
         ) else {
             return nil
         }
-        context.scaleBy(x: CGFloat(width) / bounds.width, y: CGFloat(height) / bounds.height)
+        // Three transforms, applied in the order written and composing right to left, so read them
+        // bottom up: put the strip's top-left at the origin, express the context in the view's own
+        // points, then flip, because a bitmap context counts y upwards and a layer counts it down.
+        // Getting the flip wrong here would sample the top of the photo and look almost right,
+        // which is the kind of almost that survives review.
+        context.translateBy(x: 0.0, y: CGFloat(height))
+        context.scaleBy(x: CGFloat(width) / bounds.width, y: -CGFloat(height) / stripHeight)
+        context.translateBy(x: 0.0, y: -(bounds.height - stripHeight))
         // render(in:) rather than drawHierarchy(in:afterScreenUpdates:): the avatar is a layer
         // with an image in it, this stays on the current thread without a screen update, and it
         // is the cheaper of the two by a wide margin.
@@ -244,13 +269,10 @@ public enum AorusGlassProfileTint {
         guard source.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
             return nil
         }
-        // The hue is the avatar's; the rest is pinned. White labels and glass panes both need a
-        // dark, unsaturated page to sit on, and an average colour taken from a photo is neither
-        // reliably dark nor reliably subtle.
         return UIColor(
             hue: hue,
-            saturation: min(0.5, saturation * 1.1),
-            brightness: 0.17,
+            saturation: min(0.92, saturation),
+            brightness: max(0.09, min(0.66, brightness)),
             alpha: 1.0
         )
     }

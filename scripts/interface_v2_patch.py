@@ -59,42 +59,34 @@ _GLASS_THEME_SWIFT = '''
 
 private let aorusInterfaceV2Key = "__V2KEY__"
 
-/// The pane a glass row is made of, and the test for whether a theme is one of the two Interface
-/// 2.0 derives.
+/// How a block finds out it is a block.
 ///
-/// It lives here, next to the themes, because the other side of the pair is
-/// `PresentationResourcesItemList.cornersImage` in this same module: the theme clears the row fill
-/// and that function paints it back, rounded. Both have to agree on the colour, and neither can
-/// import the other's file.
+/// Under Interface 2.0 a row paints no fill of its own: the material comes from one real
+/// `GlassBackgroundView` laid behind the whole run of rows that share a section, because a card that
+/// paints anything over that material flattens it back into the opaque panel it used to be.
+///
+/// Which leaves the problem of knowing where the runs are, and there is no answer to that in any one
+/// place -- a block is however many consecutive rows happen to share a section id, and each of those
+/// rows is drawn by one of dozens of item classes spread across the app. So the fill becomes a
+/// marker instead of a colour. Every blocks-style row in Telegram fills its background node with
+/// `itemBlocksBackgroundColor`, so handing them this colour makes the nodes wearing it exactly the
+/// set of card rectangles, already laid out, already overlapping their neighbours by the hairline
+/// that joins them. `ItemListControllerNode` reads them back and groups them.
+///
+/// It is a colour rather than a flag because a colour is what those hundreds of assignments already
+/// pass around, and it is 1/255 of an alpha rather than `.clear` because `.clear` is a value plenty
+/// of unrelated code also produces -- this one nothing else in the app can be mistaken for, and at
+/// that alpha it is invisible on any background.
 public enum AorusGlassPane {
     public static var isEnabled: Bool {
         return UserDefaults.standard.bool(forKey: aorusInterfaceV2Key)
     }
 
-    public static func paneColor(dark: Bool) -> UIColor {
-        return dark ? UIColor(white: 1.0, alpha: 0.09) : UIColor(white: 1.0, alpha: 0.55)
-    }
+    public static let blockMarker = UIColor(red: 1.0, green: 0.0, blue: 1.0, alpha: 1.0 / 255.0)
 
-    /// A cleared row fill is the marker. Nothing else in the app ships a fully transparent
-    /// `itemBlocksBackgroundColor`, and using the colour itself means no flag has to be threaded
-    /// through the dozen modules that draw rows.
-    public static func isGlassList(_ list: PresentationThemeList) -> Bool {
-        guard AorusGlassPane.isEnabled else {
-            return false
-        }
-        return list.itemBlocksBackgroundColor.cgColor.alpha == 0.0
-    }
-
-    /// Recovered from the ink rather than stored: the derived theme flips the two together, so
-    /// white letters mean the dark pane and black letters the pale one.
-    public static func paneColor(for list: PresentationThemeList) -> UIColor {
-        var white: CGFloat = 0.0
-        var alpha: CGFloat = 0.0
-        if list.itemPrimaryTextColor.getWhite(&white, alpha: &alpha) {
-            return AorusGlassPane.paneColor(dark: white > 0.5)
-        }
-        return AorusGlassPane.paneColor(dark: true)
-    }
+    /// The radius the panes are drawn with, and the one the rows have to agree with when they clip
+    /// their own content.
+    public static let blockCornerRadius: CGFloat = 26.0
 }
 
 private final class AorusGlassThemeCache {
@@ -102,8 +94,7 @@ private final class AorusGlassThemeCache {
 
     private let lock = NSLock()
     private var sourceIdentifier: ObjectIdentifier?
-    private var darkVariant: PresentationTheme?
-    private var lightVariant: PresentationTheme?
+    private var variants: [Int: PresentationTheme] = [:]
     private var derivedIdentifiers = Set<ObjectIdentifier>()
 
     func derive(from theme: PresentationTheme, dark: Bool) -> PresentationTheme {
@@ -117,13 +108,11 @@ private final class AorusGlassThemeCache {
         let identifier = ObjectIdentifier(theme)
         if self.sourceIdentifier != identifier {
             self.sourceIdentifier = identifier
-            self.darkVariant = nil
-            self.lightVariant = nil
+            self.variants.removeAll()
         }
-        if dark, let cached = self.darkVariant {
-            return cached
-        }
-        if !dark, let cached = self.lightVariant {
+        // Two: dark ink or light ink.
+        let slot = dark ? 1 : 0
+        if let cached = self.variants[slot] {
             return cached
         }
 
@@ -143,13 +132,12 @@ private final class AorusGlassThemeCache {
             itemDisabledTextColor: aorusInk(0.35),
             itemAccentColor: ink,
             itemPlaceholderTextColor: aorusInk(0.4),
-            // Clear, and the pane is painted by the corner-mask node instead. A row fills this
-            // colour into a square node and then covers the two corners with an image of the page
-            // colour, which is how Telegram fakes a rounded block; over glass that cover is an
-            // opaque wedge in each corner, which is exactly the artefact this avoids. Clearing the
-            // fill is also what marks the theme as derived -- see AorusGlassPane.isGlassList.
-            itemBlocksBackgroundColor: UIColor.clear,
-            itemModalBlocksBackgroundColor: UIColor.clear,
+            // The row paints no fill. What it paints instead is the marker the pane finder looks
+            // for, so that a whole run of rows can be backed by one sheet of real glass. Every row
+            // in the section carries it, not just the two at the ends, which is what stops a block
+            // from coming out striped the way the corner-image version did.
+            itemBlocksBackgroundColor: AorusGlassPane.blockMarker,
+            itemModalBlocksBackgroundColor: AorusGlassPane.blockMarker,
             itemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
             itemBlocksSeparatorColor: hairline,
             itemPlainSeparatorColor: hairline,
@@ -181,11 +169,7 @@ private final class AorusGlassThemeCache {
         if self.derivedIdentifiers.count > 8 {
             self.derivedIdentifiers.removeAll()
         }
-        if dark {
-            self.darkVariant = derived
-        } else {
-            self.lightVariant = derived
-        }
+        self.variants[slot] = derived
         self.derivedIdentifiers.insert(ObjectIdentifier(derived))
         return derived
     }
@@ -330,26 +314,26 @@ def _patch_profile_section_glass(tg: Path) -> None:
     print("InterfaceV2: made profile sections glass")
 
 
-def _patch_item_corner_panes(tg: Path) -> None:
-    """Stop the rounded-block trick from painting black wedges over the glass.
+def _patch_corner_wedges(tg: Path) -> None:
+    """Stop rounding a block by painting the page colour over its corners.
 
-    Every blocks-style row in the app -- the settings lists, the peer-info screen, the fork's own
-    screens -- rounds its corners the same way: the row is a square node filled with
-    `itemBlocksBackgroundColor`, and an image of `blocksBackgroundColor`, the *page* colour, is laid
-    over the two corners that need cutting. That reads as a rounded card only while the card is
-    opaque and the page is flat. Over the system material it is a pair of opaque wedges, which is
-    the black corner in every one of the reported screens.
+    This is the single function every blocks-style row in the client rounds itself with, and the
+    way it works is a lie that only holds while the card is opaque: the row is a square node
+    filled with `itemBlocksBackgroundColor`, and an image of `blocksBackgroundColor` -- the *page*
+    colour -- is laid over the two corners that need cutting. Over a pane of glass those two
+    corners are opaque wedges of a colour that is no longer behind anything, which is the black
+    corner in every screen that was reported.
 
-    So the two halves swap jobs under Interface 2.0. The theme clears the row fill, and this makes
-    the same image *be* the pane: the rounded rectangle is filled with the glass pane colour and the
-    corners are left transparent, at the radius the row asked for. Nothing else about any row
-    changes -- same node, same frame, same insets, one different image -- and every screen in the
-    client that draws blocks gets it at once, because they all draw them through this function.
+    Under Interface 2.0 the shape comes from the pane instead: a real `GlassBackgroundView` with a
+    corner radius, one per block, put there by `_patch_item_list_glass` and by the peer-info
+    section container. So the mask has nothing left to do and returns nothing. Nil rather than a
+    transparent image, because every caller assigns this straight to an `ASImageNode`, and a nil
+    image is the cheaper way to say "draw nothing" to one of those.
     """
     path = tg / "submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesItemList.swift"
     text = _read(path, "PresentationResourcesItemList.swift")
-    if "aorusGlassPaneImage" in text:
-        print("InterfaceV2: block corners already glass")
+    if "aorusNoCornerWedges" in text:
+        print("InterfaceV2: corner wedges already dropped")
         return
     text = _replace_once(
         text,
@@ -358,67 +342,20 @@ def _patch_item_corner_panes(tg: Path) -> None:
         "            return nil\n"
         "        }\n",
         "    public static func cornersImage(_ theme: PresentationTheme, top: Bool, bottom: Bool, glass: Bool = false) -> UIImage? {\n"
-        "        // AorusGram: the pane itself under Interface 2.0, corners cut out of it rather than\n"
-        "        // painted onto the row. Returned before the early exit below on purpose -- a row in\n"
-        "        // the middle of a section asks for no corners at all, and it still needs the pane.\n"
-        "        if AorusGlassPane.isGlassList(theme.list) {\n"
-        "            return PresentationResourcesItemList.aorusGlassPaneImage(theme, top: top, bottom: bottom, glass: glass)\n"
+        "        // AorusGram: the glass pane behind the block is its shape now, so there is no\n"
+        "        // corner left to paint over. Checked before the early exit below rather than after,\n"
+        "        // because both answers here are the same one.\n"
+        "        let aorusNoCornerWedges = AorusGlassPane.isEnabled\n"
+        "        if aorusNoCornerWedges {\n"
+        "            return nil\n"
         "        }\n"
         "        if !top && !bottom {\n"
         "            return nil\n"
         "        }\n",
-        "corner pane entry",
-    )
-    text = _replace_once(
-        text,
-        "    public static func uploadToneIcon(_ theme: PresentationTheme) -> UIImage? {\n",
-        "    /// The rounded pane a glass row is filled with, cached per corner pair like the image it\n"
-        "    /// replaces.\n"
-        "    private static func aorusGlassPaneImage(_ theme: PresentationTheme, top: Bool, bottom: Bool, glass: Bool) -> UIImage? {\n"
-        "        // Own cache slots, chosen well above the range PresentationResourceKey enumerates so\n"
-        "        // that a key Telegram adds later cannot land on one of these.\n"
-        "        let key: Int32\n"
-        "        if top && bottom {\n"
-        "            key = 0x41475001\n"
-        "        } else if top {\n"
-        "            key = 0x41475002\n"
-        "        } else if bottom {\n"
-        "            key = 0x41475003\n"
-        "        } else {\n"
-        "            key = 0x41475004\n"
-        "        }\n"
-        "        return theme.image(key, { theme in\n"
-        "            return generateImage(CGSize(width: 56.0, height: 56.0), rotatedContext: { size, context in\n"
-        "                let bounds = CGRect(origin: CGPoint(), size: size)\n"
-        "                context.clear(bounds)\n"
-        "                context.setFillColor(AorusGlassPane.paneColor(for: theme.list).cgColor)\n"
-        "                var corners: UIRectCorner = []\n"
-        "                if top {\n"
-        "                    corners.insert(.topLeft)\n"
-        "                    corners.insert(.topRight)\n"
-        "                }\n"
-        "                if bottom {\n"
-        "                    corners.insert(.bottomLeft)\n"
-        "                    corners.insert(.bottomRight)\n"
-        "                }\n"
-        "                if corners.isEmpty {\n"
-        "                    context.fill(bounds)\n"
-        "                } else {\n"
-        "                    // The same radii the stock image cuts, so a row keeps the shape it had.\n"
-        "                    let cornerRadius: CGFloat = glass ? 26.0 : 11.0\n"
-        "                    let path = UIBezierPath(roundedRect: bounds, byRoundingCorners: corners, cornerRadii: CGSize(width: cornerRadius, height: cornerRadius))\n"
-        "                    context.addPath(path.cgPath)\n"
-        "                    context.fillPath()\n"
-        "                }\n"
-        "            })?.stretchableImage(withLeftCapWidth: 28, topCapHeight: 28)\n"
-        "        })\n"
-        "    }\n"
-        "    \n"
-        "    public static func uploadToneIcon(_ theme: PresentationTheme) -> UIImage? {\n",
-        "corner pane generator",
+        "corner wedge exit",
     )
     path.write_text(text, encoding="utf-8")
-    print("InterfaceV2: made the block corners glass")
+    print("InterfaceV2: dropped the corner wedges")
 
 
 def _patch_header_centering(tg: Path) -> None:
@@ -1035,24 +972,25 @@ def _patch_action_sheet_glass(tg: Path) -> None:
 
 
 def _patch_avatar_expansion(tg: Path) -> None:
-    """Let the header scroll away at its own size instead of folding into the navigation bar.
+    """Let a collapsed header scroll away at its own size instead of folding into the navigation bar.
 
-    Two things had to change together. Interface 2.0 used to open every profile in Telegram's
-    *expanded* state -- the photo at full width, edge to edge, with the name written across it.
-    That state is a caption over a picture, and it reads as a banner stuck onto the top of the
-    screen rather than a profile with a photo in it. So the profile now opens in the state
-    Telegram itself opens in: the round photo above a centred name, which is the native
-    arrangement, and dragging down still opens the carousel.
+    This pass is about the header a peer with no photo gets. Interface 2.0 opens a profile with a
+    photo at full width -- see `_patch_keep_avatar_expanded`, which is what keeps it there -- and
+    the letter placeholder cannot be expanded into anything, so those profiles open in Telegram's
+    collapsed arrangement: the round avatar above a centred name.
 
-    What stays from the old behaviour is the part that was right. Stock shrinks that photo to
-    0.55 and locks the name under the status bar the moment the list moves, which is the other
-    half of "stuck on" -- the header stops being content and becomes chrome. Holding the
+    In that arrangement stock shrinks the avatar to 0.55 and locks the name under the status bar
+    the moment the list moves, which turns the header from content into chrome. Holding the
     collapse fraction at zero leaves every size alone and lets the whole header travel with the
     list: `avatarScale` becomes 1, `avatarOffset` and `apparentTitleLockOffset` become 0, and
-    the offset applied to the three labels becomes the scroll offset itself. The photo then
+    the offset applied to the three labels becomes the scroll offset itself. The avatar then
     slides up behind the dynamic island through the clipping node that is already there, and
     the labels, which have no such node, fade over the last stretch before they would be drawn
     across the status bar.
+
+    Only the collapsed branch is touched. The expanded one keeps stock's fraction on purpose: it
+    is what hands the name to the navigation bar as the photo scrolls past it, and the photo
+    itself is not sized from that fraction, so nothing shrinks there either.
 
     Settings keeps the stock header: its own avatar is small and it has no photo to preserve.
     """
@@ -1134,6 +1072,118 @@ def _patch_avatar_expansion(tg: Path) -> None:
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: header scrolls at full size")
+
+
+def _patch_keep_avatar_expanded(tg: Path) -> None:
+    """Keep the photo at full width, and never expand one that is not there.
+
+    Interface 2.0 opens a profile on the photo itself, edge to edge, because that photo is what
+    the page under the whole screen takes its colour from: the page continues the colour the
+    photo ends in, so the two have to meet. scripts/profile_personalization_patch.py opens the
+    header in that state; this pass is what stops the screen from immediately taking it back.
+
+    Four places take it back, and each is a different reason.
+
+    Telegram collapses the expanded photo as soon as the list scrolls a single point, which is
+    what would make the photo snap into the corner on the first touch. It stays expanded and
+    simply scrolls away instead -- nothing is pinned and no offset is faked, the header keeps
+    the size it was drawn at.
+
+    The header is built before the peer is loaded, so the flag alone cannot tell whether there
+    is a photo to expand, and expanding a profile that has none is what breaks its layout. That
+    is corrected on the pass that first learns there is no photo.
+
+    Coming back from the avatar gallery and cancelling an edit both collapse the header
+    deliberately, and both have to hand the photo back afterwards, because Interface 2.0 never
+    opens on a small one and offers no way back to the big one except dragging.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift"
+    text = _read(path, "PeerInfoScreen.swift")
+    if "aorusKeepsAvatarExpanded" in text:
+        print("InterfaceV2: avatar expansion already patched")
+        return
+    text = _replace_once(
+        text,
+        "            } else if offsetY >= 1.0 {\n"
+        "                shouldBeExpanded = false\n"
+        "                self.canOpenAvatarByDragging = false\n"
+        "            }\n",
+        "            } else if offsetY >= 1.0 {\n"
+        "                // AorusGram: Interface 2.0 keeps the photo at full width for the whole\n"
+        "                // scroll instead of shrinking it into the corner on the first point of\n"
+        "                // movement. Nothing is pinned and no offsets are faked -- the header just\n"
+        "                // keeps the size it already had and scrolls with the content.\n"
+        "                let aorusKeepsAvatarExpanded = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "                    && !self.isSettings\n"
+        "                    && self.chatLocation.threadId == nil\n"
+        "                    && self.state.updatingAvatar == nil\n"
+        "                    && !self.state.isEditing\n"
+        "                    && self.data?.peer?.smallProfileImage != nil\n"
+        "                if !aorusKeepsAvatarExpanded {\n"
+        "                    shouldBeExpanded = false\n"
+        "                }\n"
+        "                self.canOpenAvatarByDragging = false\n"
+        "            }\n",
+        "keep avatar expanded",
+    )
+    text = _replace_once(
+        text,
+        "        self.data = data\n",
+        "        self.data = data\n"
+        "        // AorusGram: the header opens expanded under Interface 2.0, which is right for a\n"
+        "        // peer with a photo and wrong for one without -- and at init, before this peer\n"
+        "        // existed, there was no way to tell the two apart. Corrected here, on the pass\n"
+        "        // that first learns there is no photo, before it can be laid out that way.\n"
+        "        if self.headerNode.isAvatarExpanded, !self.isSettings, !self.isMediaOnly,\n"
+        "           UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
+        "           data.peer?.smallProfileImage == nil {\n"
+        "            self.headerNode.ignoreCollapse = true\n"
+        "            self.headerNode.updateIsAvatarExpanded(false, transition: .immediate)\n"
+        "            self.headerNode.ignoreCollapse = false\n"
+        "            self.updateNavigationExpansionPresentation(isExpanded: false, animated: false)\n"
+        "        }\n",
+        "collapse without photo",
+    )
+    text = _replace_once(
+        text,
+        "    fileprivate func resetHeaderExpansion() {\n"
+        "        if self.headerNode.isAvatarExpanded {\n",
+        "    fileprivate func resetHeaderExpansion() {\n"
+        "        // AorusGram: returning from the avatar gallery calls this, and under Interface 2.0\n"
+        "        // collapsing there would leave the photo small until the user dragged it back --\n"
+        "        // the one thing the mode exists to stop. The settings screen still resets, which is\n"
+        "        // where the other caller lives.\n"
+        "        if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
+        "           !self.isSettings,\n"
+        "           self.chatLocation.threadId == nil,\n"
+        "           self.data?.peer?.smallProfileImage != nil {\n"
+        "            return\n"
+        "        }\n"
+        "        if self.headerNode.isAvatarExpanded {\n",
+        "keep avatar expanded after gallery",
+    )
+    text = _replace_once(
+        text,
+        "                    strongSelf.state = strongSelf.state.withIsEditing(false).withUpdatingBio(nil).withUpdatingBirthDate(nil).withIsEditingBirthDate(false).withUpdatingNote(nil)\n"
+        "                    if let (layout, navigationHeight) = strongSelf.validLayout {\n",
+        "                    strongSelf.state = strongSelf.state.withIsEditing(false).withUpdatingBio(nil).withUpdatingBirthDate(nil).withIsEditingBirthDate(false).withUpdatingNote(nil)\n"
+        "                    // AorusGram: activateEdit collapsed the photo to make room for the\n"
+        "                    // editing header, and leaving edit mode has to put it back. Without this,\n"
+        "                    // Edit then Cancel is a way to reach a small-photo profile that Interface\n"
+        "                    // 2.0 never opens on and offers no way back from.\n"
+        "                    if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
+        "                       !strongSelf.headerNode.isAvatarExpanded,\n"
+        "                       !strongSelf.isSettings, !strongSelf.isMediaOnly,\n"
+        "                       strongSelf.chatLocation.threadId == nil,\n"
+        "                       strongSelf.data?.peer?.smallProfileImage != nil {\n"
+        "                        strongSelf.headerNode.updateIsAvatarExpanded(true, transition: .immediate)\n"
+        "                        strongSelf.updateNavigationExpansionPresentation(isExpanded: true, animated: false)\n"
+        "                    }\n"
+        "                    if let (layout, navigationHeight) = strongSelf.validLayout {\n",
+        "re-expand avatar after editing",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: patched avatar expansion")
 
 
 def _patch_undo_glass(tg: Path) -> None:
@@ -1266,19 +1316,135 @@ def _patch_header_button_set(tg: Path) -> None:
     print("InterfaceV2: fixed the header button set at four")
 
 
-def _patch_item_list_glass(tg: Path) -> None:
-    """Put the real material behind the settings lists too, not just the profile.
+_LIST_GLASS_SWIFT = '''    // MARK: - AorusGram Interface 2.0
 
-    A blocks-style ItemList screen paints an opaque page and opaque rows on top of it. Interface
-    2.0 keeps the page -- something has to be behind glass for glass to mean anything -- lays a
-    pane of `GlassBackgroundView` over it, and lets the list scroll above that with a clear
-    background. The rows are already translucent by then, because the glass list theme has
-    replaced their fill, so what is left is cards on glass. This is the one file every settings
-    screen in the app goes through, so all of them change together.
+    /// Collects the card rectangles of the rows this node is showing.
+    ///
+    /// A row hands its background node `AorusGlassPane.blockMarker` under Interface 2.0, which makes
+    /// the marked nodes exactly the set of cards -- laid out by the item that owns them, already
+    /// overlapping their neighbours by the hairline that joins two rows of one section. Reading the
+    /// geometry back beats recomputing it: there is no list of block item classes anywhere in the
+    /// app to enumerate, and the items disagree about insets in ways that only they know.
+    ///
+    /// Two levels deep is enough for every item in the app: the background node is a direct child of
+    /// the item node, and the one exception is an item that wraps its row in a container.
+    private func aorusCollectCardRects(_ node: ASDisplayNode, depth: Int, into rects: inout [CGRect]) {
+        guard let subnodes = node.subnodes else {
+            return
+        }
+        for subnode in subnodes {
+            if let color = subnode.backgroundColor, color.isEqual(AorusGlassPane.blockMarker) {
+                // Through the layer tree rather than the node tree, because the list is drawn in a
+                // rotated coordinate space and a layer conversion is what accounts for that.
+                let rect = subnode.layer.convert(subnode.bounds, to: self.layer)
+                if rect.height > 1.0 {
+                    rects.append(rect)
+                }
+            } else if depth > 0 {
+                self.aorusCollectCardRects(subnode, depth: depth - 1, into: &rects)
+            }
+        }
+    }
+
+    /// One pane of real glass per block.
+    ///
+    /// Panes go under the list and over this node's own background, so the page colour is what the
+    /// material refracts. Rounding both ends of every run is safe because the list keeps a node for
+    /// everything inside its bounds: a run that ends where the retained rows end, rather than where
+    /// its section does, ends off screen, and a corner nobody can see costs nothing.
+    private func aorusUpdateListGlass() {
+        var isEnabled = AorusGlassPane.isEnabled
+        if let listStyle = self.listStyle, case .blocks = listStyle {
+        } else {
+            isEnabled = false
+        }
+        guard isEnabled, let (aorusLayout, _, _) = self.validLayout else {
+            if let container = self.aorusGlassPaneContainer {
+                self.aorusGlassPaneContainer = nil
+                self.aorusGlassPanes.removeAll()
+                container.removeFromSupernode()
+            }
+            return
+        }
+
+        var rects: [CGRect] = []
+        self.listNode.forEachItemNode { itemNode in
+            self.aorusCollectCardRects(itemNode, depth: 2, into: &rects)
+        }
+        rects.sort(by: { $0.minY < $1.minY })
+
+        // Rows of one section overlap by a hairline and sections are 35pt apart, so anything closer
+        // than a couple of points is the same block and nothing else comes near the threshold.
+        let minX = self.aorusListInsets.left
+        let width = max(0.0, aorusLayout.size.width - self.aorusListInsets.left - self.aorusListInsets.right)
+        var runs: [CGRect] = []
+        for rect in rects {
+            if let last = runs.last, rect.minY - last.maxY < 3.0 {
+                runs[runs.count - 1] = CGRect(x: minX, y: last.minY, width: width, height: max(last.maxY, rect.maxY) - last.minY)
+            } else {
+                runs.append(CGRect(x: minX, y: rect.minY, width: width, height: rect.height))
+            }
+        }
+
+        let container: ASDisplayNode
+        if let current = self.aorusGlassPaneContainer {
+            container = current
+        } else {
+            container = ASDisplayNode()
+            container.isUserInteractionEnabled = false
+            container.clipsToBounds = true
+            self.aorusGlassPaneContainer = container
+            self.listNodeContainer.insertSubnode(container, belowSubnode: self.listNode)
+        }
+        container.frame = CGRect(origin: CGPoint(), size: aorusLayout.size)
+
+        let isDark = self.theme?.overallDarkAppearance ?? true
+        while self.aorusGlassPanes.count > runs.count {
+            self.aorusGlassPanes.removeLast().removeFromSuperview()
+        }
+        for i in 0 ..< runs.count {
+            let run = runs[i]
+            let paneView: GlassBackgroundView
+            if i < self.aorusGlassPanes.count {
+                paneView = self.aorusGlassPanes[i]
+            } else {
+                paneView = GlassBackgroundView(frame: run)
+                paneView.isUserInteractionEnabled = false
+                self.aorusGlassPanes.append(paneView)
+                container.view.addSubview(paneView)
+            }
+            paneView.frame = run
+            paneView.update(
+                size: run.size,
+                cornerRadius: AorusGlassPane.blockCornerRadius,
+                isDark: isDark,
+                tintColor: GlassBackgroundView.TintColor(kind: .clear),
+                isInteractive: false,
+                isVisible: true,
+                transition: .immediate
+            )
+        }
+    }
+
+'''
+
+
+def _patch_item_list_glass(tg: Path) -> None:
+    """Put one pane of real glass behind every block on every settings screen.
+
+    The stock blocks screen is an opaque page with opaque cards on it. Interface 2.0 keeps the page
+    -- glass needs something behind it to be glass about -- clears the cards, and lays a
+    `GlassBackgroundView` under each run of rows that share a section. The rows keep their labels,
+    their hairlines and their controls, and nothing else.
+
+    Finding the runs is the interesting part, and it is done by reading back the marker fill: see
+    `AorusGlassPane.blockMarker`. This is the one file every ItemList screen in the app is hosted
+    by, so the username screen, the appearance screen and the several hundred others change
+    together, with no per-item patches to keep in step.
     """
     path = tg / "submodules/ItemListUI/Sources/ItemListControllerNode.swift"
     text = _read(path, "ItemListControllerNode.swift")
-    if "aorusGlassBackgroundView" in text:
+    if "aorusGlassPanes" in text:
         print("InterfaceV2: settings lists already on glass")
         return
     if _GLASS_IMPORT not in text:
@@ -1292,118 +1458,79 @@ def _patch_item_list_glass(tg: Path) -> None:
         text,
         "    private var previousContentOffset: ListViewVisibleContentOffset?\n",
         "    private var previousContentOffset: ListViewVisibleContentOffset?\n"
-        "    // AorusGram: created on the first transition that reports a blocks-style list, so a\n"
-        "    // screen opened with Interface 2.0 off never builds an effect view it will not show.\n"
-        "    private var aorusGlassBackgroundView: GlassBackgroundView?\n",
-        "list glass property",
+        "    // AorusGram: created on the first pass that finds a marked row, so a screen opened with\n"
+        "    // Interface 2.0 off never builds an effect view it will not show.\n"
+        "    private var aorusGlassPaneContainer: ASDisplayNode?\n"
+        "    private var aorusGlassPanes: [GlassBackgroundView] = []\n"
+        "    // The side insets the rows were laid out with. A row is as wide as the whole list and\n"
+        "    // relies on the overlay nodes to cover its overhang, so the pane has to be told where\n"
+        "    // the visible card actually starts and ends.\n"
+        "    private var aorusListInsets = UIEdgeInsets()\n",
+        "list glass properties",
     )
-    # Both copies of the blocks branch: one runs on a theme change, the other when the style
-    # itself changes. The anchor is the same text, so the same replacement is applied twice.
+    # Both copies of the blocks branch: one runs on a theme change, the other when the style itself
+    # changes. The anchor is the same text, so the same replacement is applied twice.
     blocks_old = (
         "                        case .blocks:\n"
         "                            self.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
         "                            self.listNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
-        "                            self.leftOverlayNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
-        "                            self.rightOverlayNode.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
     )
     blocks_new = (
         "                        case .blocks:\n"
         "                            // AorusGram: the page colour stays on this node's own layer,\n"
-        "                            // which is what the glass pane above it refracts. The list and\n"
-        "                            // the side gutters go clear so that pane is not painted over.\n"
-        "                            let aorusListGlass = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "                            // which is what the panes above it refract. The list itself has\n"
+        "                            // to go clear or it would cover them. The two side overlays keep\n"
+        "                            // the page colour, and covering the row overhang is exactly the\n"
+        "                            // job they already had.\n"
         "                            self.backgroundColor = transition.theme.list.blocksBackgroundColor\n"
-        "                            self.listNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
-        "                            self.leftOverlayNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
-        "                            self.rightOverlayNode.backgroundColor = aorusListGlass ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
+        "                            self.listNode.backgroundColor = AorusGlassPane.isEnabled ? UIColor.clear : transition.theme.list.blocksBackgroundColor\n"
     )
     text = _replace_once(text, blocks_old, blocks_new, "list glass colours on theme change")
     text = _replace_once(text, blocks_old, blocks_new, "list glass colours on style change")
-    # The style is only known once a transition has been dequeued, and the first layout runs
-    # before that, so the pane is installed from the transition side and merely resized from
-    # the layout side.
     text = _replace_once(
         text,
-        "    private func dequeueTransitions() {\n"
-        "        while !self.enqueuedTransitions.isEmpty {\n"
-        "            let transition = self.enqueuedTransitions.removeFirst()\n",
-        "    // AorusGram: one pane for the whole page rather than one per row. A row is drawn by its\n"
-        "    // own item node, of which there are dozens of kinds across the app, and an effect view\n"
-        "    // per visible row would cost more than the look is worth. Behind the list and above the\n"
-        "    // page colour is the one place that reaches all of them at once.\n"
-        "    private func aorusUpdateListGlass(transition: ContainedViewLayoutTransition = .immediate) {\n"
-        "        var isEnabled = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
-        "        if let listStyle = self.listStyle {\n"
-        "            if case .plain = listStyle {\n"
-        "                isEnabled = false\n"
-        "            }\n"
-        "        } else {\n"
-        "            isEnabled = false\n"
-        "        }\n"
-        "        guard isEnabled, let (aorusLayout, _, _) = self.validLayout else {\n"
-        "            if let glassView = self.aorusGlassBackgroundView {\n"
-        "                self.aorusGlassBackgroundView = nil\n"
-        "                glassView.removeFromSuperview()\n"
-        "            }\n"
-        "            return\n"
-        "        }\n"
-        "        let glassFrame = CGRect(origin: CGPoint(), size: aorusLayout.size)\n"
-        "        let glassView: GlassBackgroundView\n"
-        "        if let current = self.aorusGlassBackgroundView {\n"
-        "            glassView = current\n"
-        "        } else {\n"
-        "            glassView = GlassBackgroundView(frame: glassFrame)\n"
-        "            glassView.isUserInteractionEnabled = false\n"
-        "            self.aorusGlassBackgroundView = glassView\n"
-        "            self.view.insertSubview(glassView, at: 0)\n"
-        "        }\n"
-        "        transition.updateFrame(view: glassView, frame: glassFrame)\n"
-        "        glassView.update(\n"
-        "            size: glassFrame.size,\n"
-        "            cornerRadius: 0.0,\n"
-        "            isDark: self.theme?.overallDarkAppearance ?? false,\n"
-        "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
-        "            isInteractive: false,\n"
-        "            isVisible: true,\n"
-        "            transition: ComponentTransition(transition)\n"
-        "        )\n"
-        "    }\n"
-        "\n"
-        "    private func dequeueTransitions() {\n"
-        "        while !self.enqueuedTransitions.isEmpty {\n"
-        "            let transition = self.enqueuedTransitions.removeFirst()\n",
+        "    private func dequeueTransitions() {\n",
+        _LIST_GLASS_SWIFT + "    private func dequeueTransitions() {\n",
         "list glass helper",
     )
-    # Once per dequeued transition: the theme or the style may just have changed, and either
-    # decides whether the pane belongs here and how dark it is.
+    # Three moments change where the blocks are: a scroll, a new set of rows, and a relayout.
     text = _replace_once(
         text,
-        "            var options = ListViewDeleteAndInsertOptions()\n"
-        "            if transition.firstTime {\n",
-        "            self.aorusUpdateListGlass()\n"
-        "\n"
-        "            var options = ListViewDeleteAndInsertOptions()\n"
-        "            if transition.firstTime {\n",
-        "list glass transition hook",
+        "            strongSelf.previousContentOffset = offset\n"
+        "        }\n",
+        "            strongSelf.previousContentOffset = offset\n"
+        "            strongSelf.aorusUpdateListGlass()\n"
+        "        }\n",
+        "list glass scroll hook",
     )
     text = _replace_once(
         text,
-        "        let dequeue = self.validLayout == nil\n"
-        "        self.validLayout = (layout, navigationBarHeight, additionalInsets)\n"
-        "        if dequeue {\n"
-        "            self.dequeueTransitions()\n"
-        "        }\n",
-        "        let dequeue = self.validLayout == nil\n"
-        "        self.validLayout = (layout, navigationBarHeight, additionalInsets)\n"
-        "        if dequeue {\n"
-        "            self.dequeueTransitions()\n"
-        "        }\n"
+        "                    strongSelf.afterTransactionCompleted?()\n",
+        "                    strongSelf.aorusUpdateListGlass()\n"
+        "                    strongSelf.afterTransactionCompleted?()\n",
+        "list glass transaction hook",
+    )
+    text = _replace_once(
+        text,
+        "        self.leftOverlayNode.frame = CGRect(x: 0.0, y: 0.0, width: insets.left, height: layout.size.height)\n",
+        "        // AorusGram: the panes are cut to the same gutter the overlays cover.\n"
+        "        self.aorusListInsets = insets\n"
+        "        self.leftOverlayNode.frame = CGRect(x: 0.0, y: 0.0, width: insets.left, height: layout.size.height)\n",
+        "list glass insets capture",
+    )
+    text = _replace_once(
+        text,
+        "        var layout = layout\n"
+        "        layout.intrinsicInsets.left = 4.0\n",
         "        // AorusGram: follows the page through rotation and split-view resizes.\n"
-        "        self.aorusUpdateListGlass(transition: transition)\n",
+        "        self.aorusUpdateListGlass()\n"
+        "\n"
+        "        var layout = layout\n"
+        "        layout.intrinsicInsets.left = 4.0\n",
         "list glass layout hook",
     )
     path.write_text(text, encoding="utf-8")
-    print("InterfaceV2: put the settings lists on glass")
+    print("InterfaceV2: put every settings block on its own pane of glass")
 
 
 def _patch_nav_button_glass(tg: Path) -> None:
@@ -1604,6 +1731,46 @@ def _patch_pane_container_glass(tg: Path) -> None:
     print("InterfaceV2: pane container continues the page")
 
 
+def _patch_pane_page_background(tg: Path) -> None:
+    """Let the gifts pane show the page instead of covering it.
+
+    The pane container above this one already goes transparent under Interface 2.0, but the gifts
+    pane paints a second opaque rectangle of its own, from the tabs strip all the way down. That
+    rectangle is the dark band below the tabs: the top half of the profile is the avatar's colour
+    and the bottom half is the theme's, with a hard edge between them.
+
+    The bottom fade goes with it. It is a gradient of the same page colour drawn under the pin
+    panel, and the colour it faded to is no longer the colour of anything on this screen, so the
+    fade would read as a smear of the wrong grey rather than as depth. Clear leaves the gifts
+    running under the panel, which is already real glass and reads them perfectly well.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/PeerInfoGiftsPaneNode.swift"
+    text = _read(path, "PeerInfoGiftsPaneNode.swift")
+    if "aorusContinuesPage" in text:
+        print("InterfaceV2: gifts pane already continues the page")
+        return
+    text = _replace_once(
+        text,
+        "        self.backgroundNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor\n",
+        "        // AorusGram: nothing at all under Interface 2.0, so that the page the profile is\n"
+        "        // painted with -- the colour the avatar ends on -- carries on through the gifts.\n"
+        "        // isOpaque has to go with the colour: a node that keeps the flag while painting\n"
+        "        // nothing is how a view ends up black instead of transparent.\n"
+        "        let aorusContinuesPage = AorusGlassPane.isEnabled\n"
+        "        self.backgroundNode.isOpaque = !aorusContinuesPage\n"
+        "        self.backgroundNode.backgroundColor = aorusContinuesPage ? nil : presentationData.theme.list.blocksBackgroundColor\n",
+        "gifts pane background",
+    )
+    text = _replace_once(
+        text,
+        "            panelEdgeEffectView.update(content: presentationData.theme.list.blocksBackgroundColor, blur: false, rect: edgeEffectFrame, edge: .bottom, edgeSize: 40.0, transition: panelTransition)\n",
+        "            panelEdgeEffectView.update(content: AorusGlassPane.isEnabled ? UIColor.clear : presentationData.theme.list.blocksBackgroundColor, blur: false, rect: edgeEffectFrame, edge: .bottom, edgeSize: 40.0, transition: panelTransition)\n",
+        "gifts pane edge fade",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: gifts pane continues the page")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -1626,7 +1793,7 @@ def patch_interface_v2(tg: Path) -> None:
     """
     _patch_glass_theme(tg)
     _patch_item_list_theme(tg)
-    _patch_item_corner_panes(tg)
+    _patch_corner_wedges(tg)
     _patch_profile_section_glass(tg)
     _patch_header_centering(tg)
     _patch_multi_scale_centering(tg)
@@ -1635,6 +1802,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_avatar_placeholder(tg)
     _patch_glass_placeholder_avatar(tg)
     _patch_avatar_expansion(tg)
+    _patch_keep_avatar_expanded(tg)
     _patch_action_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)
@@ -1642,4 +1810,5 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_item_list_glass(tg)
     _patch_nav_button_glass(tg)
     _patch_pane_container_glass(tg)
+    _patch_pane_page_background(tg)
     _patch_build(tg)
