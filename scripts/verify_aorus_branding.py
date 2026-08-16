@@ -2691,6 +2691,21 @@ def main() -> None:
                 "updateFrameAdditiveToCenter(view: self.aorusMusicCapsule",
                 "updateAlpha(layer: self.aorusMusicCapsule.layer, alpha: backgroundBannerAlpha)",
                 "// AorusGram: Interface 2.0 opens the photo at full width",
+                # The rating shield sits on the page next to the name, where the accent-coloured
+                # one it draws by default disappears into whatever the avatar happened to be.
+                "aorusWhiteShield",
+            ),
+        ),
+        # The members tab of a group or channel. It paints its own background and fades the list
+        # into it, both in the theme's own colours, which is the black the tab showed while the
+        # page around it carried the avatar's.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoMembersPane.swift",
+            (
+                "aorusUpdateGlass",
+                "aorusPageFillView",
+                "aorusGlassProfileTheme",
+                "import GlassBackgroundComponent",
             ),
         ),
         (
@@ -2705,11 +2720,20 @@ def main() -> None:
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreen.swift",
             (
                 "aorusPublishAvatarTint",
-                "aorusKeepsAvatarExpanded",
+                # The photo stays open when a tab is tapped, which is eight separate collapse sites
+                # all asking one shared test. Spelled out in full so that renaming the test without
+                # updating the sites fails here.
+                "aorusKeepsAvatarExpandedNow",
                 # The page is the photo's own lower half stretched behind the whole screen, not one
                 # flat colour: a colour alone met the picture in a visible line.
                 "aorusUpdatePageBackdrop",
                 "AorusGlassProfileTint.pageBackgroundImage",
+                # One slot holds the ink for every module that draws over the page and cannot import
+                # the sampler. The profile being laid out claims it at the top of both layout
+                # passes; leaving the previous peer's colour there is how a profile came out
+                # near-black on near-black.
+                "aorusUpdatePageColor",
+                "AorusGlassProfileTint.publishPageColor",
             ),
         ),
         (
@@ -2774,13 +2798,22 @@ def main() -> None:
             (
                 "photoCount: Int",
                 "sampledColors",
-                "bottomEdgeColor",
                 "pageKey",
+                # The page is the photo's own bottom band -- the strip Telegram already darkens so
+                # the name stays readable -- sampled through the same shading and stretched down.
+                # Sampling anywhere else, or forgetting the shading, is what made the page meet the
+                # picture in a visible line.
+                "bottomBandSample",
+                "bandFraction",
+                "bandShadow",
                 # The stretched backdrop, and the flag that keeps it from being sampled off the
                 # round centre-cropped fallback avatar.
                 "pageBackgroundImage",
-                "lowerRegionImage",
                 "isFullPhoto",
+                # A peer with no photo has no band to sample, so the colour its letter avatar is
+                # drawn from is published instead. Without this the page stays black and the whole
+                # profile disappears into it.
+                "publishPageColor",
             ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that
@@ -2842,6 +2875,18 @@ def main() -> None:
             err.append(f"InterfaceV2: AorusGramUI/{name} is missing")
         elif "aorusGlassListTheme" not in source.read_text(encoding="utf-8"):
             err.append(f"InterfaceV2: AorusGramUI/{name} does not use the glass list theme")
+
+    # Session backup ships as two screens: a SwiftUI port that draws its own opaque cards, and an
+    # ItemList in .blocks style that gets real glass for free from ItemListControllerNode. The port
+    # cannot be turned into glass without rewriting it, so under Interface 2.0 the factory has to
+    # pick the list -- and with the switch off it has to keep picking the port.
+    backup_controller = tg / "submodules/AorusGramUI/Sources/AccountBackupController.swift"
+    if backup_controller.is_file():
+        backup_text = backup_controller.read_text(encoding="utf-8")
+        if "!AorusInterfaceV2.isEnabled" not in backup_text:
+            err.append("InterfaceV2: the backup screen still opens its opaque SwiftUI port")
+        if "accountBackupControllerLegacy" not in backup_text:
+            err.append("InterfaceV2: the backup screen has no glass list to fall back to")
 
     # The transparency slider in the profile's Personal Colors section is a Component rather than a
     # row, and the section it sits in already draws one pane for all of its items, so this one has

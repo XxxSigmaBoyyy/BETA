@@ -1189,12 +1189,18 @@ def _patch_keep_avatar_expanded(tg: Path) -> None:
     photo ends in, so the two have to meet. scripts/profile_personalization_patch.py opens the
     header in that state; this pass is what stops the screen from immediately taking it back.
 
-    Four places take it back, and each is a different reason.
+    Eight places take it back, and each is a different reason.
 
     Telegram collapses the expanded photo as soon as the list scrolls a single point, which is
     what would make the photo snap into the corner on the first touch. It stays expanded and
     simply scrolls away instead -- nothing is pinned and no offset is faked, the header keeps
     the size it was drawn at.
+
+    Four more collapse it to bring the tab strip to the top of the screen: choosing a tab,
+    the panes asking for the strip to be expanded, scrolling a selection into view, and the
+    controller's own expandTabs. All four already scroll the content afterwards, which is the
+    part that was wanted; shrinking the photo as well is what made tapping Media snap it into
+    the corner. Each asks the shared test below first.
 
     The header is built before the peer is loaded, so the flag alone cannot tell whether there
     is a photo to expand, and expanding a profile that has none is what breaks its layout. That
@@ -1211,6 +1217,30 @@ def _patch_keep_avatar_expanded(tg: Path) -> None:
         return
     text = _replace_once(
         text,
+        "    fileprivate func resetHeaderExpansion() {\n",
+        "    // AorusGram: whether Interface 2.0 is holding this profile's photo at full width right\n"
+        "    // now.\n"
+        "    //\n"
+        "    // Every path that collapses the header on its own initiative has to ask this first, or\n"
+        "    // the mode lasts exactly until the first tap on a tab. Editing and an avatar upload are\n"
+        "    // excluded because both need the small header to lay their own controls out, a forum\n"
+        "    // topic because its header is the topic's and not a peer's, and a peer with no photo\n"
+        "    // because there is nothing to hold open -- expanding one is what breaks its layout.\n"
+        "    var aorusKeepsAvatarExpandedNow: Bool {\n"
+        "        return UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+        "            && !self.isSettings\n"
+        "            && !self.isMediaOnly\n"
+        "            && self.chatLocation.threadId == nil\n"
+        "            && self.state.updatingAvatar == nil\n"
+        "            && !self.state.isEditing\n"
+        "            && self.data?.peer?.smallProfileImage != nil\n"
+        "    }\n"
+        "    \n"
+        "    fileprivate func resetHeaderExpansion() {\n",
+        "keeps avatar expanded test",
+    )
+    text = _replace_once(
+        text,
         "            } else if offsetY >= 1.0 {\n"
         "                shouldBeExpanded = false\n"
         "                self.canOpenAvatarByDragging = false\n"
@@ -1220,19 +1250,33 @@ def _patch_keep_avatar_expanded(tg: Path) -> None:
         "                // scroll instead of shrinking it into the corner on the first point of\n"
         "                // movement. Nothing is pinned and no offsets are faked -- the header just\n"
         "                // keeps the size it already had and scrolls with the content.\n"
-        "                let aorusKeepsAvatarExpanded = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
-        "                    && !self.isSettings\n"
-        "                    && self.chatLocation.threadId == nil\n"
-        "                    && self.state.updatingAvatar == nil\n"
-        "                    && !self.state.isEditing\n"
-        "                    && self.data?.peer?.smallProfileImage != nil\n"
-        "                if !aorusKeepsAvatarExpanded {\n"
+        "                if !self.aorusKeepsAvatarExpandedNow {\n"
         "                    shouldBeExpanded = false\n"
         "                }\n"
         "                self.canOpenAvatarByDragging = false\n"
         "            }\n",
         "keep avatar expanded",
     )
+    # The four tab-strip collapses. Each is `if <receiver>.headerNode.isAvatarExpanded {` followed by
+    # the same spring transition, and they are told apart by their indentation and their receiver --
+    # the pane callbacks capture strongSelf, ensurePaneRectVisible and expandTabs are on self.
+    for label, receiver, indent in (
+        ("current pane", "strongSelf", " " * 16),
+        ("expand tabs request", "strongSelf", " " * 12),
+        ("pane rect visible", "self", " " * 16),
+        ("expand tabs", "self", " " * 8),
+    ):
+        text = _replace_once(
+            text,
+            indent + "if " + receiver + ".headerNode.isAvatarExpanded {\n"
+            + indent + "    let transition: ContainedViewLayoutTransition = .animated(duration: 0.35, curve: .spring)\n",
+            indent + "// AorusGram: bringing the tabs to the top is the scroll below, not this. Under\n"
+            + indent + "// Interface 2.0 the photo stays the size it was drawn at and scrolls away with\n"
+            + indent + "// the content, so tapping a tab no longer snaps it into the corner.\n"
+            + indent + "if " + receiver + ".headerNode.isAvatarExpanded, !" + receiver + ".aorusKeepsAvatarExpandedNow {\n"
+            + indent + "    let transition: ContainedViewLayoutTransition = .animated(duration: 0.35, curve: .spring)\n",
+            "keep avatar expanded on " + label,
+        )
     text = _replace_once(
         text,
         "        self.data = data\n",
@@ -1260,10 +1304,7 @@ def _patch_keep_avatar_expanded(tg: Path) -> None:
         "        // collapsing there would leave the photo small until the user dragged it back --\n"
         "        // the one thing the mode exists to stop. The settings screen still resets, which is\n"
         "        // where the other caller lives.\n"
-        "        if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
-        "           !self.isSettings,\n"
-        "           self.chatLocation.threadId == nil,\n"
-        "           self.data?.peer?.smallProfileImage != nil {\n"
+        "        if self.aorusKeepsAvatarExpandedNow {\n"
         "            return\n"
         "        }\n"
         "        if self.headerNode.isAvatarExpanded {\n",
@@ -1277,12 +1318,9 @@ def _patch_keep_avatar_expanded(tg: Path) -> None:
         "                    // AorusGram: activateEdit collapsed the photo to make room for the\n"
         "                    // editing header, and leaving edit mode has to put it back. Without this,\n"
         "                    // Edit then Cancel is a way to reach a small-photo profile that Interface\n"
-        "                    // 2.0 never opens on and offers no way back from.\n"
-        "                    if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"),\n"
-        "                       !strongSelf.headerNode.isAvatarExpanded,\n"
-        "                       !strongSelf.isSettings, !strongSelf.isMediaOnly,\n"
-        "                       strongSelf.chatLocation.threadId == nil,\n"
-        "                       strongSelf.data?.peer?.smallProfileImage != nil {\n"
+        "                    // 2.0 never opens on and offers no way back from. The state above already\n"
+        "                    // reads as not editing, which is what the shared test needs.\n"
+        "                    if !strongSelf.headerNode.isAvatarExpanded, strongSelf.aorusKeepsAvatarExpandedNow {\n"
         "                        strongSelf.headerNode.updateIsAvatarExpanded(true, transition: .immediate)\n"
         "                        strongSelf.updateNavigationExpansionPresentation(isExpanded: true, animated: false)\n"
         "                    }\n"
@@ -1876,6 +1914,251 @@ def _patch_pane_page_background(tg: Path) -> None:
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: gifts pane continues the page")
+
+
+def _patch_members_pane_glass(tg: Path) -> None:
+    """Give the members list the page it sits on instead of a black card.
+
+    Every other pane in a profile goes transparent under Interface 2.0 and lets the page show
+    through. This one cannot, because its block is not drawn the way the rest of the client draws
+    blocks: it is two opaque rectangles instead of a row background. A rounded one tinted with
+    `itemBlocksBackgroundColor` behind the list, and a second one above it -- white everywhere
+    except a rounded hole punched in the middle -- tinted with the page colour so that the hole
+    reads as the block's shape. That second rectangle is the black frame around the members list,
+    the 16pt gutter down each side and the four corners the radius leaves out.
+
+    Turning it off is not an option: the hole is what keeps the first row's avatar inside the
+    block's rounded corner, and the tap highlight, which runs the full width of a row, inside its
+    sides. So it goes on painting -- the page instead of the theme.
+
+    Which is two different things, because the page has two forms. For a peer with no photo the
+    page is a flat colour, and it is `blocksBackgroundColor`, the very colour this mask already
+    uses: nothing to change. For a peer with a photo the page is the strip taken from the foot of
+    the photo, so there the mask stops painting and becomes the mask of a view holding that same
+    strip. The strip is one pixel tall and stretched, so there is no vertical detail to line up,
+    and the pane is exactly as wide as the page -- which is what makes it safe to lay across the
+    pane's own bounds and forget about it.
+
+    The block behind the rows becomes real glass, cornered at the same 26 as every other block on
+    the page.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoMembersPane.swift"
+    text = _read(path, "PeerInfoMembersPane.swift")
+    if "aorusPageFillView" in text:
+        print("InterfaceV2: members pane already shows the page")
+        return
+    if _GLASS_IMPORT not in text:
+        text = _replace_once(
+            text,
+            "import Display\n",
+            "import Display\n" + _GLASS_IMPORT + "import ComponentFlow\nimport AorusGramUI\n",
+            "members pane import",
+        )
+    text = _replace_once(
+        text,
+        "    private let listBackgroundView: UIImageView\n"
+        "    private let listMaskView: UIImageView\n",
+        "    private let listBackgroundView: UIImageView\n"
+        "    private let listMaskView: UIImageView\n"
+        "    // AorusGram: the peer whose page this pane sits on, kept in the form the tint is\n"
+        "    // keyed by, and the glass and page fill that replace the card under Interface 2.0.\n"
+        "    private let aorusPeerId: Int64\n"
+        "    private var aorusGlassBackgroundView: GlassBackgroundView?\n"
+        "    private var aorusPageFillView: UIImageView?\n"
+        "    // What the page falls back to for a peer with no photo, which is also what the mask\n"
+        "    // has to be handed back if a photo it was shaping ever goes away.\n"
+        "    private var aorusPageFallbackColor: UIColor = .clear\n",
+        "members pane properties",
+    )
+    text = _replace_once(
+        text,
+        "        self.context = context\n"
+        "        self.membersContext = membersContext\n",
+        "        self.context = context\n"
+        "        self.membersContext = membersContext\n"
+        "        self.aorusPeerId = peerId.id._internalGetInt64Value()\n",
+        "members pane peer id",
+    )
+    text = _replace_once(
+        text,
+        "        self.currentParams = (size, isScrollingLockedAtTop)\n"
+        "        self.presentationDataPromise.set(.single(presentationData))\n",
+        "        self.currentParams = (size, isScrollingLockedAtTop)\n"
+        "        // AorusGram: the rows are built from the theme this promise carries, so routing it\n"
+        "        // here is what gives them the white labels and hairline separators of every section\n"
+        "        // on the page above them. It also turns their block fill into the marker colour,\n"
+        "        // which is the other half of why the card below can be cleared rather than painted.\n"
+        "        var presentationData = presentationData\n"
+        "        if AorusGlassPane.isEnabled {\n"
+        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "        }\n"
+        "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
+        "        self.presentationDataPromise.set(.single(presentationData))\n",
+        "members pane theme",
+    )
+    text = _replace_once(
+        text,
+        "        self.listBackgroundView.tintColor = presentationData.theme.list.itemBlocksBackgroundColor\n"
+        "        self.listMaskView.tintColor = presentationData.theme.list.blocksBackgroundColor\n",
+        "        // AorusGram: clear, because the glass laid behind it under Interface 2.0 is the\n"
+        "        // card now, and anything painted over that material flattens it. The mask keeps\n"
+        "        // the page colour it always had unless it has been taken over as the shape of the\n"
+        "        // page fill, where opaque white is what gives the template image an alpha to cut\n"
+        "        // with -- updateListBackground above has already decided which of the two it is.\n"
+        "        self.listBackgroundView.tintColor = AorusGlassPane.isEnabled ? UIColor.clear : presentationData.theme.list.itemBlocksBackgroundColor\n"
+        "        self.listMaskView.tintColor = self.aorusPageFillView != nil ? UIColor.white : presentationData.theme.list.blocksBackgroundColor\n",
+        "members pane tints",
+    )
+    text = _replace_once(
+        text,
+        "        transition.updateFrame(view: self.listBackgroundView, frame: listBackgroundFrame)\n"
+        "        transition.updateFrame(view: self.listMaskView, frame: listMaskFrame)\n"
+        "    }\n",
+        "        transition.updateFrame(view: self.listBackgroundView, frame: listBackgroundFrame)\n"
+        "        transition.updateFrame(view: self.listMaskView, frame: listMaskFrame)\n"
+        "        self.aorusUpdateGlass(backgroundFrame: listBackgroundFrame, transition: transition)\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: the glass this pane's block is made of, and the page that shows through\n"
+        "    // the frame around it. Called from the same place the two rectangles are laid out, so\n"
+        "    // it tracks them through every scroll without a second pass.\n"
+        "    private func aorusUpdateGlass(backgroundFrame: CGRect, transition: ContainedViewLayoutTransition) {\n"
+        "        guard AorusGlassPane.isEnabled else {\n"
+        "            self.aorusReleaseMask()\n"
+        "            if let glassView = self.aorusGlassBackgroundView {\n"
+        "                self.aorusGlassBackgroundView = nil\n"
+        "                glassView.removeFromSuperview()\n"
+        "            }\n"
+        "            return\n"
+        "        }\n"
+        "        \n"
+        "        let glassView: GlassBackgroundView\n"
+        "        if let current = self.aorusGlassBackgroundView {\n"
+        "            glassView = current\n"
+        "        } else {\n"
+        "            glassView = GlassBackgroundView(frame: backgroundFrame)\n"
+        "            glassView.isUserInteractionEnabled = false\n"
+        "            self.aorusGlassBackgroundView = glassView\n"
+        "            self.view.insertSubview(glassView, at: 0)\n"
+        "        }\n"
+        "        transition.updateFrame(view: glassView, frame: backgroundFrame)\n"
+        "        glassView.update(\n"
+        "            size: backgroundFrame.size,\n"
+        "            cornerRadius: 26.0,\n"
+        "            isDark: true,\n"
+        "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "            isInteractive: false,\n"
+        "            isVisible: true,\n"
+        "            transition: .immediate\n"
+        "        )\n"
+        "        \n"
+        "        // No strip means a peer with no photo, and there the page is one flat colour that\n"
+        "        // the mask is already painting. Nothing to take over.\n"
+        "        guard let pageImage = AorusGlassProfileTint.pageBackgroundImage(for: self.aorusPeerId) else {\n"
+        "            self.aorusReleaseMask()\n"
+        "            return\n"
+        "        }\n"
+        "        let fillView: UIImageView\n"
+        "        if let current = self.aorusPageFillView {\n"
+        "            fillView = current\n"
+        "        } else {\n"
+        "            fillView = UIImageView()\n"
+        "            fillView.contentMode = .scaleToFill\n"
+        "            fillView.isUserInteractionEnabled = false\n"
+        "            self.aorusPageFillView = fillView\n"
+        "            // The mask leaves the hierarchy to become one: a view cannot both be a subview\n"
+        "            // and shape another. Its frame goes on being set by the caller above, and it\n"
+        "            // still lands in the right place, because the fill it now cuts covers the\n"
+        "            // pane's own bounds -- the same space that frame was always measured in.\n"
+        "            self.listMaskView.removeFromSuperview()\n"
+        "            self.listMaskView.tintColor = .white\n"
+        "            fillView.mask = self.listMaskView\n"
+        "            self.view.addSubview(fillView)\n"
+        "        }\n"
+        "        fillView.image = pageImage\n"
+        "        fillView.frame = CGRect(origin: CGPoint(), size: self.listNode.visibleSize)\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: hand the mask back its place above the list, and its own paint with it.\n"
+        "    private func aorusReleaseMask() {\n"
+        "        guard let fillView = self.aorusPageFillView else {\n"
+        "            return\n"
+        "        }\n"
+        "        self.aorusPageFillView = nil\n"
+        "        fillView.mask = nil\n"
+        "        fillView.removeFromSuperview()\n"
+        "        self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "        self.view.addSubview(self.listMaskView)\n"
+        "    }\n",
+        "members pane glass",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: members pane shows the page")
+
+
+def _patch_rating_shield(tg: Path) -> None:
+    """One shield, and it is the white one.
+
+    Stock chooses between two badges. A plain header gets the accent-blue one with the level
+    written on it in the check foreground; an expanded photo gets a white shield with the digits
+    knocked out of it, because the only thing behind it then is somebody's photograph. Interface
+    2.0 leaves the header in the second situation permanently -- the page is the colour the photo
+    ends on whether or not the photo itself is open -- so the blue one, sized and shaped for a
+    theme-coloured header, is the wrong one on every profile.
+
+    A clear foreground is not an invisible number. `PeerInfoRatingComponent` switches to `.copy`
+    for any foreground below full alpha and cuts the digits out of the shield, which is what makes
+    the white badge legible against a page it knows nothing about.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusWhiteShield" in text:
+        print("InterfaceV2: rating shield already white")
+        return
+    text = _replace_once(
+        text,
+        "        let ratingBackgroundColor: UIColor\n"
+        "        let ratingBorderColor: UIColor\n"
+        "        let ratingForegroundColor: UIColor\n",
+        "        // AorusGram: var, because Interface 2.0 overrides all three after the chain below\n"
+        "        // has picked whichever pair of them stock would have used.\n"
+        "        var ratingBackgroundColor: UIColor\n"
+        "        var ratingBorderColor: UIColor\n"
+        "        var ratingForegroundColor: UIColor\n",
+        "rating shield declarations",
+    )
+    text = _replace_once(
+        text,
+        "                ratingBackgroundColor = accentRatingBackgroundColor\n"
+        "                ratingBorderColor = UIColor.clear\n"
+        "                ratingForegroundColor = presentationData.theme.list.itemCheckColors.foregroundColor\n"
+        "            }\n"
+        "        }\n"
+        "        \n"
+        "        do {\n"
+        "            self.currentCredibilityIcon = credibilityIcon\n",
+        "                ratingBackgroundColor = accentRatingBackgroundColor\n"
+        "                ratingBorderColor = UIColor.clear\n"
+        "                ratingForegroundColor = presentationData.theme.list.itemCheckColors.foregroundColor\n"
+        "            }\n"
+        "        }\n"
+        "        \n"
+        "        // AorusGram: the white shield, on every profile and in every state, because every\n"
+        "        // one of them puts it on the page the photo is the colour of. This is the same\n"
+        "        // triple the expanded-photo branch above sets, taken out of that one condition.\n"
+        "        let aorusWhiteShield = AorusGlassPane.isEnabled\n"
+        "        if aorusWhiteShield {\n"
+        "            ratingBackgroundColor = .white\n"
+        "            ratingBorderColor = .clear\n"
+        "            ratingForegroundColor = .clear\n"
+        "        }\n"
+        "        \n"
+        "        do {\n"
+        "            self.currentCredibilityIcon = credibilityIcon\n",
+        "rating shield override",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the rating shield white")
 
 
 def _patch_overlay_palette(tg: Path) -> None:
@@ -2521,4 +2804,6 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_nav_button_glass(tg)
     _patch_pane_container_glass(tg)
     _patch_pane_page_background(tg)
+    _patch_members_pane_glass(tg)
+    _patch_rating_shield(tg)
     _patch_build(tg)

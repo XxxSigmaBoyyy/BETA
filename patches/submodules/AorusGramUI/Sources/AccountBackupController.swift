@@ -304,9 +304,17 @@ private func backupEntries(state: BackupState, theme: PresentationTheme, l10n: B
 // MARK: - Public factory
 
 public func accountBackupController(context: AccountContext) -> ViewController {
-    // Primary: the pixel-faithful SwiftUI port of Swiftgram's screen. The ItemList
-    // implementation below stays as an iOS 12 fallback.
-    if #available(iOS 13.0, *) {
+    // Two screens, and the switch picks between them.
+    //
+    // Interface 2.0 asks for this one to be made of the same material as every other list in the
+    // app, and the implementation below already is: an ItemListController in .blocks style, whose
+    // rows carry the derived theme and get backed by one sheet of real glass per section, the same
+    // way Settings does. The SwiftUI port draws its own opaque cards, which is the one thing that
+    // cannot be turned into glass without rewriting it, so 2.0 takes the list.
+    //
+    // With the switch off it is the other way round: the port is the pixel-faithful copy of
+    // Swiftgram's screen and stays the default, with the list as the iOS 12 fallback.
+    if #available(iOS 13.0, *), !AorusInterfaceV2.isEnabled {
         return AorusSessionBackupHostController(context: context)
     }
     return accountBackupControllerLegacy(context: context)

@@ -613,13 +613,15 @@ def _patch_profile_list_glass(tg: Path) -> None:
     screen = _replace_once(
         screen,
         "    private func updateBackgroundColor() {\n",
-        "    // AorusGram: the photo's lower half, stretched behind the entire screen.\n"
+        "    // AorusGram: the last few points of the photo, stretched behind the entire screen.\n"
         "    //\n"
-        "    // A single colour was not enough on its own. The photo does not end in one colour, so a\n"
-        "    // flat page met it in a visible line right where the picture stopped, and the tabs and\n"
-        "    // the gifts below sat on a different shade again. This is the same pixels the colour is\n"
-        "    // averaged from, stretched: a dozen pixels across, linearly filtered, which is a soft\n"
-        "    // blur for the price of a tiny texture.\n"
+        "    // Telegram's expanded avatar already ends in a band of variable blur under a gradient\n"
+        "    // that reaches 0.32 black at the very last row -- the thing that makes the name and the\n"
+        "    // buttons readable over a picture. This carries that band on downwards instead of\n"
+        "    // inventing a second effect: the photo's own bottom edge, thirty-two pixels of it,\n"
+        "    // darkened by the same amount and stretched. Linear filtering over a strip that narrow\n"
+        "    // is a soft blur of about the radius the native band uses, for the price of a texture of\n"
+        "    // a hundred and twenty-eight bytes.\n"
         "    //\n"
         "    // Found by tag rather than held in a property: this file is patched, and a stored\n"
         "    // property means an initialiser to patch as well. It is inserted at the very back, so\n"
@@ -653,22 +655,71 @@ def _patch_profile_list_glass(tg: Path) -> None:
         "        }\n"
         "    }\n"
         "\n"
+        "    // AorusGram: claim the page slot for this profile, and answer with its own page colour.\n"
+        "    //\n"
+        "    // Everything drawn over a glass profile -- the header's labels and icons, the tab strip,\n"
+        "    // the separators inside a section -- takes its ink from one shared slot, because the\n"
+        "    // modules that need it sit below the one that samples the avatar and cannot import it.\n"
+        "    // One slot, and the colour is per peer, so the profile being laid out claims it at the\n"
+        "    // top of every pass. That is what makes a push between two profiles land on the right\n"
+        "    // ink instead of the two overwriting each other frame by frame.\n"
+        "    //\n"
+        "    // A peer with no photo publishes the page it actually gets: the theme's own background.\n"
+        "    // Its placeholder is a pane of glass, which has no colour to sample, so nothing is ever\n"
+        "    // stored for it -- and leaving the previous profile's pale colour in the slot is exactly\n"
+        "    // how a profile came out with near-black text and icons on a near-black page.\n"
+        "    @discardableResult\n"
+        "    private func aorusUpdatePageColor() -> UIColor? {\n"
+        "        guard AorusInterfaceV2.isEnabled, !self.isSettings else {\n"
+        "            return nil\n"
+        "        }\n"
+        "        let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor(for: self.peerId.id._internalGetInt64Value())\n"
+        "        AorusGlassProfileTint.publishPageColor(aorusPageColor ?? self.presentationData.theme.list.blocksBackgroundColor)\n"
+        "        return aorusPageColor\n"
+        "    }\n"
+        "\n"
         "    private func updateBackgroundColor() {\n"
         "        // AorusGram: the page carries the avatar's colours the whole way down, so the\n"
         "        // list below the header continues the profile instead of meeting a flat\n"
         "        // background partway through it. Asked for by peer id, not read from one shared\n"
         "        // slot: during a push two profiles lay out on every frame of the animation, and a\n"
         "        // single slot would let each overwrite the other's colour.\n"
-        "        if AorusInterfaceV2.isEnabled, !self.isSettings {\n"
-        "            let aorusPeerId = self.peerId.id._internalGetInt64Value()\n"
-        "            if let aorusPageColor = AorusGlassProfileTint.pageBackgroundColor(for: aorusPeerId) {\n"
-        "                self.backgroundColor = aorusPageColor\n"
-        "                self.aorusUpdatePageBackdrop(image: AorusGlassProfileTint.pageBackgroundImage(for: aorusPeerId))\n"
-        "                return\n"
-        "            }\n"
+        "        if let aorusPageColor = self.aorusUpdatePageColor() {\n"
+        "            self.backgroundColor = aorusPageColor\n"
+        "            self.aorusUpdatePageBackdrop(image: AorusGlassProfileTint.pageBackgroundImage(for: self.peerId.id._internalGetInt64Value()))\n"
+        "            return\n"
         "        }\n"
         "        self.aorusUpdatePageBackdrop(image: nil)\n",
         "screen background colour",
+    )
+    # The slot has to be claimed before the header reads it, and the header lays out ahead of
+    # updateBackgroundColor in both passes that reach it -- containerLayoutUpdated draws the header
+    # and never calls it, updateNavigation draws the header and then calls it. Published from the top
+    # of both, so the ink a profile is drawn with is its own on the very first frame rather than one
+    # frame behind, which on a push is the outgoing profile's.
+    screen = _replace_once(
+        screen,
+        "    func containerLayoutUpdated(layout: ContainerViewLayout, navigationHeight: CGFloat, transition: ContainedViewLayoutTransition, additive: Bool = false) {\n"
+        "        self.validLayout = (layout, navigationHeight)\n",
+        "    func containerLayoutUpdated(layout: ContainerViewLayout, navigationHeight: CGFloat, transition: ContainedViewLayoutTransition, additive: Bool = false) {\n"
+        "        self.validLayout = (layout, navigationHeight)\n"
+        "        \n"
+        "        // AorusGram: before anything on this screen is drawn, so it is drawn in this\n"
+        "        // profile's ink and not in whatever the last one left in the slot.\n"
+        "        self.aorusUpdatePageColor()\n",
+        "page ink before layout",
+    )
+    screen = _replace_once(
+        screen,
+        "    fileprivate func updateNavigation(transition: ContainedViewLayoutTransition, additive: Bool, animateHeader: Bool) {\n"
+        "        let offsetY = self.scrollNode.view.contentOffset.y\n",
+        "    fileprivate func updateNavigation(transition: ContainedViewLayoutTransition, additive: Bool, animateHeader: Bool) {\n"
+        "        // AorusGram: as in containerLayoutUpdated -- this pass redraws the header too, and\n"
+        "        // does it before updateBackgroundColor at the end of it.\n"
+        "        self.aorusUpdatePageColor()\n"
+        "        \n"
+        "        let offsetY = self.scrollNode.view.contentOffset.y\n",
+        "page ink before navigation",
     )
     screen_path.write_text(screen, encoding="utf-8")
     print("GlassProfileList: patched screen background")
