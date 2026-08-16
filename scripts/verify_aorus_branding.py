@@ -2683,7 +2683,11 @@ def main() -> None:
                 # the join between the picture and the page.
                 "aorusStaticAvatar",
                 "aorusCompactMusic",
-                "aorusMusicLift",
+                # The pill is placed against the bottom of the button row, not the bottom of the
+                # photo: an action button pushes that row down by its own height, and a pill measured
+                # off the header's edge went under the buttons on exactly those profiles.
+                "aorusButtonsBottom",
+                "aorusMusicPillTop",
                 "insetBy(dx: -12.0, dy: -3.0)",
                 # The pill takes the row's own frame path and the row's own alpha. Pinned at 1.0 and
                 # moved non-additively it slid out from under its text and stayed behind as a bare
@@ -2822,6 +2826,15 @@ def main() -> None:
         (
             "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift",
             ("aorusHidesTitleGlass", "isVisible: !aorusHidesTitleGlass"),
+        ),
+        # The title view a chat actually installs is ChatNavigationBarTitleView, whose pane belongs
+        # to the ChatTitleComponent inside it -- the file above is the older view. Hiding only that
+        # one is why the capsule under the name outlived the build that took the avatar's away.
+        # Here the pane owns the two lines of text, so it is dropped through the component's own
+        # no-background branch rather than hidden with them still inside it.
+        (
+            "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift",
+            ("aorusHidesTitlePill", "let displayBackground: Bool = !aorusHidesTitlePill"),
         ),
         (
             "submodules/TelegramUI/Components/NavigationBarImpl/Sources/NavigationBarImpl.swift",

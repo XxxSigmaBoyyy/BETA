@@ -2527,17 +2527,21 @@ def _patch_static_avatar(tg: Path) -> None:
 
 
 def _patch_compact_music(tg: Path) -> None:
-    """Shrink the saved-music capsule to the size it is in the mockup.
+    """Size the saved-music capsule to the mockup and sit it in the gap under the buttons.
 
     Stock sizes this row for a full-width strip across the bottom of the header: 24pt of content at
     12pt type, and the capsule pass wraps it in a pill, which came out 38pt tall and read as the
     loudest thing on the screen. The mockup has a small pill under the buttons, so the content drops
-    to 16pt at 11pt type and the header reserves proportionally less room beneath the photo for it.
-    The pill's own padding is set where the pill is created, one script earlier, and checked here.
+    to 18pt -- 24pt of pill once the capsule's own 3pt of padding is counted at each end -- and the
+    header reserves proportionally less room beneath the photo for it. The type stays at 12pt, the
+    size the rest of the header is set in: 11pt made the pill smaller than the mockup's and the
+    track unreadable at arm's length, which is not the same thing as compact.
 
-    It is also lifted clear of the bottom of the photo. Stock bottom-aligns the row to the header,
-    which for a pill means its lower quarter hangs over the join between the picture and the page --
-    reported as looking unfinished, and it did. 12pt puts the whole capsule inside the photo.
+    Where it sits is measured from the bottom of the button row rather than from the bottom of the
+    photo. The row does not always end in the same place -- an action button such as "Add to
+    contacts" pushes it down by its own height -- so a pill placed a fixed distance off the header's
+    edge slid under the buttons in exactly those profiles. Centred in whatever is left between the
+    two instead, which for the ordinary profile is 5pt of photo above the pill and 5pt below it.
     """
     path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
     text = _read(path, "PeerInfoHeaderNode.swift")
@@ -2549,18 +2553,17 @@ def _patch_compact_music(tg: Path) -> None:
         "        let musicHeight: CGFloat = hasBackground || self.isAvatarExpanded ? 24.0 : 16.0\n",
         "        // AorusGram: read here rather than reused from the flags further down, because this\n"
         "        // is the first line in the pass that needs it -- the height it picks feeds the inset\n"
-        "        // the whole header is measured with.\n"
+        "        // the whole header is measured with, and through that the gap the pill is centred in.\n"
         "        let aorusCompactMusic = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
-        "        let musicHeight: CGFloat = aorusCompactMusic ? 16.0 : (hasBackground || self.isAvatarExpanded ? 24.0 : 16.0)\n",
+        "        let musicHeight: CGFloat = aorusCompactMusic ? 18.0 : (hasBackground || self.isAvatarExpanded ? 24.0 : 16.0)\n",
         "compact music height",
     )
     text = _replace_once(
         text,
         "            musicString.append(NSAttributedString(string: track ?? \"\", font: Font.semibold(12.0), textColor: isOverlay ? .white : presentationData.theme.list.itemAccentColor))\n"
         "            musicString.append(NSAttributedString(string: \" - \\(artist)\", font: Font.regular(12.0), textColor: isOverlay ? UIColor.white.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
-        "            let aorusMusicFontSize: CGFloat = aorusCompactMusic ? 11.0 : 12.0\n"
-        "            musicString.append(NSAttributedString(string: track ?? \"\", font: Font.semibold(aorusMusicFontSize), textColor: isOverlay ? aorusOverlayInk : presentationData.theme.list.itemAccentColor))\n"
-        "            musicString.append(NSAttributedString(string: \" - \\(artist)\", font: Font.regular(aorusMusicFontSize), textColor: isOverlay ? aorusOverlayInk.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
+        "            musicString.append(NSAttributedString(string: track ?? \"\", font: Font.semibold(12.0), textColor: isOverlay ? aorusOverlayInk : presentationData.theme.list.itemAccentColor))\n"
+        "            musicString.append(NSAttributedString(string: \" - \\(artist)\", font: Font.regular(12.0), textColor: isOverlay ? aorusOverlayInk.withAlphaComponent(0.7) : presentationData.theme.list.itemSecondaryTextColor))\n",
         "compact music font",
     )
     # The two glyphs in the pill, for the same reason as its text: white on a pale page is a hole
@@ -2582,16 +2585,39 @@ def _patch_compact_music(tg: Path) -> None:
     # measurement seen from two sides, and there is no way to notice they have drifted at runtime.
     if "insetBy(dx: -12.0, dy: -3.0)" not in text:
         raise RuntimeError("InterfaceV2: the saved-music capsule padding is no longer the compact one")
-    # Lifted off the bottom edge of the photo. The clearance is exact: the buttons above end
-    # 16 + bottomInset points above the header's bottom, bottomInset is this row's own 16, and the
-    # pill is 22 tall with its padding -- so 10 leaves 3 points under the buttons and 7 above the
-    # join. The x term is the capsule pass's centring, which is why this anchors on its line.
+    # Where the button row ends, taken at the point its y is final -- the line above moves it down
+    # by an action button's height, and reading it any earlier is how the pill ended up over the
+    # buttons on profiles that have one.
+    text = _replace_once(
+        text,
+        "        if !actionButtonKeys.isEmpty {\n"
+        "            buttonRightOrigin.y += actionButtonSize.height + 24.0\n"
+        "        }\n",
+        "        if !actionButtonKeys.isEmpty {\n"
+        "            buttonRightOrigin.y += actionButtonSize.height + 24.0\n"
+        "        }\n"
+        "        // AorusGram: the bottom of the button row, for the saved-music pill below it.\n"
+        "        let aorusButtonsBottom = buttonRightOrigin.y + buttonSize.height\n",
+        "buttons bottom edge",
+    )
+    # Centred in the gap between the buttons and the bottom of the photo. For the ordinary profile
+    # that gap is 34pt -- 18 of reserved inset and 16 of button margin -- and the pill is 24 with its
+    # padding, so 5pt of picture is left above it and 5pt below. The 4pt floor is for a header with
+    # no room to centre anything in: it puts the pill under the buttons rather than through them,
+    # which is the one arrangement that must not happen. Measured off musicSize and not musicHeight
+    # because the capsule is drawn around the row's real size, whatever the component returned.
+    #
+    # The frame computed here is the row, and the pill is 3pt taller at each end, so the row starts
+    # 3pt inside the pill's top. The x term is the capsule pass's centring, which is why this
+    # anchors on its line.
     text = _replace_once(
         text,
         "            let musicFrame = CGRect(origin: CGPoint(x: aorusMusicX, y: (apparentBackgroundHeight - backgroundHeight) + backgroundHeight - musicHeight - (hasBackground || self.isAvatarExpanded ? 0.0 : 4.0)), size: musicSize)\n",
-        "            let aorusMusicLift: CGFloat = aorusCompactMusic ? 10.0 : 0.0\n"
-        "            let musicFrame = CGRect(origin: CGPoint(x: aorusMusicX, y: (apparentBackgroundHeight - backgroundHeight) + backgroundHeight - musicHeight - (hasBackground || self.isAvatarExpanded ? 0.0 : 4.0) - aorusMusicLift), size: musicSize)\n",
-        "compact music lift",
+        "            let aorusMusicPillHeight = musicSize.height + 6.0\n"
+        "            let aorusMusicPillTop = aorusButtonsBottom + max(4.0, floor((backgroundHeight - aorusButtonsBottom - aorusMusicPillHeight) / 2.0))\n"
+        "            let aorusMusicY: CGFloat = aorusCompactMusic ? (aorusMusicPillTop + 3.0) : (backgroundHeight - musicHeight - (hasBackground || self.isAvatarExpanded ? 0.0 : 4.0))\n"
+        "            let musicFrame = CGRect(origin: CGPoint(x: aorusMusicX, y: (apparentBackgroundHeight - backgroundHeight) + aorusMusicY), size: musicSize)\n",
+        "compact music placement",
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: made the saved-music capsule compact")
@@ -2611,6 +2637,11 @@ def _patch_chat_nav_glass(tg: Path) -> None:
     a button. `singleCustomNode` is exactly that distinction: it is non-nil only for a bar item built
     from a display node of its own, which the avatar and the ghost badge are and a title button is
     not.
+
+    The title pane is written twice over, because there are two title views. `ChatTitleView` is the
+    older one and still carries a `backgroundView` of its own; the one a chat actually installs is
+    `ChatNavigationBarTitleView`, whose pane belongs to the `ChatTitleComponent` inside it. Hiding
+    only the first is why the capsule under the name survived a build that took the avatar's away.
     """
     title = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift"
     text = _read(title, "ChatTitleView.swift")
@@ -2632,6 +2663,31 @@ def _patch_chat_nav_glass(tg: Path) -> None:
         )
         title.write_text(text, encoding="utf-8")
         print("InterfaceV2: hid the chat title tablet")
+
+    component = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift"
+    text = _read(component, "ChatTitleComponent.swift")
+    if "aorusHidesTitlePill" in text:
+        print("InterfaceV2: chat title pill already dropped")
+    else:
+        # Not the pane's isVisible, as in the older view above: here the name and the status are
+        # subviews of the pane's own contentView, so a hidden pane takes them with it. The component
+        # already has the branch for a title with no pane -- displayBackground: false lifts the two
+        # lines back out into the view itself, gives them the frame the capsule would have had and
+        # clears the corner radius -- so the pass supplies the flag it was waiting for instead of
+        # inventing a second way to do it. The tap that opens the profile is on the content, not on
+        # the pane, so it survives; turning the setting off restores the capsule exactly.
+        text = _replace_once(
+            text,
+            "            let displayBackground: Bool = true\n",
+            "            // AorusGram: Interface 2.0 stands the name and the status on the wallpaper\n"
+            "            // with no tablet under them. The back button keeps its own pane, which is a\n"
+            "            // different view in the navigation bar.\n"
+            "            let aorusHidesTitlePill = UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\")\n"
+            "            let displayBackground: Bool = !aorusHidesTitlePill\n",
+            "chat title pill",
+        )
+        component.write_text(text, encoding="utf-8")
+        print("InterfaceV2: dropped the chat title pill")
 
     bar = tg / "submodules/TelegramUI/Components/NavigationBarImpl/Sources/NavigationBarImpl.swift"
     text = _read(bar, "NavigationBarImpl.swift")
