@@ -1266,9 +1266,42 @@ def main() -> None:
             "let activeEndpoint = self.activeEndpoint",
             "nextRanked.contains(activeEndpoint)",
             "previousCredential == profile.credential",
+            # Selection speed. One preflight budget cannot both sweep candidates cheaply and
+            # wait out a slow radio, so there are three, and only the endpoints that ran out
+            # of time earn the patient retry. Collapsing them back to one figure is how a
+            # blocked bridge became half a minute of a client that looks offline.
+            "preflightFastTimeout",
+            "preflightPatientTimeout",
+            "preflightConfirmTimeout",
+            "case slowRemotePath",
+            "for endpoint in slowEndpoints",
+            "localPortIsAvailable(localPort)",
+            # A watchdog failover has to be able to move: without this the core defends the
+            # endpoint it was called about, because its own preflight still passes.
+            "reselectEndpoint: Bool = false",
+            "!reselectEndpoint,",
         ):
             if marker not in reality_manager_text:
                 err.append(f"RealityProxy: core invariant is missing {marker}")
+        for marker in (
+            # Start on the signed order, measure afterwards. Ranking before the first apply()
+            # leaves Telegram with no route for the whole sweep, which is the cold start that
+            # never receives a login code.
+            "provisionalOrder(profile.validEndpoints)",
+            "defendActive: false",
+            "rememberGoodEndpoint(endpoint)",
+            "reselectEndpoint: reselectEndpoint",
+            "reprobeCurrentProfile(reselectEndpoint: true)",
+            # Nothing to fail over to is the state this watchdog exists for, not a reason to
+            # give up on it.
+            "AorusRealityManager.shared.ensureRunning()",
+        ):
+            if marker not in reality_proxy_text:
+                err.append(f"RealityProxy: recovery invariant is missing {marker}")
+        provisional_index = reality_proxy_text.find("apply(profile: profile, rankedEndpoints: provisional)")
+        sweep_index = reality_proxy_text.find("rankEndpoints(profile.validEndpoints, defendActive: false)")
+        if provisional_index < 0 or sweep_index < 0 or sweep_index < provisional_index:
+            err.append("RealityProxy: endpoint ranking runs before Telegram is given a route")
         keep_start = reality_manager_text.find("if previousCredential == profile.credential")
         keep_end = reality_manager_text.find('self.recordDiagnostic(stage: "profile_applied")', keep_start)
         keep_block = reality_manager_text[keep_start:keep_end]

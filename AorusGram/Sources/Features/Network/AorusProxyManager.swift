@@ -80,6 +80,7 @@ public final class AorusProxyManager {
     private let diagnosticCooldown: TimeInterval = 20
     private let mtprotoUnhealthyKey = "aorusgram_proxy_unhealthy_since"
     private let mtprotoConnectionStateKey = "aorusgram_vless_connection_state"
+    private let lastGoodEndpointKey = "aorusgram_reality_last_good_endpoint"
     private let mtprotoUnhealthyThreshold: TimeInterval = 8
     private let mtprotoStallThreshold: TimeInterval = 15
     private let failoverCooldown: TimeInterval = 20
@@ -170,6 +171,9 @@ public final class AorusProxyManager {
             )
         }
         lock.unlock()
+        // Which bridge actually carried traffic, so the next cold start can begin with it
+        // instead of waiting for a sweep to say the same thing.
+        rememberGoodEndpoint(endpoint)
         if didChangeEndpoint {
             resetMTProtoHealthGracePeriod()
         }
@@ -223,15 +227,26 @@ public final class AorusProxyManager {
             DispatchQueue.main.async { completion?(true) }
             return
         }
+        var supersededTask: URLSessionDataTask?
         if inFlight {
-            lock.unlock()
-            DispatchQueue.main.async { completion?(false) }
-            return
+            // A forced refresh is the recovery path — the network just came back, or the
+            // watchdog gave up on the current profile. Dropping it because an earlier request
+            // is still sitting on a socket that is not going to answer is how a cold start
+            // ended up waiting out the whole retry ladder with no route at all.
+            guard force else {
+                lock.unlock()
+                DispatchQueue.main.async { completion?(false) }
+                return
+            }
+            supersededTask = currentTask
+            currentTask = nil
         }
         inFlight = true
         generation &+= 1
         let requestGeneration = generation
         lock.unlock()
+        // Bumping the generation above already made the old response a no-op.
+        supersededTask?.cancel()
 
         guard let signedRequest = buildSignedRequest() else {
             // Keychain can be briefly unavailable while the device is unlocking.
@@ -306,35 +321,64 @@ public final class AorusProxyManager {
                 stage: "profile_decoded",
                 detail: "endpoints=\(profile.endpoints.count) valid=\(profile.validEndpoints.count)"
             )
-            self.rankEndpoints(profile.validEndpoints) { ranked, statuses in
+            // Start on a provisional order and measure afterwards. Ranking is a measurement,
+            // and a measurement costs time — a second on a clean network, several when one
+            // bridge is quietly blocked — and for all of it Telegram has no route at all.
+            // That wait is what a cold start with no login code actually was. The order below
+            // is the one the control plane signed, with the bridge that last worked on this
+            // device in front, so the sweep becomes an improvement rather than a precondition.
+            let provisional = self.provisionalOrder(profile.validEndpoints)
+            let provisionalCards = self.provisionalStatuses(provisional)
+            self.lock.lock()
+            let stillCurrent = self.generation == requestGeneration
+            if stillCurrent {
+                self.profile = profile
+                self.rankedEndpoints = provisional
+                self.statuses = provisionalCards
+                self.activeEndpoint = nil
+                let remaining = max(1, TimeInterval(profile.expiresAt) - Date().timeIntervalSince1970)
+                let delay = max(1, min(worker.ttl, remaining))
+                self.nextRefreshAt = Date().addingTimeInterval(delay)
+                self.provisioningRetryGeneration &+= 1
+                self.provisioningRetryAttempt = 0
+            }
+            let retry = stillCurrent ? self.provisioningRetryWorkItem : nil
+            if stillCurrent { self.provisioningRetryWorkItem = nil }
+            self.lock.unlock()
+            guard stillCurrent else { return }
+
+            retry?.cancel()
+            self.scheduleRefresh()
+            self.writeDiagnostics()
+            AorusRealityManager.shared.recordProxyEvent(
+                stage: "provisional_order",
+                endpointId: provisional.first?.stableId,
+                detail: "endpoints=\(provisional.count)"
+            )
+            AorusRealityManager.shared.apply(profile: profile, rankedEndpoints: provisional)
+            self.finish(generation: requestGeneration, success: true, completion: completion)
+
+            // Now that there is a route, find out which bridge deserved it. `defendActive` is
+            // off because the endpoint this started on was a guess, not a reading, so there is
+            // nothing yet for the hysteresis to defend. apply() still keeps a healthy running
+            // endpoint whatever the new order says, so a better order cannot cost the session
+            // that has come up in the meantime.
+            self.rankEndpoints(profile.validEndpoints, defendActive: false) { ranked, statuses in
                 guard self.licenseAllowsReality else {
                     self.clearProvisioning(stopTunnel: true)
-                    self.finish(generation: requestGeneration, success: false, completion: completion)
                     return
                 }
                 self.lock.lock()
-                let stillCurrent = self.generation == requestGeneration
-                if stillCurrent {
-                    self.profile = profile
+                let unchanged = self.generation == requestGeneration && self.profile == profile
+                if unchanged {
                     self.rankedEndpoints = ranked
                     self.statuses = statuses
-                    self.activeEndpoint = nil
-                    let remaining = max(1, TimeInterval(profile.expiresAt) - Date().timeIntervalSince1970)
-                    let delay = max(1, min(worker.ttl, remaining))
-                    self.nextRefreshAt = Date().addingTimeInterval(delay)
-                    self.provisioningRetryGeneration &+= 1
-                    self.provisioningRetryAttempt = 0
                 }
-                let retry = stillCurrent ? self.provisioningRetryWorkItem : nil
-                if stillCurrent { self.provisioningRetryWorkItem = nil }
                 self.lock.unlock()
-                guard stillCurrent else { return }
+                guard unchanged else { return }
 
-                retry?.cancel()
-                self.scheduleRefresh()
                 self.writeDiagnostics()
                 AorusRealityManager.shared.apply(profile: profile, rankedEndpoints: ranked)
-                self.finish(generation: requestGeneration, success: true, completion: completion)
             }
         }
         lock.lock()
@@ -491,6 +535,7 @@ public final class AorusProxyManager {
 
     private func rankEndpoints(
         _ endpoints: [AorusRealityEndpoint],
+        defendActive: Bool = true,
         completion: @escaping ([AorusRealityEndpoint], [ATunnelDiagData.Server]) -> Void
     ) {
         let group = DispatchGroup()
@@ -549,7 +594,8 @@ public final class AorusProxyManager {
             // endpoint that has stopped responding is not defended — that failover is
             // immediate.
             let ranked: [AorusRealityEndpoint]
-            if let current = self.activeEndpointSnapshot(),
+            if defendActive,
+               let current = self.activeEndpointSnapshot(),
                let currentMetrics = metricsByEndpoint[self.endpointKey(current)],
                let currentLatency = currentMetrics.latency,
                penalties[self.endpointKey(current)] == nil,
@@ -627,6 +673,78 @@ public final class AorusProxyManager {
                 )
             }
             completion(ranked, statuses)
+        }
+    }
+
+    /// Fingerprint of an endpoint identity, not the identity itself.
+    ///
+    /// The bridge that worked has to survive a launch to be of any use, which means writing
+    /// something to disk. Writing the dial target would put production infrastructure into a
+    /// preferences file that ends up in device backups, for no gain: a digest still matches
+    /// against the endpoints of a freshly signed profile, and on its own it names nothing.
+    private func endpointDigest(_ endpoint: AorusRealityEndpoint) -> String {
+        let salted = Data("aorus-reality-endpoint-v1\n\(endpoint.stableId)".utf8)
+        return SHA256.hash(data: salted).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func rememberGoodEndpoint(_ endpoint: AorusRealityEndpoint) {
+        UserDefaults.standard.set(endpointDigest(endpoint), forKey: lastGoodEndpointKey)
+    }
+
+    /// The order to try before anything has been measured: penalised bridges last, the one
+    /// that last carried traffic on this device first, then the signed priority order.
+    private func provisionalOrder(_ endpoints: [AorusRealityEndpoint]) -> [AorusRealityEndpoint] {
+        let lastGood = UserDefaults.standard.string(forKey: lastGoodEndpointKey)
+        lock.lock()
+        let now = Date()
+        penalizedEndpoints = penalizedEndpoints.filter { $0.value > now }
+        let penalties = penalizedEndpoints
+        lock.unlock()
+        // Sorted through the offsets because Swift's sort is not stable, and two bridges that
+        // tie on every criterion must not swap places from one launch to the next.
+        return endpoints.enumerated().sorted { left, right in
+            let leftPenalized = penalties[self.endpointKey(left.element)] != nil
+            let rightPenalized = penalties[self.endpointKey(right.element)] != nil
+            if leftPenalized != rightPenalized { return !leftPenalized }
+            if let lastGood {
+                let leftKnownGood = self.endpointDigest(left.element) == lastGood
+                let rightKnownGood = self.endpointDigest(right.element) == lastGood
+                if leftKnownGood != rightKnownGood { return leftKnownGood }
+            }
+            if left.element.priority != right.element.priority {
+                return left.element.priority < right.element.priority
+            }
+            return left.offset < right.offset
+        }.map(\.element)
+    }
+
+    /// Cards for an order nothing has measured yet.
+    ///
+    /// `available` with no reading is the UI's "checking" state, which is the truth here.
+    /// Reporting unavailable would draw every bridge as down for the second before the first
+    /// sweep lands, on exactly the screen a user opens when they are worried about the tunnel.
+    private func provisionalStatuses(_ endpoints: [AorusRealityEndpoint]) -> [ATunnelDiagData.Server] {
+        lock.lock()
+        let previous = statuses
+        lock.unlock()
+        return endpoints.sorted(by: { $0.priority < $1.priority }).map { endpoint in
+            let known = previous.first {
+                $0.id == endpoint.id && $0.endpointPriority == endpoint.priority
+            }
+            return ATunnelDiagData.Server(
+                region: self.endpointLabel(endpoint),
+                endpointPriority: endpoint.priority,
+                available: true,
+                active: false,
+                latencyMs: known?.latencyMs,
+                jitterMs: known?.jitterMs,
+                lossCount: known?.lossCount ?? 0,
+                id: endpoint.id,
+                country: endpoint.country,
+                routeType: endpoint.routeType,
+                via: endpoint.via,
+                measuredAt: known?.measuredAt
+            )
         }
     }
 
@@ -799,20 +917,43 @@ public final class AorusProxyManager {
             path.availableInterfaces.map(\.name).sorted().joined(separator: ",")
         ].joined(separator: "|")
         lock.lock()
+        let isFirstSignature = lastPathSignature == nil
         let changed = lastPathSignature != nil && lastPathSignature != signature
         lastPathSignature = signature
         if changed {
             penalizedEndpoints.removeAll(keepingCapacity: false)
             lastFailoverAt = .distantPast
         }
+        let hasRoute = profile?.isValid(for: DeviceFingerprint.deviceHash()) == true
+        // A network that has just arrived is a fresh chance, not a continuation of the ladder
+        // the failures before it built. Leaving the attempt counter where it stood is how a
+        // client whose connectivity turned up thirty seconds late then waited another thirty
+        // for its turn to ask again.
+        if path.status == .satisfied, !hasRoute {
+            provisioningRetryAttempt = 0
+        }
         lock.unlock()
-        guard changed else { return }
+        // The first signature is usually the one launch is already acting on, so it is not
+        // worth a second sweep — unless that launch has no profile to show for it, which is
+        // exactly the cold start that raced its own network coming up.
+        let needsBootstrap = path.status == .satisfied && !hasRoute
+        guard changed || (isFirstSignature && needsBootstrap) else { return }
         resetMTProtoHealthGracePeriod()
 
         pathSettleWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard path.status == .satisfied else { return }
-            self?.reprobeCurrentProfile()
+            guard let self, path.status == .satisfied else { return }
+            if needsBootstrap {
+                self.lock.lock()
+                let busy = self.inFlight
+                let arrived = self.profile?.isValid(for: DeviceFingerprint.deviceHash()) == true
+                self.lock.unlock()
+                // Launch still has a request out, or it landed while this was waiting. Either
+                // way there is nothing here to rescue, and asking twice for one profile is
+                // load on the control plane for nothing.
+                guard !busy, !arrived else { return }
+            }
+            self.reprobeCurrentProfile()
         }
         pathSettleWork = work
         pathQueue.asyncAfter(deadline: .now() + pathSettleDelay, execute: work)
@@ -826,7 +967,12 @@ public final class AorusProxyManager {
         if allowed { reprobeCurrentProfile() } else { writeDiagnostics() }
     }
 
-    private func reprobeCurrentProfile() {
+    /// Re-measures the signed endpoints and hands the result back to the core.
+    ///
+    /// `reselectEndpoint` is passed through to the core as "the endpoint running now is the
+    /// problem". Without it the core defends whatever is already carrying traffic, which is
+    /// right after a path change and wrong after a watchdog failover.
+    private func reprobeCurrentProfile(reselectEndpoint: Bool = false) {
         guard licenseAllowsReality else {
             clearProvisioning(stopTunnel: true)
             return
@@ -856,7 +1002,11 @@ public final class AorusProxyManager {
             self.lock.unlock()
             guard stillCurrent else { return }
             self.writeDiagnostics()
-            AorusRealityManager.shared.apply(profile: currentProfile, rankedEndpoints: ranked)
+            AorusRealityManager.shared.apply(
+                profile: currentProfile,
+                rankedEndpoints: ranked,
+                reselectEndpoint: reselectEndpoint
+            )
         }
     }
 
@@ -911,18 +1061,39 @@ public final class AorusProxyManager {
         lock.lock()
         guard let profile,
               profile.isValid(for: DeviceFingerprint.deviceHash()),
-              profile.validEndpoints.count > 1,
-              let activeEndpoint,
               now.timeIntervalSince(lastFailoverAt) >= failoverCooldown else {
             lock.unlock()
             return
         }
-        penalizedEndpoints[endpointKey(activeEndpoint)] = now.addingTimeInterval(endpointPenaltyDuration)
+        // Failing over needs somewhere to go and something to move off, and neither is
+        // guaranteed: a profile can sign a single bridge, and a tunnel that never came up has
+        // no active endpoint at all. That second case is precisely the client sitting on "no
+        // connection" — the one this watchdog exists for — and returning here left it there.
+        let canFailover = profile.validEndpoints.count > 1 && activeEndpoint != nil
+        if canFailover, let activeEndpoint {
+            penalizedEndpoints[endpointKey(activeEndpoint)] = now.addingTimeInterval(endpointPenaltyDuration)
+        }
         lastFailoverAt = now
         lock.unlock()
 
         resetMTProtoHealthGracePeriod()
-        reprobeCurrentProfile()
+        guard canFailover else {
+            // Nothing to switch to, so rebuild the local path instead: the core re-proves the
+            // whole route and restarts itself when it cannot.
+            AorusRealityManager.shared.recordProxyEvent(
+                stage: "watchdog_rebuild",
+                errorCode: "mtproto_unhealthy",
+                detail: "reason=no_alternate"
+            )
+            AorusRealityManager.shared.ensureRunning()
+            return
+        }
+        AorusRealityManager.shared.recordProxyEvent(
+            stage: "watchdog_failover",
+            errorCode: "mtproto_unhealthy",
+            detail: "endpoints=\(profile.validEndpoints.count)"
+        )
+        reprobeCurrentProfile(reselectEndpoint: true)
     }
 
     /// A server or path transition gets a fresh handshake window. Preserve the

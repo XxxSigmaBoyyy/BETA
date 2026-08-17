@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import ImageBlur
 import TelegramPresentationData
 
 // AorusGram Interface 2.0: the avatar's colours, published for the rest of the profile screen.
@@ -74,8 +75,8 @@ public enum AorusGlassProfileTint {
         return AorusGlassProfileTint.pageColors[peerId]
     }
 
-    /// The photo's last few points of picture, as a strip one pixel tall, for the page to stretch
-    /// behind the whole screen -- sections, tabs, gifts and all.
+    /// The photo's last few points of picture, blurred and kept tiny, for the page to stretch behind
+    /// the whole screen -- sections, tabs, gifts and all.
     ///
     /// This is Telegram's own bottom blur carried on downwards rather than a second effect invented
     /// for the page. An expanded avatar already ends in `PeerAvatarBottomShadowNode`: a variable
@@ -84,17 +85,19 @@ public enum AorusGlassProfileTint {
     /// begin in exactly the colour that band ends in, and it cannot *be* that view -- the node
     /// lives inside the clipped avatar container, exists only while the photo is expanded, and a
     /// UIVisualEffectView has nothing to blur below the photo in any case. So the page reproduces
-    /// the same material: the same pixels, the same darkening, spread over the same soft blur.
+    /// the same material: the same pixels, the same darkening, through the same blur.
     ///
-    /// The blur is the scaling. A strip 32 pixels across stretched over a phone screen with linear
-    /// filtering is a soft horizontal blur of roughly the radius the native band uses, for the cost
-    /// of a 128-byte texture and no filter pass at all -- where CIGaussianBlur over a full-screen
-    /// image would cost one on every photo change.
+    /// The blur is `ImageBlur.blurredImage` -- the box convolution Telegram blurs its own thumbnails
+    /// and wallpapers with -- run over a small square sample of that band. Scaling is not a blur:
+    /// an earlier version stretched a strip thirty-two pixels wide straight across the screen, and
+    /// every vertical edge in it stayed perfectly sharp. A person standing in the middle of a selfie
+    /// came out as one long band down the page, which is what was reported. Blurring the sample
+    /// first is what makes the stretch read as the picture's colours rather than as the picture.
     ///
-    /// One pixel tall on purpose. What the page has to do is continue the photo's bottom edge
-    /// downwards with no visible change, and a second row would draw a gradient down the screen
-    /// that nothing above it is the continuation of. An earlier version took the bottom half of the
-    /// picture and mirrored it, which put a smeared face down the middle of the page.
+    /// What comes back out of the blur is one row of it, so the picture varies across and not down.
+    /// The page is not the only rectangle this is stretched over -- the members pane lays the same
+    /// image across its own bounds, which begin further down the screen -- and a vertical gradient
+    /// stretched over two different heights meets itself at the pane's edge as a seam.
     public static func pageBackgroundImage(for peerId: Int64) -> UIImage? {
         return AorusGlassProfileTint.pageImages[peerId]
     }
@@ -202,7 +205,7 @@ public enum AorusGlassProfileTint {
     }
 
     /// One photo's contribution to the page: the colour it ends on, and the same bottom band kept as
-    /// a strip one pixel tall. `image` is nil when only the round fallback avatar was available.
+    /// a single blurred row. `image` is nil when only the round fallback avatar was available.
     private struct Sample {
         let color: UIColor
         let image: UIImage?
@@ -238,6 +241,23 @@ public enum AorusGlassProfileTint {
     /// picture. Sampling the photo as stored and painting the page with that is why the page came
     /// out a third brighter than the band above it and the join was visible.
     private static let bandShadow: Double = 0.4 * 0.8
+
+    /// How many pixels across and down the band is sampled at, before the blur.
+    ///
+    /// Small on purpose: it is stretched over a whole screen, so anything finer is detail the page
+    /// has no business showing. Square rather than one row tall because the blur's box kernel has to
+    /// fit inside both dimensions, and fifteen does not fit inside one. The row is taken back out of
+    /// it afterwards, so what the page ends up holding is still thirty-two pixels by one.
+    private static let sampleSize = 32
+
+    /// Radius the sampled band is blurred with, in that sample's own pixels.
+    ///
+    /// Telegram's band over the mirrored strip is a fifteen-point variable blur, and this is the same
+    /// figure read in the sample's units: after three box passes it is a standard deviation of about
+    /// a quarter of the picture's width. Enough that a figure in the middle of the frame becomes
+    /// shading instead of a shape, and not so much that a landscape's left-to-right colours collapse
+    /// into one flat tone.
+    private static let sampleBlurRadius: CGFloat = 15.0
 
     /// What the page is painted with right now, per peer on screen.
     private static var pageColors: [Int64: UIColor] = [:]
@@ -279,10 +299,10 @@ public enum AorusGlassProfileTint {
         }
     }
 
-    /// Both halves of a sample -- the strip and the colour -- from one render of the view.
+    /// Both halves of a sample -- the picture and the colour -- from one render of the view.
     ///
     /// One pass and one buffer, not two of each: the colour is the average of the very pixels the
-    /// strip is built from, so the flat page behind the screen and the image stretched over it
+    /// backdrop is built from, so the flat page behind the screen and the image stretched over it
     /// cannot disagree about the row the header ends on.
     ///
     /// Returns nil when the view has drawn next to nothing, which is how a photo that is still
@@ -297,8 +317,9 @@ public enum AorusGlassProfileTint {
         // photo is a shape this was never given, but clamping is a line and a crash is a crash.
         let center = bounds.height - AorusGlassProfileTint.mirrorDepth(tail: tail)
         let bandTop = max(0.0, min(bounds.height - bandHeight, center - bandHeight / 2.0))
-        let width = 32
-        let count = width * 4
+        let size = AorusGlassProfileTint.sampleSize
+        let bytesPerRow = size * 4
+        let count = bytesPerRow * size
         // Allocated rather than borrowed from an Array's buffer: the context outlives the call that
         // would produce that pointer, and a pointer into an Array is only valid inside the closure
         // it was handed to.
@@ -311,25 +332,26 @@ public enum AorusGlassProfileTint {
         let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
         guard let context = CGContext(
             data: pixels,
-            width: width,
-            height: 1,
+            width: size,
+            height: size,
             bitsPerComponent: 8,
-            bytesPerRow: width * 4,
+            bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: bitmapInfo
         ) else {
             return nil
         }
-        // The whole band collapses into a single row, so ask for the filtering that averages it
-        // rather than the one that is free to pick one source pixel out of it.
+        // The band is squashed across and down into a fraction of its own size, so ask for the
+        // filtering that averages what it drops rather than the one that is free to pick one source
+        // pixel out of it.
         context.interpolationQuality = .high
         // Three transforms, applied in the order written and composing right to left, so read them
         // bottom up: put the band's top-left at the origin, express the context in the view's own
         // points, then flip, because a bitmap context counts y upwards and a layer counts it down.
         // Getting the flip wrong here samples the top of the photo and looks almost right, which is
         // the kind of almost that survives review.
-        context.translateBy(x: 0.0, y: 1.0)
-        context.scaleBy(x: CGFloat(width) / bounds.width, y: -1.0 / bandHeight)
+        context.translateBy(x: 0.0, y: CGFloat(size))
+        context.scaleBy(x: CGFloat(size) / bounds.width, y: -CGFloat(size) / bandHeight)
         context.translateBy(x: 0.0, y: -bandTop)
         // render(in:) rather than drawHierarchy(in:afterScreenUpdates:): the avatar is a layer
         // with an image in it, this stays on the current thread without a screen update, and it
@@ -346,7 +368,7 @@ public enum AorusGlassProfileTint {
             totalBlue += Double(pixels[index + 2]) / 255.0
             totalAlpha += Double(pixels[index + 3]) / 255.0
         }
-        guard totalAlpha > 0.5 * Double(width) else {
+        guard totalAlpha > 0.5 * Double(size * size) else {
             return nil
         }
         // Premultiplied, so dividing by the accumulated alpha both un-premultiplies and weights the
@@ -372,14 +394,14 @@ public enum AorusGlassProfileTint {
         }
         // Copied into a Data the image owns. CGContext.makeImage over a client-supplied buffer is a
         // copy-on-write of memory this function frees on the way out, which is a use after free the
-        // first time the page is drawn -- 128 bytes is not worth being clever about.
+        // first time the page is drawn -- four kilobytes is not worth being clever about.
         guard let provider = CGDataProvider(data: Data(bytes: pixels, count: count) as CFData),
-              let strip = CGImage(
-                  width: width,
-                  height: 1,
+              let band = CGImage(
+                  width: size,
+                  height: size,
                   bitsPerComponent: 8,
                   bitsPerPixel: 32,
-                  bytesPerRow: width * 4,
+                  bytesPerRow: bytesPerRow,
                   space: CGColorSpaceCreateDeviceRGB(),
                   bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
                   provider: provider,
@@ -390,7 +412,43 @@ public enum AorusGlassProfileTint {
         else {
             return Sample(color: color, image: nil)
         }
-        return Sample(color: color, image: UIImage(cgImage: strip, scale: 1.0, orientation: .up))
+        let sampled = UIImage(cgImage: band, scale: 1.0, orientation: .up)
+        // Telegram's own blur, over the picture the page is about to stretch. Module-qualified so
+        // that nothing else called `blurredImage` can quietly be picked up instead, and falling back
+        // to the unblurred sample rather than to nothing: a page that keeps a little too much detail
+        // is still the right colours, where no page at all is the flat theme background this whole
+        // feature exists to get rid of.
+        let blurred = ImageBlur.blurredImage(sampled, radius: AorusGlassProfileTint.sampleBlurRadius)
+        return Sample(color: color, image: AorusGlassProfileTint.flattened(blurred ?? sampled))
+    }
+
+    /// The row through the middle of a blurred sample, which is what makes the backdrop safe to
+    /// stretch over more than one rectangle.
+    ///
+    /// The blur is square -- it runs down the sample as well as across it -- and the page is not the
+    /// only thing that stretches the result. The members pane lays the same image over its own
+    /// bounds, which start below the header and end above the tab bar, so a picture with a vertical
+    /// gradient in it would be drawn at two different heights and meet itself at the pane's edge as a
+    /// seam. Taking one row keeps every bit of the blur's work across the band, which is where the
+    /// artefact this fixes lives, and leaves nothing down it for two rectangles to disagree about.
+    ///
+    /// The middle row rather than the top or the bottom: three box passes of a fifteen-pixel kernel
+    /// over thirty-two rows leave it holding an average of the whole band, where the outer rows are
+    /// weighted towards whatever `kvImageEdgeExtend` repeated past the edge.
+    private static func flattened(_ image: UIImage) -> UIImage {
+        guard let cgImage = image.cgImage, cgImage.height > 1 else {
+            return image
+        }
+        let row = CGRect(
+            x: 0.0,
+            y: CGFloat(cgImage.height / 2),
+            width: CGFloat(cgImage.width),
+            height: 1.0
+        )
+        guard let cropped = cgImage.cropping(to: row) else {
+            return image
+        }
+        return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
     }
 
     private static func shaded(_ component: UInt8) -> UInt8 {

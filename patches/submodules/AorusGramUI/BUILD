@@ -12,6 +12,7 @@ swift_library(
         "//submodules/AorusGram:AorusGram",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/Display:Display",
+        "//submodules/ImageBlur:ImageBlur",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Postbox:Postbox",
         "//submodules/TelegramCore:TelegramCore",

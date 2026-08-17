@@ -186,8 +186,24 @@ public final class AorusRealityManager {
     private var didResetDiagnosticTraceForProcess = false
 
     private let coreStartTimeout: TimeInterval = 3.0
-    private let realityPreflightTimeout: TimeInterval = 8.0
-    private let coreStartPollInterval: TimeInterval = 0.05
+    /// Preflight budgets, split because one figure cannot do both jobs. Eight seconds spent
+    /// per candidate is how one blocked bridge became half a minute of a client that looks
+    /// like it has no network at all, and a budget short enough to keep that cheap would fail
+    /// a slow radio that does work. So the sweep goes fast over every signed endpoint first,
+    /// and only a failure that ran out of time — rather than one that was refused — earns the
+    /// patient second pass. Confirming a core that is already up is neither of those: it
+    /// happens with the user waiting, so it gets the middle figure.
+    private let preflightFastTimeout: TimeInterval = 2.5
+    private let preflightPatientTimeout: TimeInterval = 6.0
+    private let preflightConfirmTimeout: TimeInterval = 4.0
+    /// How long the local SOCKS inbound gets to answer, starting small and doubling. The core
+    /// usually binds within tens of milliseconds, and a flat 0.4 per attempt was most of the
+    /// wait before the tunnel came up.
+    private let localSocksFirstProbeTimeout: TimeInterval = 0.15
+    private let localSocksMaxProbeTimeout: TimeInterval = 0.4
+    /// Enough for a loopback connect to be refused, which is the answer being looked for.
+    private let localPortProbeTimeout: TimeInterval = 0.15
+    private let coreStartPollInterval: TimeInterval = 0.02
     private let restartRetryDelays: [TimeInterval] = [0.25, 0.5, 1, 2, 4, 8, 15]
 
     private init() {}
@@ -223,7 +239,8 @@ public final class AorusRealityManager {
                let port = self.activePort ?? self.endpointForCurrentProcess() {
                 let preflight = self.realityPreflight(
                     port: port,
-                    endpointPriority: self.activeEndpoint?.priority
+                    endpointPriority: self.activeEndpoint?.priority,
+                    timeout: self.preflightConfirmTimeout
                 )
                 if preflight == .ready {
                     self.activePort = port
@@ -247,7 +264,19 @@ public final class AorusRealityManager {
         }
     }
 
-    func apply(profile: AorusRealityProfile, rankedEndpoints: [AorusRealityEndpoint]) {
+    /// Adopts a signed profile and an endpoint order.
+    ///
+    /// `reselectEndpoint` is the caller saying that the endpoint currently carrying traffic is
+    /// the problem. Without it this method defends whatever is running (see below), which is
+    /// right for a periodic re-rank and wrong for the watchdog: a REALITY preflight to one
+    /// datacentre can succeed while the MTProto session this endpoint is meant to carry has
+    /// been stalled for fifteen seconds, and the failover that was supposed to fix it would
+    /// keep landing on the same endpoint it was called about.
+    func apply(
+        profile: AorusRealityProfile,
+        rankedEndpoints: [AorusRealityEndpoint],
+        reselectEndpoint: Bool = false
+    ) {
         publishRequirement(required: authorizationAllowsTunnel)
         queue.async { [weak self] in
             guard let self else { return }
@@ -285,13 +314,15 @@ public final class AorusRealityManager {
             // healthy. Rotation, removal from the signed profile, or an actual
             // preflight failure still takes the normal restart/failover path.
             if previousCredential == profile.credential,
+               !reselectEndpoint,
                self.isCoreRunning(),
                let activePort = self.activePort,
                let activeEndpoint = self.activeEndpoint,
                nextRanked.contains(activeEndpoint) {
                 let preflight = self.realityPreflight(
                     port: activePort,
-                    endpointPriority: activeEndpoint.priority
+                    endpointPriority: activeEndpoint.priority,
+                    timeout: self.preflightConfirmTimeout
                 )
                 canKeepRunning = preflight == .ready
                 if !canKeepRunning {
@@ -384,78 +415,44 @@ public final class AorusRealityManager {
         clearEndpoint(postUpdate: false)
 
         let endpointOrder = rankedEndpoints.isEmpty ? profile.validEndpoints : rankedEndpoints
+        var slowEndpoints: [AorusRealityEndpoint] = []
         for endpoint in endpointOrder {
             guard mayRun else { break }
-            recordDiagnostic(stage: "endpoint_selected", endpointPriority: endpoint.priority)
-            for localPort in Self.candidatePorts {
-                guard let config = makeConfig(profile: profile, endpoint: endpoint, localPort: localPort) else {
-                    continue
-                }
-                recordDiagnostic(
-                    stage: "core_start_requested",
-                    endpointPriority: endpoint.priority,
-                    localPort: localPort
-                )
-                recordDiagnostic(
-                    stage: "dial_target_resolved",
-                    endpointPriority: endpoint.priority,
-                    localPort: localPort,
-                    endpointId: endpoint.stableId,
-                    // The dial target and the route are not secrets — the device owner
-                    // already holds them in the profile — and without them a blocked bridge
-                    // cannot be told apart from a client dialling the wrong thing. The
-                    // credential, the keys and the SNI stay out.
-                    detail: "target=\(endpoint.address):\(endpoint.port) route=\(endpoint.routeType ?? "direct")"
-                        + (endpoint.via.map { " via=\($0)" } ?? "")
-                )
-                let response = invoke(method: "runXrayFromJson", payload: ["configJSON": config])
-                guard response?.success == true else {
-                    recordDiagnostic(
-                        stage: "core_start_failed",
-                        errorCode: "xray_start_rejected",
-                        endpointPriority: endpoint.priority,
-                        localPort: localPort
-                    )
-                    _ = invoke(method: "stopXray")
-                    waitForCoreStop()
-                    continue
-                }
-                if waitForCoreAndLocalSocks(
-                    port: localPort,
-                    endpointPriority: endpoint.priority
-                ) {
-                    let preflight = realityPreflight(port: localPort, endpointPriority: endpoint.priority)
-                    guard preflight == .ready else {
-                        recordPreflightFailure(preflight, endpoint: endpoint, localPort: localPort)
-                        _ = invoke(method: "stopXray")
-                        waitForCoreStop()
-                        // A different loopback port cannot repair a failed remote
-                        // REALITY path. Move directly to the next signed endpoint.
-                        break
-                    }
-                    activePort = localPort
-                    activeEndpoint = endpoint
-                    rankedEndpoints = [endpoint] + rankedEndpoints.filter { $0 != endpoint }
-                    cancelRestartRetryLocked(resetAttempt: true)
-                    recordDiagnostic(
-                        stage: "endpoint_published",
-                        localSocksReady: true,
-                        endpointPriority: endpoint.priority,
-                        localPort: localPort
-                    )
-                    recordDiagnostic(
-                        stage: "tunnel_ready",
-                        localSocksReady: true,
-                        endpointPriority: endpoint.priority,
-                        localPort: localPort,
-                        endpointId: endpoint.stableId
-                    )
-                    publishEndpoint(port: localPort)
-                    AorusProxyManager.shared.realityEndpointDidActivate(endpoint)
+            switch attemptEndpoint(
+                profile: profile,
+                endpoint: endpoint,
+                preflightTimeout: preflightFastTimeout
+            ) {
+            case .published:
+                return
+            case .slowRemotePath:
+                slowEndpoints.append(endpoint)
+            case .failed:
+                break
+            }
+        }
+        // A bridge whose REALITY leg ran out of time rather than refusing the connection is a
+        // slow path, not a blocked one, and on a bad radio every one of them can be. The first
+        // pass exists so a blocked bridge costs seconds; this one exists so a slow bridge still
+        // connects. Only the endpoints that actually ran out of time are worth the longer
+        // budget — a refused connection and a core that would not start answer the same way
+        // however long they are given — so the client with nowhere to go still reaches its
+        // retry quickly instead of paying the patient timeout for every dead bridge.
+        if !slowEndpoints.isEmpty, mayRun {
+            recordDiagnostic(
+                stage: "patient_pass_started",
+                errorCode: "fast_preflight_timed_out",
+                detail: "retry=\(slowEndpoints.count) of=\(endpointOrder.count)"
+            )
+            for endpoint in slowEndpoints {
+                guard mayRun else { break }
+                if attemptEndpoint(
+                    profile: profile,
+                    endpoint: endpoint,
+                    preflightTimeout: preflightPatientTimeout
+                ) == .published {
                     return
                 }
-                _ = invoke(method: "stopXray")
-                waitForCoreStop()
             }
         }
         // Nothing published: MTProto stays on the closed loopback port, which is what the
@@ -467,6 +464,139 @@ public final class AorusRealityManager {
         )
         clearEndpoint(postUpdate: true)
         scheduleRestartRetryLocked()
+    }
+
+    private enum AorusEndpointAttempt: Equatable {
+        case published
+        case slowRemotePath
+        case failed
+    }
+
+    /// Brings one signed endpoint up on the first loopback port that will take it and proves
+    /// the whole path before Telegram is told the port exists.
+    private func attemptEndpoint(
+        profile: AorusRealityProfile,
+        endpoint: AorusRealityEndpoint,
+        preflightTimeout: TimeInterval
+    ) -> AorusEndpointAttempt {
+        recordDiagnostic(stage: "endpoint_selected", endpointPriority: endpoint.priority)
+        for localPort in Self.candidatePorts {
+            guard mayRun else { return .failed }
+            guard let config = makeConfig(profile: profile, endpoint: endpoint, localPort: localPort) else {
+                continue
+            }
+            // Anything else on the device holding this port makes the core start and then
+            // never serve, which costs the entire core-start budget to find out. Asking
+            // first costs 150 ms at most.
+            guard localPortIsAvailable(localPort) else {
+                recordDiagnostic(
+                    stage: "local_port_unavailable",
+                    errorCode: "local_port_occupied",
+                    endpointPriority: endpoint.priority,
+                    localPort: localPort
+                )
+                continue
+            }
+            recordDiagnostic(
+                stage: "core_start_requested",
+                endpointPriority: endpoint.priority,
+                localPort: localPort
+            )
+            recordDiagnostic(
+                stage: "dial_target_resolved",
+                endpointPriority: endpoint.priority,
+                localPort: localPort,
+                endpointId: endpoint.stableId,
+                // The dial target and the route are not secrets — the device owner
+                // already holds them in the profile — and without them a blocked bridge
+                // cannot be told apart from a client dialling the wrong thing. The
+                // credential, the keys and the SNI stay out.
+                detail: "target=\(endpoint.address):\(endpoint.port) route=\(endpoint.routeType ?? "direct")"
+                    + (endpoint.via.map { " via=\($0)" } ?? "")
+            )
+            let response = invoke(method: "runXrayFromJson", payload: ["configJSON": config])
+            guard response?.success == true else {
+                recordDiagnostic(
+                    stage: "core_start_failed",
+                    errorCode: "xray_start_rejected",
+                    endpointPriority: endpoint.priority,
+                    localPort: localPort
+                )
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                continue
+            }
+            guard waitForCoreAndLocalSocks(port: localPort, endpointPriority: endpoint.priority) else {
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                continue
+            }
+            let preflight = realityPreflight(
+                port: localPort,
+                endpointPriority: endpoint.priority,
+                timeout: preflightTimeout
+            )
+            guard preflight == .ready else {
+                // A path that ran out of the fast budget may only be slow, and a bridge is
+                // not worth a five-minute penalty for that until the patient pass has said
+                // the same thing. One that was actively refused is penalised now.
+                let deferPenalty = preflight == .tunnelConnectTimedOut
+                    && preflightTimeout < preflightPatientTimeout
+                recordPreflightFailure(
+                    preflight,
+                    endpoint: endpoint,
+                    localPort: localPort,
+                    penalizeEndpoint: !deferPenalty
+                )
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                // A different loopback port cannot repair a failed remote REALITY path.
+                // Move directly to the next signed endpoint.
+                return deferPenalty ? .slowRemotePath : .failed
+            }
+            activePort = localPort
+            activeEndpoint = endpoint
+            rankedEndpoints = [endpoint] + rankedEndpoints.filter { $0 != endpoint }
+            cancelRestartRetryLocked(resetAttempt: true)
+            recordDiagnostic(
+                stage: "endpoint_published",
+                localSocksReady: true,
+                endpointPriority: endpoint.priority,
+                localPort: localPort
+            )
+            recordDiagnostic(
+                stage: "tunnel_ready",
+                localSocksReady: true,
+                endpointPriority: endpoint.priority,
+                localPort: localPort,
+                endpointId: endpoint.stableId
+            )
+            publishEndpoint(port: localPort)
+            AorusProxyManager.shared.realityEndpointDidActivate(endpoint)
+            return .published
+        }
+        return .failed
+    }
+
+    /// Whether the loopback port looks free for the local inbound.
+    ///
+    /// Not a bind test: taking the port to find out creates the conflict it is checking for,
+    /// because closing it again races the core's own bind. The same question has an answer
+    /// from the outside — a connect that completes and then does not speak SOCKS is something
+    /// else already listening, and a connect that is refused is nobody.
+    private func localPortIsAvailable(_ port: Int) -> Bool {
+        switch socksProbe(
+            port: port,
+            target: nil,
+            timeout: localPortProbeTimeout,
+            requireTunnelConnect: false
+        ) {
+        case .localConnectFailed, .localConnectTimedOut:
+            return true
+        case .ready, .negotiationFailed, .negotiationTimedOut,
+             .tunnelConnectFailed, .tunnelConnectTimedOut:
+            return false
+        }
     }
 
     private func stopLocked(clearProfile: Bool) {
@@ -488,6 +618,7 @@ public final class AorusRealityManager {
     private func waitForCoreAndLocalSocks(port: Int, endpointPriority: Int) -> Bool {
         let deadline = Date().addingTimeInterval(coreStartTimeout)
         var observedRunningCore = false
+        var probeTimeout = localSocksFirstProbeTimeout
         repeat {
             if isCoreRunning() {
                 if !observedRunningCore {
@@ -500,7 +631,7 @@ public final class AorusRealityManager {
                 }
                 let remaining = deadline.timeIntervalSinceNow
                 if remaining > 0,
-                   localSocksIsReady(port: port, timeout: min(0.4, remaining)) {
+                   localSocksIsReady(port: port, timeout: min(probeTimeout, remaining)) {
                     recordDiagnostic(
                         stage: "local_socks_ready",
                         localSocksReady: true,
@@ -509,6 +640,9 @@ public final class AorusRealityManager {
                     )
                     return true
                 }
+                // The inbound was not up yet. Give it longer each time rather than spending
+                // the same generous timeout on an answer that arrives in milliseconds.
+                probeTimeout = min(localSocksMaxProbeTimeout, probeTimeout * 2.0)
             }
             Thread.sleep(forTimeInterval: coreStartPollInterval)
         } while Date() < deadline && mayRun
@@ -554,7 +688,11 @@ public final class AorusRealityManager {
     /// the full path: local inbound -> selected bridge -> REALITY/VLESS -> remote
     /// Telegram TCP destination. Targets are probed concurrently so a blocked DC
     /// cannot add a second full timeout to foreground recovery.
-    private func realityPreflight(port: Int, endpointPriority: Int?) -> AorusSocksProbeResult {
+    ///
+    /// `timeout` is what the caller can afford to wait, not a property of the path: a sweep
+    /// across candidates spends little on each, a confirmation of a core that is already
+    /// carrying traffic can afford more.
+    private func realityPreflight(port: Int, endpointPriority: Int?, timeout: TimeInterval) -> AorusSocksProbeResult {
         recordDiagnostic(
             stage: "reality_preflight_started",
             localSocksReady: true,
@@ -573,7 +711,7 @@ public final class AorusRealityManager {
                 let result = self.socksProbe(
                     port: port,
                     target: target,
-                    timeout: self.realityPreflightTimeout,
+                    timeout: timeout,
                     requireTunnelConnect: true
                 )
                 results.set(result, at: index)
@@ -581,7 +719,7 @@ public final class AorusRealityManager {
             }
         }
 
-        let deadline = DispatchTime.now() + realityPreflightTimeout + 0.5
+        let deadline = DispatchTime.now() + timeout + 0.5
         for _ in Self.telegramPreflightTargets {
             if resultReady.wait(timeout: deadline) == .timedOut { break }
             if results.snapshot().values.contains(.ready), mayRun {
@@ -606,7 +744,8 @@ public final class AorusRealityManager {
     private func recordPreflightFailure(
         _ result: AorusSocksProbeResult,
         endpoint: AorusRealityEndpoint?,
-        localPort: Int
+        localPort: Int,
+        penalizeEndpoint: Bool = true
     ) {
         recordDiagnostic(
             stage: "reality_preflight_failed",
@@ -615,7 +754,7 @@ public final class AorusRealityManager {
             endpointPriority: endpoint?.priority,
             localPort: localPort
         )
-        if result.isRemotePathFailure, let endpoint {
+        if penalizeEndpoint, result.isRemotePathFailure, let endpoint {
             if let index = rankedEndpoints.firstIndex(of: endpoint) {
                 rankedEndpoints.remove(at: index)
                 rankedEndpoints.append(endpoint)

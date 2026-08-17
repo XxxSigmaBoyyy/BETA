@@ -1084,6 +1084,278 @@ def _patch_action_sheet_glass(tg: Path) -> None:
     print("InterfaceV2: made the action sheets glass")
 
 
+def _patch_share_sheet_glass(tg: Path) -> None:
+    """Put "Отправить" on glass -- the sheet a tap on a username in a profile opens.
+
+    It is not an action sheet, which is why the pass above never reached it. `ShareControllerNode`
+    draws its own card out of stretchable images it generates in its initialiser: a rounded rectangle
+    behind the peer grid, the same rectangle with its top squared off behind the comment field and
+    the send button, and a third copy of the first behind Cancel -- all filled with
+    `opaqueItemBackgroundColor`. So under Interface 2.0 this was the last plainly opaque panel left in
+    the client, and it is the one a profile puts on screen most often.
+
+    Three panes, then, one per shape, and the fills they take over go clear rather than being deleted.
+    The highlighted pair stays a colour: Cancel and Send still have to answer a finger, and a
+    translucent wash over the material is how the action sheets already answer one.
+
+    Two of the panes live inside the node that used to hold the card's image, and the third inside
+    Cancel's, which is what keeps all three in place for nothing: those are the nodes the sheet
+    already moves. A view of our own tracking three frames would have to be told about the drag, the
+    keyboard, the peer that was just selected and the search that was just opened, and told again
+    every time upstream changes one of them.
+
+    The card's pane stops where the strip's begins instead of running the height of the card. Glass
+    over glass comes out brighter than either, and a sheet with a brighter rectangle across its foot
+    reads as a bug; two panes tiling the card exactly read as the footer it is. Leaving the strip
+    clear is not an option in the other direction -- the peer grid scrolls underneath it, which is
+    why Telegram's own strip there is opaque to begin with. Which is also why the strip's pane hangs
+    off the card and not off the node whose fill it replaces: that node is faded out while a search
+    is open, and a pane that faded with it would leave a hole at the foot of the card.
+    """
+    path = tg / "submodules/ShareController/Sources/ShareControllerNode.swift"
+    text = _read(path, "ShareControllerNode.swift")
+    if "aorusSheetFill" in text:
+        print("InterfaceV2: share sheet already glass")
+        return
+    text = _replace_once(
+        text,
+        "import ContextUI\n",
+        "import ContextUI\n" + _GLASS_IMPORT,
+        "share sheet import",
+    )
+    text = _replace_once(
+        text,
+        "    private let contentContainerNode: ASDisplayNode\n"
+        "    private let contentBackgroundNode: ASImageNode\n",
+        "    private let contentContainerNode: ASDisplayNode\n"
+        "    private let contentBackgroundNode: ASImageNode\n"
+        "    // AorusGram: the three panes Interface 2.0 stands this sheet on -- the card, the strip\n"
+        "    // at its foot, and Cancel. Held here only so that a second layout pass finds the pane it\n"
+        "    // made the first time instead of adding another one behind it.\n"
+        "    private var aorusCardBackgroundView: GlassBackgroundView?\n"
+        "    private var aorusActionsBackgroundView: GlassBackgroundView?\n"
+        "    private var aorusCancelBackgroundView: GlassBackgroundView?\n",
+        "share sheet panes",
+    )
+
+    # Written twice over: the initialiser and updatePresentationData generate the same four images
+    # from the same lines, and a sheet that goes glass only until the theme changes is worse than one
+    # that never did.
+    images_old = (
+        "        let roundedBackground = generateStretchableFilledCircleImage(radius: 16.0, color: self.presentationData.theme.actionSheet.opaqueItemBackgroundColor)\n"
+        "        let highlightedRoundedBackground = generateStretchableFilledCircleImage(radius: 16.0, color: self.presentationData.theme.actionSheet.opaqueItemHighlightedBackgroundColor)\n"
+        "        \n"
+        "        let theme = self.presentationData.theme\n"
+        "        let halfRoundedBackground = generateImage(CGSize(width: 32.0, height: 32.0), rotatedContext: { size, context in\n"
+        "            context.clear(CGRect(origin: CGPoint(), size: size))\n"
+        "            context.setFillColor(theme.actionSheet.opaqueItemBackgroundColor.cgColor)\n"
+        "            context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))\n"
+        "            context.fill(CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height / 2.0)))\n"
+        "        })?.stretchableImage(withLeftCapWidth: 16, topCapHeight: 1)\n"
+        "        \n"
+        "        let highlightedHalfRoundedBackground = generateImage(CGSize(width: 32.0, height: 32.0), rotatedContext: { size, context in\n"
+        "            context.clear(CGRect(origin: CGPoint(), size: size))\n"
+        "            context.setFillColor(theme.actionSheet.opaqueItemHighlightedBackgroundColor.cgColor)\n"
+        "            context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))\n"
+        "            context.fill(CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height / 2.0)))\n"
+        "        })?.stretchableImage(withLeftCapWidth: 16, topCapHeight: 1)\n"
+    )
+    images_new = (
+        "        let theme = self.presentationData.theme\n"
+        "        // AorusGram: the sheet's own paint, or nothing at all under Interface 2.0, where the\n"
+        "        // panes below are what the card is made of and an opaque image over one of them is how\n"
+        "        // a pane of glass stops being one. The highlight and the hairline stay colours: a row\n"
+        "        // has to answer a finger, and two panes that meet need a line where they do.\n"
+        "        let aorusGlassSheet = AorusGlassPane.isEnabled\n"
+        "        let aorusSheetFill: UIColor = aorusGlassSheet ? .clear : theme.actionSheet.opaqueItemBackgroundColor\n"
+        "        let aorusSheetHighlight: UIColor\n"
+        "        let aorusSheetRule: UIColor\n"
+        "        if aorusGlassSheet, theme.overallDarkAppearance {\n"
+        "            aorusSheetHighlight = UIColor(white: 1.0, alpha: 0.12)\n"
+        "            aorusSheetRule = UIColor(white: 1.0, alpha: 0.12)\n"
+        "        } else if aorusGlassSheet {\n"
+        "            aorusSheetHighlight = UIColor(white: 0.0, alpha: 0.08)\n"
+        "            aorusSheetRule = UIColor(white: 0.0, alpha: 0.1)\n"
+        "        } else {\n"
+        "            aorusSheetHighlight = theme.actionSheet.opaqueItemHighlightedBackgroundColor\n"
+        "            aorusSheetRule = theme.actionSheet.opaqueItemSeparatorColor\n"
+        "        }\n"
+        "        let roundedBackground = generateStretchableFilledCircleImage(radius: 16.0, color: aorusSheetFill)\n"
+        "        let highlightedRoundedBackground = generateStretchableFilledCircleImage(radius: 16.0, color: aorusSheetHighlight)\n"
+        "        \n"
+        "        let halfRoundedBackground = generateImage(CGSize(width: 32.0, height: 32.0), rotatedContext: { size, context in\n"
+        "            context.clear(CGRect(origin: CGPoint(), size: size))\n"
+        "            context.setFillColor(aorusSheetFill.cgColor)\n"
+        "            context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))\n"
+        "            context.fill(CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height / 2.0)))\n"
+        "        })?.stretchableImage(withLeftCapWidth: 16, topCapHeight: 1)\n"
+        "        \n"
+        "        let highlightedHalfRoundedBackground = generateImage(CGSize(width: 32.0, height: 32.0), rotatedContext: { size, context in\n"
+        "            context.clear(CGRect(origin: CGPoint(), size: size))\n"
+        "            context.setFillColor(aorusSheetHighlight.cgColor)\n"
+        "            context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))\n"
+        "            context.fill(CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height / 2.0)))\n"
+        "        })?.stretchableImage(withLeftCapWidth: 16, topCapHeight: 1)\n"
+    )
+    text = _replace_once(text, images_old, images_new, "share sheet images")
+    text = _replace_once(text, images_old, images_new, "share sheet images on theme change")
+
+    text = _replace_once(
+        text,
+        "        self.actionSeparatorNode.backgroundColor = self.presentationData.theme.actionSheet.opaqueItemSeparatorColor\n",
+        "        self.actionSeparatorNode.backgroundColor = aorusSheetRule\n",
+        "share sheet separator",
+    )
+    text = _replace_once(
+        text,
+        "        self.actionSeparatorNode.backgroundColor = presentationData.theme.actionSheet.opaqueItemSeparatorColor\n",
+        "        self.actionSeparatorNode.backgroundColor = aorusSheetRule\n",
+        "share sheet separator on theme change",
+    )
+
+    text = _replace_once(
+        text,
+        "    private func contentNodeDidBeginDragging() {\n",
+        "    // AorusGram: the three panes, laid out from the frames the caller has just computed.\n"
+        "    //\n"
+        "    // `footerHeight` is the strip at the foot of the card that the comment field and the send\n"
+        "    // button stand in -- `bottomGridInset` where it is worked out, and zero when neither of them\n"
+        "    // is on screen, which is also when the card gets its bottom corners back.\n"
+        "    //\n"
+        "    // The card's two panes are sized in the card node's own coordinates, and Cancel's in its\n"
+        "    // button's, so none of them has a position of its own to keep up to date. The strip's pane\n"
+        "    // hangs off the card rather than off the node it replaces because that node is faded out\n"
+        "    // while a search is open, and the material underneath the send button has to stay.\n"
+        "    private func aorusUpdateSheetGlass(cardSize: CGSize, footerHeight: CGFloat, cancelSize: CGSize, transition: ContainedViewLayoutTransition) {\n"
+        "        guard AorusGlassPane.isEnabled else {\n"
+        "            return\n"
+        "        }\n"
+        "        let cornerRadius: CGFloat = 16.0\n"
+        "        let isDark = self.presentationData.theme.overallDarkAppearance\n"
+        "        let tintColor = GlassBackgroundView.TintColor(kind: .clear)\n"
+        "        \n"
+        "        let cardHeight = max(0.0, cardSize.height - footerHeight)\n"
+        "        if cardSize.width > 0.0, cardHeight > 0.0 {\n"
+        "            let cardView = self.aorusSheetPane(self.aorusCardBackgroundView, host: self.contentBackgroundNode.view)\n"
+        "            self.aorusCardBackgroundView = cardView\n"
+        "            let cardFrame = CGRect(origin: CGPoint(), size: CGSize(width: cardSize.width, height: cardHeight))\n"
+        "            transition.updateFrame(view: cardView, frame: cardFrame)\n"
+        "            cardView.update(\n"
+        "                size: cardFrame.size,\n"
+        "                cornerRadii: GlassBackgroundView.CornerRadii(\n"
+        "                    topLeft: cornerRadius,\n"
+        "                    topRight: cornerRadius,\n"
+        "                    bottomLeft: footerHeight > 0.0 ? 0.0 : cornerRadius,\n"
+        "                    bottomRight: footerHeight > 0.0 ? 0.0 : cornerRadius\n"
+        "                ),\n"
+        "                isDark: isDark,\n"
+        "                tintColor: tintColor,\n"
+        "                isInteractive: false,\n"
+        "                isVisible: true,\n"
+        "                transition: .immediate\n"
+        "            )\n"
+        "        }\n"
+        "        \n"
+        "        if cardSize.width > 0.0, footerHeight > 0.0 {\n"
+        "            let actionsView = self.aorusSheetPane(self.aorusActionsBackgroundView, host: self.contentBackgroundNode.view)\n"
+        "            self.aorusActionsBackgroundView = actionsView\n"
+        "            actionsView.isHidden = false\n"
+        "            let actionsFrame = CGRect(origin: CGPoint(x: 0.0, y: cardHeight), size: CGSize(width: cardSize.width, height: footerHeight))\n"
+        "            transition.updateFrame(view: actionsView, frame: actionsFrame)\n"
+        "            actionsView.update(\n"
+        "                size: actionsFrame.size,\n"
+        "                cornerRadii: GlassBackgroundView.CornerRadii(topLeft: 0.0, topRight: 0.0, bottomLeft: cornerRadius, bottomRight: cornerRadius),\n"
+        "                isDark: isDark,\n"
+        "                tintColor: tintColor,\n"
+        "                isInteractive: false,\n"
+        "                isVisible: true,\n"
+        "                transition: .immediate\n"
+        "            )\n"
+        "        } else {\n"
+        "            // Nothing standing at the foot of the card: the card's own pane has taken the\n"
+        "            // corners back and covers the whole of it.\n"
+        "            self.aorusActionsBackgroundView?.isHidden = true\n"
+        "        }\n"
+        "        \n"
+        "        if cancelSize.width > 0.0, cancelSize.height > 0.0 {\n"
+        "            let cancelView = self.aorusSheetPane(self.aorusCancelBackgroundView, host: self.cancelButtonNode.view)\n"
+        "            self.aorusCancelBackgroundView = cancelView\n"
+        "            transition.updateFrame(view: cancelView, frame: CGRect(origin: CGPoint(), size: cancelSize))\n"
+        "            cancelView.update(\n"
+        "                size: cancelSize,\n"
+        "                cornerRadius: cornerRadius,\n"
+        "                isDark: isDark,\n"
+        "                tintColor: tintColor,\n"
+        "                isInteractive: false,\n"
+        "                isVisible: true,\n"
+        "                transition: .immediate\n"
+        "            )\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: the pane a host already has, or a new one under everything it holds -- the\n"
+        "    // title of a button and the highlight of one both have to stay above the material.\n"
+        "    private func aorusSheetPane(_ existing: GlassBackgroundView?, host: UIView) -> GlassBackgroundView {\n"
+        "        if let existing {\n"
+        "            return existing\n"
+        "        }\n"
+        "        let view = GlassBackgroundView(frame: CGRect())\n"
+        "        view.isUserInteractionEnabled = false\n"
+        "        host.insertSubview(view, at: 0)\n"
+        "        return view\n"
+        "    }\n"
+        "    \n"
+        "    private func contentNodeDidBeginDragging() {\n",
+        "share sheet glass helpers",
+    )
+
+    text = _replace_once(
+        text,
+        "        transition.updateFrame(node: self.actionSeparatorNode, frame: CGRect(origin: CGPoint(x: 0.0, y: contentContainerFrame.size.height - bottomGridInset - UIScreenPixel), size: CGSize(width: contentContainerFrame.size.width, height: UIScreenPixel)), beginWithCurrentState: true)\n",
+        "        transition.updateFrame(node: self.actionSeparatorNode, frame: CGRect(origin: CGPoint(x: 0.0, y: contentContainerFrame.size.height - bottomGridInset - UIScreenPixel), size: CGSize(width: contentContainerFrame.size.width, height: UIScreenPixel)), beginWithCurrentState: true)\n"
+        "        \n"
+        "        // AorusGram: the card's own size is read back off its node rather than taken from here,\n"
+        "        // because this pass never sets it -- the drag handler below is the only thing that does.\n"
+        "        // Selecting a peer changes the footer's height without moving the card, which is why the\n"
+        "        // panes are laid out from both places.\n"
+        "        self.aorusUpdateSheetGlass(cardSize: self.contentBackgroundNode.bounds.size, footerHeight: bottomGridInset, cancelSize: CGSize(width: width, height: buttonHeight), transition: transition)\n",
+        "share sheet layout panes",
+    )
+    text = _replace_once(
+        text,
+        "        if let (layout, _, _) = self.containerLayout {\n",
+        "        // AorusGram: the third of these is the height of the strip at the foot of the card, and\n"
+        "        // the card's pane needs it to know where to stop.\n"
+        "        if let (layout, _, bottomGridInset) = self.containerLayout {\n",
+        "share sheet drag layout",
+    )
+    text = _replace_once(
+        text,
+        "            transition.updateFrame(node: self.contentBackgroundNode, frame: backgroundFrame)\n",
+        "            transition.updateFrame(node: self.contentBackgroundNode, frame: backgroundFrame)\n"
+        "            self.aorusUpdateSheetGlass(cardSize: backgroundFrame.size, footerHeight: bottomGridInset, cancelSize: CGSize(width: width, height: buttonHeight), transition: transition)\n",
+        "share sheet drag panes",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    peers = tg / "submodules/ShareController/Sources/SharePeersContainerNode.swift"
+    peers_text = _read(peers, "SharePeersContainerNode.swift")
+    peers_text = _replace_once(
+        peers_text,
+        "        self.contentSeparatorNode.backgroundColor = self.theme.actionSheet.opaqueItemSeparatorColor\n",
+        "        // AorusGram: the rule under the sheet's title, translucent over the material for the\n"
+        "        // same reason as the one above the send button.\n"
+        "        if AorusGlassPane.isEnabled {\n"
+        "            self.contentSeparatorNode.backgroundColor = self.theme.overallDarkAppearance ? UIColor(white: 1.0, alpha: 0.12) : UIColor(white: 0.0, alpha: 0.1)\n"
+        "        } else {\n"
+        "            self.contentSeparatorNode.backgroundColor = self.theme.actionSheet.opaqueItemSeparatorColor\n"
+        "        }\n",
+        "share sheet title rule",
+    )
+    peers.write_text(peers_text, encoding="utf-8")
+    print("InterfaceV2: made the share sheet glass")
+
+
 def _patch_avatar_expansion(tg: Path) -> None:
     """Let a collapsed header scroll away at its own size instead of folding into the navigation bar.
 
@@ -1941,9 +2213,9 @@ def _patch_members_pane_glass(tg: Path) -> None:
     page is a flat colour, and it is `blocksBackgroundColor`, the very colour this mask already
     uses: nothing to change. For a peer with a photo the page is the strip taken from the foot of
     the photo, so there the mask stops painting and becomes the mask of a view holding that same
-    strip. The strip is one pixel tall and stretched, so there is no vertical detail to line up,
-    and the pane is exactly as wide as the page -- which is what makes it safe to lay across the
-    pane's own bounds and forget about it.
+    strip. The strip is blurred across and kept one pixel tall, so there is no vertical detail to
+    line up, and the pane is exactly as wide as the page -- which is what makes it safe to lay
+    across the pane's own bounds and forget about it.
 
     The block behind the rows becomes real glass, cornered at the same 26 as every other block on
     the page.
@@ -3016,6 +3288,11 @@ def _patch_build(tg: Path) -> None:
         ["//submodules/TelegramUI/Components/GlassBackgroundComponent"],
         "ListSectionComponent",
     )
+    _add_build_deps(
+        tg / "submodules/ShareController/BUILD",
+        ["//submodules/TelegramUI/Components/GlassBackgroundComponent"],
+        "ShareController",
+    )
 
 
 def patch_interface_v2(tg: Path) -> None:
@@ -3044,6 +3321,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_legacy_menu_glass(tg)
     _patch_profile_tap_menu_glass(tg)
     _patch_action_sheet_glass(tg)
+    _patch_share_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)
     _patch_header_button_set(tg)
