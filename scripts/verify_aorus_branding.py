@@ -714,6 +714,11 @@ def main() -> None:
             err.append("FakeGifts: pinning a hidden local gift does not restore profile visibility")
         if "senderPeer.id.toInt64() == renderedSenderPeerId" not in fake_store_text or "fromPeer: senderPeer" not in fake_store_text:
             err.append("FakeGifts: non-anonymous local purchases do not resolve their sender peer")
+        # A collectible bought with local Stars has to deliver the same card a real purchase does:
+        # into the recipient's chat, or into Saved Messages when the buyer gifts themselves.
+        # Returning early here is what left the purchase as a bare toast.
+        if "action = .starGiftUnique(gift: ownedGift, isUpgrade: false, isTransferred: false, savedToProfile: true" not in fake_store_text:
+            err.append("FakeGifts: a local collectible purchase does not deliver its gift card")
         fake_gift_view = (
             tg
             / "submodules"
@@ -2731,6 +2736,10 @@ def main() -> None:
                 # The rating shield sits on the page next to the name, where the accent-coloured
                 # one it draws by default disappears into whatever the avatar happened to be.
                 "aorusWhiteShield",
+                # One phone button stands where the stock header shows Call and Video, so the tap
+                # has to ask which one. Both answers go back through performButtonAction, which is
+                # the same code the two stock buttons ran.
+                "aorusPresentCallTypeSheet",
             ),
         ),
         # The members tab of a group or channel. It paints its own background and fades the list
@@ -2788,6 +2797,38 @@ def main() -> None:
         (
             "submodules/Display/Source/ActionSheetItemGroupNode.swift",
             ("UIGlassEffect(style: .regular)",),
+        ),
+        # A sheet row can carry a glyph at its leading edge with the title beside it. The call-type
+        # sheet is the only caller, and without the row the two answers are two lines of text.
+        (
+            "submodules/Display/Source/ActionSheetButtonItem.swift",
+            ("aorusIcon", "aorusIconNode"),
+        ),
+        # The music player opened from a profile. Four opaque fills (the list, the two side strips
+        # and the header) plus the controls panel are all replaced by one pane spanning the sheet,
+        # so a fill left behind here is an opaque slab over the glass.
+        (
+            "submodules/TelegramUI/Sources/OverlayAudioPlayerControllerNode.swift",
+            (
+                "aorusPlayerBackgroundView",
+                "aorusUpdatePlayerGlass",
+                "import GlassBackgroundComponent",
+                "aorusListFill",
+                "aorusFrameFill",
+            ),
+        ),
+        # The panel under the transport controls draws its own fill and shadow in two generators;
+        # both have to decline to draw. The "Add to Profile" button takes the page's own ink.
+        (
+            "submodules/TelegramUI/Sources/OverlayAudioPlayerControlsNode.swift",
+            ("aorusPlayerInk", "aorusButtonInk", "self.scrubberNode.aorusWaveStyle"),
+        ),
+        # The playback position reads as a wave rather than a bar: both copies are drawn at the
+        # laid-out width and pinned to the same edge, so the crests line up and clipping the played
+        # copy horizontally still reads as progress.
+        (
+            "submodules/MediaPlayer/Sources/MediaPlayerScrubbingNode.swift",
+            ("public var aorusWaveStyle", "aorusWaveImage", "aorusUpdateWave"),
         ),
         (
             "submodules/UndoUI/Sources/UndoOverlayControllerNode.swift",
@@ -2854,6 +2895,12 @@ def main() -> None:
                 # drawn from is published instead. Without this the page stays black and the whole
                 # profile disappears into it.
                 "publishPageColor",
+                # The page is blurred with Telegram's own thumbnail blur, and with the fifteen
+                # points the header itself uses converted into the sample's pixels. Spending them
+                # as pixels is a kernel half the width of the sample -- the flat wash that was
+                # reported as "too blurred".
+                "sampleBlurRadius",
+                "ImageBlur.blurredImage(sampled, radius: AorusGlassProfileTint.sampleBlurRadius)",
             ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that

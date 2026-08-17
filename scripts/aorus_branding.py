@@ -9802,14 +9802,15 @@ public enum AorusFakeGiftsStore {
             hideName: hideName
         )
         AorusFakeStarsStore.recordPurchase(accountPeerId: accountPeerId, recipientPeerId: recipientPeerId, amount: stars, gift: gift, premiumMonths: nil, text: text)
-        // A native collectible purchase is represented by the owned gift and Stars
-        // transaction. Telegram does not synthesize a directed chat gift message here.
-        if case .unique = gift { return }
+        // Every local purchase delivers the very same gift card Telegram builds for a real
+        // one: a collectible posts messageActionStarGiftUnique, an ordinary gift posts
+        // messageActionStarGift. Buying for yourself addresses Saved Messages, because a
+        // message whose peer is the account is exactly that chat.
         let ownedGift = giftWithOwner(gift, ownerPeerId: recipientPeerId.toInt64())
         let action: TelegramMediaActionType
         switch ownedGift {
         case .unique:
-            return
+            action = .starGiftUnique(gift: ownedGift, isUpgrade: false, isTransferred: false, savedToProfile: true, canExportDate: nil, transferStars: nil, isRefunded: false, isPrepaidUpgrade: false, peerId: recipientPeerId, senderId: accountPeerId, savedId: nil, resaleAmount: CurrencyAmount(amount: StarsAmount(value: stars, nanos: 0), currency: .stars), canTransferDate: nil, canResaleDate: nil, dropOriginalDetailsStars: nil, assigned: false, fromOffer: false, canCraftAt: nil, isCrafted: false)
         case .generic:
             action = .starGift(gift: ownedGift, convertStars: nil, text: text.isEmpty ? nil : text, entities: entities.isEmpty ? nil : entities, nameHidden: hideName, savedToProfile: true, converted: false, upgraded: false, canUpgrade: false, upgradeStars: nil, isRefunded: false, isPrepaidUpgrade: false, upgradeMessageId: nil, peerId: recipientPeerId, senderId: accountPeerId, savedId: nil, prepaidUpgradeHash: nil, giftMessageId: nil, upgradeSeparate: false, isAuctionAcquired: false, toPeerId: recipientPeerId, number: nil)
         }

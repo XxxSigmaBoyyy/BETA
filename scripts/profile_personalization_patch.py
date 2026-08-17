@@ -413,7 +413,12 @@ def _patch_call_type_sheet(tg: Path) -> None:
     Interface 2.0 shows one phone button where the stock header shows separate Call and
     Video buttons, so the choice has to happen somewhere. It happens in the sheet iOS users
     already expect from a phone button, and both answers go back through Telegram's own
-    button actions — the call is placed by exactly the code that placed it before.
+    button actions -- the call is placed by exactly the code that placed it before.
+
+    Each answer carries the glyph its own header button carries, at the leading edge with the
+    title beside it (see `_patch_action_sheet_icon_rows`), so the two rows are told apart before
+    they are read. The pane behind them is the system material Interface 2.0 puts under every
+    sheet in the client, which is why there is no background of our own here.
     """
     path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
     if not path.is_file():
@@ -447,11 +452,11 @@ def _patch_call_type_sheet(tg: Path) -> None:
         "        let sheet = ActionSheetController(presentationData: presentationData)\n"
         "        sheet.setItemGroups([\n"
         "            ActionSheetItemGroup(items: [\n"
-        "                ActionSheetButtonItem(title: aorusL(\"Аудиозвонок\", \"Audio Call\"), color: .accent, action: { [weak self, weak sheet] in\n"
+        "                ActionSheetButtonItem(title: aorusL(\"Аудиозвонок\", \"Audio Call\"), color: .accent, aorusIcon: UIImage(bundleImageName: \"Peer Info/ButtonCall\"), action: { [weak self, weak sheet] in\n"
         "                    sheet?.dismissAnimated()\n"
         "                    self?.performButtonAction?(.call, nil, nil)\n"
         "                }),\n"
-        "                ActionSheetButtonItem(title: aorusL(\"Видеозвонок\", \"Video Call\"), color: .accent, action: { [weak self, weak sheet] in\n"
+        "                ActionSheetButtonItem(title: aorusL(\"Видеозвонок\", \"Video Call\"), color: .accent, aorusIcon: UIImage(bundleImageName: \"Peer Info/ButtonVideo\"), action: { [weak self, weak sheet] in\n"
         "                    sheet?.dismissAnimated()\n"
         "                    self?.performButtonAction?(.videoCall, nil, nil)\n"
         "                })\n"

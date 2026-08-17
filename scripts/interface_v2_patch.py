@@ -1084,6 +1084,142 @@ def _patch_action_sheet_glass(tg: Path) -> None:
     print("InterfaceV2: made the action sheets glass")
 
 
+def _patch_action_sheet_icon_rows(tg: Path) -> None:
+    """Teach a sheet row to carry an icon, leading edge first.
+
+    A row of a stock action sheet is a centred title and nothing else, which is the right shape
+    for a question with two words of answer and the wrong one for a chooser: "Аудиозвонок" and
+    "Видеозвонок" are told apart by their glyph long before they are read. So the row gets an
+    optional image, and the one row in the client that passes one -- the call chooser the phone
+    button opens -- comes out as an icon at the leading edge with its title beside it.
+
+    The capability goes into `ActionSheetButtonItem` rather than into a class of our own because
+    the item node is what carries the highlight, the pointer interaction, the accessibility
+    element and the hairline the group draws between rows; a parallel item would have to
+    reimplement all four and would still be a stranger to `ActionSheetItemGroupNode`. The new
+    parameter is defaulted and sits before `action`, so every existing call site still compiles,
+    and a row without an icon keeps the centred title exactly as it is drawn today.
+    """
+    path = tg / "submodules/Display/Source/ActionSheetButtonItem.swift"
+    text = _read(path, "ActionSheetButtonItem.swift")
+    if "aorusIcon" in text:
+        print("InterfaceV2: action sheet rows already carry icons")
+        return
+    text = _replace_once(
+        text,
+        "    public let action: () -> Void\n"
+        "    \n"
+        "    public init(title: String, color: ActionSheetButtonColor = .accent,"
+        " font: ActionSheetButtonFont = .default, enabled: Bool = true,"
+        " action: @escaping () -> Void) {\n",
+        "    public let action: () -> Void\n"
+        "    // AorusGram: nil for every row Telegram builds, which is what keeps those rows\n"
+        "    // centred; a row that is given one is laid out around it instead.\n"
+        "    public let aorusIcon: UIImage?\n"
+        "    \n"
+        "    public init(title: String, color: ActionSheetButtonColor = .accent,"
+        " font: ActionSheetButtonFont = .default, enabled: Bool = true,"
+        " aorusIcon: UIImage? = nil, action: @escaping () -> Void) {\n",
+        "action sheet row icon property",
+    )
+    text = _replace_once(
+        text,
+        "        self.enabled = enabled\n"
+        "        self.action = action\n",
+        "        self.enabled = enabled\n"
+        "        self.aorusIcon = aorusIcon\n"
+        "        self.action = action\n",
+        "action sheet row icon assignment",
+    )
+    text = _replace_once(
+        text,
+        "    private let label: ImmediateTextNode\n"
+        "    private let accessibilityArea: AccessibilityAreaNode\n",
+        "    private let label: ImmediateTextNode\n"
+        "    private let aorusIconNode: ASImageNode\n"
+        "    private let accessibilityArea: AccessibilityAreaNode\n",
+        "action sheet row icon node",
+    )
+    text = _replace_once(
+        text,
+        "        self.accessibilityArea = AccessibilityAreaNode()\n"
+        "        \n"
+        "        super.init(theme: theme)\n",
+        "        let aorusIconNode = ASImageNode()\n"
+        "        aorusIconNode.isUserInteractionEnabled = false\n"
+        "        aorusIconNode.displaysAsynchronously = false\n"
+        "        aorusIconNode.displayWithoutProcessing = true\n"
+        "        self.aorusIconNode = aorusIconNode\n"
+        "        \n"
+        "        self.accessibilityArea = AccessibilityAreaNode()\n"
+        "        \n"
+        "        super.init(theme: theme)\n",
+        "action sheet row icon setup",
+    )
+    text = _replace_once(
+        text,
+        "        self.label.isUserInteractionEnabled = false\n"
+        "        self.addSubnode(self.label)\n",
+        "        self.label.isUserInteractionEnabled = false\n"
+        "        self.addSubnode(self.aorusIconNode)\n"
+        "        self.addSubnode(self.label)\n",
+        "action sheet row icon subnode",
+    )
+    text = _replace_once(
+        text,
+        "        self.label.attributedText = NSAttributedString(string: item.title,"
+        " font: textFont, textColor: textColor)\n",
+        "        self.label.attributedText = NSAttributedString(string: item.title,"
+        " font: textFont, textColor: textColor)\n"
+        "        // AorusGram: tinted with the row's own text colour, so an icon follows the theme\n"
+        "        // and the disabled state without the caller having to know either.\n"
+        "        self.aorusIconNode.image = item.aorusIcon.flatMap {"
+        " generateTintedImage(image: $0, color: textColor) }\n",
+        "action sheet row icon tint",
+    )
+    text = _replace_once(
+        text,
+        "        let size = CGSize(width: constrainedSize.width, height: 57.0)\n"
+        "        \n"
+        "        self.button.frame = CGRect(origin: CGPoint(), size: size)\n"
+        "        \n"
+        "        let labelSize = self.label.updateLayout(CGSize(width: max(1.0, size.width - 10.0),"
+        " height: size.height))\n"
+        "        self.label.frame = CGRect(origin: CGPoint(x: floorToScreenPixels((size.width -"
+        " labelSize.width) / 2.0), y: floorToScreenPixels((size.height - labelSize.height) / 2.0)),"
+        " size: labelSize)\n",
+        "        // AorusGram: a row with an icon is laid out the way iOS lays out one -- glyph at the\n"
+        "        // leading edge, title beside it, both on the row's centre line -- and is given the\n"
+        "        // three points of extra height that stops a 30pt glyph from touching the hairline.\n"
+        "        let aorusIcon = self.aorusIconNode.image\n"
+        "        let size = CGSize(width: constrainedSize.width, height: aorusIcon == nil ? 57.0 : 60.0)\n"
+        "        \n"
+        "        self.button.frame = CGRect(origin: CGPoint(), size: size)\n"
+        "        \n"
+        "        if let aorusIcon = aorusIcon {\n"
+        "            let iconInset: CGFloat = 16.0\n"
+        "            let iconColumn: CGFloat = 30.0\n"
+        "            let titleInset = iconInset + iconColumn + 14.0\n"
+        "            self.aorusIconNode.frame = CGRect(origin: CGPoint(x: iconInset +"
+        " floorToScreenPixels((iconColumn - aorusIcon.size.width) / 2.0),"
+        " y: floorToScreenPixels((size.height - aorusIcon.size.height) / 2.0)), size: aorusIcon.size)\n"
+        "            let labelSize = self.label.updateLayout(CGSize(width: max(1.0, size.width -"
+        " titleInset - iconInset), height: size.height))\n"
+        "            self.label.frame = CGRect(origin: CGPoint(x: titleInset,"
+        " y: floorToScreenPixels((size.height - labelSize.height) / 2.0)), size: labelSize)\n"
+        "        } else {\n"
+        "            let labelSize = self.label.updateLayout(CGSize(width: max(1.0, size.width - 10.0),"
+        " height: size.height))\n"
+        "            self.label.frame = CGRect(origin: CGPoint(x: floorToScreenPixels((size.width -"
+        " labelSize.width) / 2.0), y: floorToScreenPixels((size.height - labelSize.height) / 2.0)),"
+        " size: labelSize)\n"
+        "        }\n",
+        "action sheet row icon layout",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: taught the action sheet rows to carry icons")
+
+
 def _patch_share_sheet_glass(tg: Path) -> None:
     """Put "Отправить" on glass -- the sheet a tap on a username in a profile opens.
 
@@ -2904,6 +3040,430 @@ def _patch_compact_music(tg: Path) -> None:
     print("InterfaceV2: made the saved-music capsule compact")
 
 
+def _patch_music_player_glass(tg: Path) -> None:
+    """Stand the whole music player on one pane of glass, and put its button in the page's ink.
+
+    The player a tap on the profile's music pill opens is built out of four opaque fills: a backdrop
+    behind the playlist, a 16pt strip down each side of it, a band behind the header, and a flat panel
+    across the bottom with a shadow over it that the controls stand in. Under Interface 2.0 all four go
+    clear and one `GlassBackgroundView` runs from the top of the modal to the bottom of the screen.
+
+    One pane and not four. Glass over glass comes out brighter than either, so a player with a pane
+    per fill would have a bright rectangle across its foot where the controls overlap the playlist,
+    and a brighter band at the top where the header does. One pane also means the seams between those
+    fills stop existing rather than being painted over: the wedges Telegram draws to round the
+    playlist's top corners into the header band are hidden here, because they are painted in the
+    modal's own colour and there is no such colour any more.
+
+    The pane is laid out from both places that move the player -- the layout pass, which is what runs
+    when it opens, and the floating-header pass, which is what moves the top edge as the playlist is
+    dragged. It goes in below everything the content node holds, so the playlist, the header buttons
+    and the controls all stay above the material rather than through it.
+
+    "Добавить в профиль" was the one control left in the player wearing a colour that belonged to no
+    surface behind it -- the accent fill, over glass. It becomes the page's ink, white on a dark theme
+    and near-black on a light one, with its label and glyph in the inverse: the pair the profile's own
+    header buttons already use. The remove state keeps its own translucent fill, which reads over the
+    material as it always did.
+    """
+    path = tg / "submodules/TelegramUI/Sources/OverlayAudioPlayerControllerNode.swift"
+    text = _read(path, "OverlayAudioPlayerControllerNode.swift")
+    if "aorusPlayerBackgroundView" in text:
+        print("InterfaceV2: music player already glass")
+        return
+    text = _replace_once(
+        text,
+        "import GlassControls\nimport PhotoResources\n",
+        "import GlassControls\nimport PhotoResources\n" + _GLASS_IMPORT,
+        "music player import",
+    )
+    text = _replace_once(
+        text,
+        "    private let historyBackgroundNode: ASDisplayNode\n"
+        "    private let historyBackgroundContentNode: ASDisplayNode\n",
+        "    private let historyBackgroundNode: ASDisplayNode\n"
+        "    private let historyBackgroundContentNode: ASDisplayNode\n"
+        "    // AorusGram: the pane of glass the whole player stands on under Interface 2.0. Held so that\n"
+        "    // the second layout pass finds the one the first made instead of laying another behind it.\n"
+        "    private var aorusPlayerBackgroundView: GlassBackgroundView?\n",
+        "music player pane",
+    )
+    text = _replace_once(
+        text,
+        "        self.historyBackgroundContentNode.backgroundColor = self.presentationData.theme.list.itemModalBlocksBackgroundColor\n"
+        "        \n"
+        "        self.historyBackgroundNode.addSubnode(self.historyBackgroundContentNode)\n"
+        "        \n"
+        "        self.historyFrameNode = SparseNode()\n"
+        "        self.historyFrameLeftOverlayNode = ASDisplayNode()\n"
+        "        self.historyFrameLeftOverlayNode.backgroundColor = self.presentationData.theme.list.modalBlocksBackgroundColor\n"
+        "        \n"
+        "        self.historyFrameRightOverlayNode = ASDisplayNode()\n"
+        "        self.historyFrameRightOverlayNode.backgroundColor = self.presentationData.theme.list.modalBlocksBackgroundColor\n",
+        "        // AorusGram: the four fills the player is made of in stock, and nothing at all under\n"
+        "        // Interface 2.0 -- the pane laid in below them is what the player is made of there, and a\n"
+        "        // panel painted over a pane of glass is how it stops being one.\n"
+        "        let aorusPlayerGlass = AorusGlassPane.isEnabled\n"
+        "        let aorusListFill: UIColor = aorusPlayerGlass ? UIColor.clear : self.presentationData.theme.list.itemModalBlocksBackgroundColor\n"
+        "        let aorusFrameFill: UIColor = aorusPlayerGlass ? UIColor.clear : self.presentationData.theme.list.modalBlocksBackgroundColor\n"
+        "        self.historyBackgroundContentNode.backgroundColor = aorusListFill\n"
+        "        \n"
+        "        self.historyBackgroundNode.addSubnode(self.historyBackgroundContentNode)\n"
+        "        \n"
+        "        self.historyFrameNode = SparseNode()\n"
+        "        self.historyFrameLeftOverlayNode = ASDisplayNode()\n"
+        "        self.historyFrameLeftOverlayNode.backgroundColor = aorusFrameFill\n"
+        "        \n"
+        "        self.historyFrameRightOverlayNode = ASDisplayNode()\n"
+        "        self.historyFrameRightOverlayNode.backgroundColor = aorusFrameFill\n",
+        "music player fills",
+    )
+    text = _replace_once(
+        text,
+        "        self.historyFrameTopOverlayNode.backgroundColor = self.presentationData.theme.list.modalBlocksBackgroundColor\n"
+        "        self.historyFrameTopOverlayNode.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]\n",
+        "        self.historyFrameTopOverlayNode.backgroundColor = aorusFrameFill\n"
+        "        self.historyFrameTopOverlayNode.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]\n",
+        "music player header fill",
+    )
+    text = _replace_once(
+        text,
+        "        self.historyBackgroundContentNode.backgroundColor = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.itemModalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n"
+        "        self.historyFrameLeftOverlayNode.backgroundColor = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.modalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n"
+        "        self.historyFrameRightOverlayNode.backgroundColor = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.modalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n"
+        "        self.historyFrameTopOverlayNode.backgroundColor = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.modalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n",
+        "        // AorusGram: the same four fills as the initialiser, cleared for the same reason. A\n"
+        "        // player that was glass until the theme changed under it would be worse than one that\n"
+        "        // never was, and this line runs on every theme change and every empty-playlist flip.\n"
+        "        let aorusPlayerGlass = AorusGlassPane.isEnabled\n"
+        "        let aorusListFill = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.itemModalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n"
+        "        let aorusFrameFill = self.hasAnyHistoryMessages == true ? self.presentationData.theme.list.modalBlocksBackgroundColor : self.presentationData.theme.list.modalPlainBackgroundColor\n"
+        "        self.historyBackgroundContentNode.backgroundColor = aorusPlayerGlass ? UIColor.clear : aorusListFill\n"
+        "        self.historyFrameLeftOverlayNode.backgroundColor = aorusPlayerGlass ? UIColor.clear : aorusFrameFill\n"
+        "        self.historyFrameRightOverlayNode.backgroundColor = aorusPlayerGlass ? UIColor.clear : aorusFrameFill\n"
+        "        self.historyFrameTopOverlayNode.backgroundColor = aorusPlayerGlass ? UIColor.clear : aorusFrameFill\n",
+        "music player fills on theme change",
+    )
+    text = _replace_once(
+        text,
+        "        self.historyFrameTopMaskNode.isHidden = self.controlsNode.hasPlainBackground\n",
+        "        // AorusGram: those two wedges round the playlist's corners into the header band by\n"
+        "        // painting the modal's own fill over them, and Interface 2.0 has no such fill -- one pane\n"
+        "        // of glass runs behind both, with nothing between them to round.\n"
+        "        self.historyFrameTopMaskNode.isHidden = self.controlsNode.hasPlainBackground || AorusGlassPane.isEnabled\n",
+        "music player corner wedges",
+    )
+    text = _replace_once(
+        text,
+        "    private func updateFloatingHeaderOffset(offset: CGFloat, transition: ContainedViewLayoutTransition) {\n",
+        "    // AorusGram: the pane of glass the player stands on, from the top of the modal to the foot\n"
+        "    // of the screen.\n"
+        "    //\n"
+        "    // The top edge is the frame node's, which is the one thing in here that moves: dragging the\n"
+        "    // playlist down slides the whole modal, and the header band travels with it. Before the\n"
+        "    // playlist has reported an offset that frame is still empty, which is what the inset below is\n"
+        "    // for -- the player would otherwise open with its glass an inch too high for one frame.\n"
+        "    //\n"
+        "    // The bottom edge is the screen's and not the controls panel's: the panel is a fill in stock\n"
+        "    // and part of the same material here, so the pane runs under it. The container this sits in\n"
+        "    // is already clipped to the screen's own corner radius, which is why only the top two are\n"
+        "    // rounded -- 38pt, the radius Telegram rounds the band behind the header with.\n"
+        "    private func aorusUpdatePlayerGlass(transition: ContainedViewLayoutTransition) {\n"
+        "        guard AorusGlassPane.isEnabled, let layout = self.validLayout else {\n"
+        "            return\n"
+        "        }\n"
+        "        var top = self.historyFrameNode.frame.minY\n"
+        "        if top <= 0.0 {\n"
+        "            top = max(layout.statusBarHeight ?? 0.0, layout.safeInsets.top)\n"
+        "        }\n"
+        "        let frame = CGRect(origin: CGPoint(x: 0.0, y: top), size: CGSize(width: layout.size.width, height: max(0.0, layout.size.height - top)))\n"
+        "        guard frame.width > 0.0, frame.height > 0.0 else {\n"
+        "            return\n"
+        "        }\n"
+        "        let view: GlassBackgroundView\n"
+        "        if let current = self.aorusPlayerBackgroundView {\n"
+        "            view = current\n"
+        "        } else {\n"
+        "            view = GlassBackgroundView(frame: frame)\n"
+        "            view.isUserInteractionEnabled = false\n"
+        "            self.aorusPlayerBackgroundView = view\n"
+        "            self.contentNode.view.insertSubview(view, at: 0)\n"
+        "        }\n"
+        "        transition.updateFrame(view: view, frame: frame)\n"
+        "        view.update(\n"
+        "            size: frame.size,\n"
+        "            cornerRadii: GlassBackgroundView.CornerRadii(topLeft: 38.0, topRight: 38.0, bottomLeft: 0.0, bottomRight: 0.0),\n"
+        "            isDark: self.presentationData.theme.overallDarkAppearance,\n"
+        "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "            isInteractive: false,\n"
+        "            isVisible: true,\n"
+        "            transition: .immediate\n"
+        "        )\n"
+        "    }\n"
+        "    \n"
+        "    private func updateFloatingHeaderOffset(offset: CGFloat, transition: ContainedViewLayoutTransition) {\n",
+        "music player glass helper",
+    )
+    text = _replace_once(
+        text,
+        "        if self.hasAnyHistoryMessages != previousHasAnyHistoryMessages {\n"
+        "            self.updatePresentationData(self.presentationData)\n"
+        "        }\n",
+        "        self.aorusUpdatePlayerGlass(transition: transition)\n"
+        "        \n"
+        "        if self.hasAnyHistoryMessages != previousHasAnyHistoryMessages {\n"
+        "            self.updatePresentationData(self.presentationData)\n"
+        "        }\n",
+        "music player glass follows the drag",
+    )
+    text = _replace_once(
+        text,
+        "        let controlsTransition = self.controlsNode.frame.width > 0.0 ? transition : .immediate\n"
+        "        controlsTransition.updateFrame(node: self.controlsNode, frame: controlsFrame)\n",
+        "        let controlsTransition = self.controlsNode.frame.width > 0.0 ? transition : .immediate\n"
+        "        controlsTransition.updateFrame(node: self.controlsNode, frame: controlsFrame)\n"
+        "        \n"
+        "        // AorusGram: laid out here as well as from the drag, because this is the pass that runs\n"
+        "        // when the player opens and when the device is turned.\n"
+        "        self.aorusUpdatePlayerGlass(transition: transition)\n",
+        "music player glass on layout",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    controls = tg / "submodules/TelegramUI/Sources/OverlayAudioPlayerControlsNode.swift"
+    controls_text = _read(controls, "OverlayAudioPlayerControlsNode.swift")
+    # The panel across the foot of the player, and the taller version of it the player wears when the
+    # playlist is empty. Answered at the source rather than at the three places the image is assigned
+    # -- the initialiser, the theme change and the empty-playlist flip -- because the shadow over it
+    # has to go too, and a shadow is not a colour that can be cleared.
+    for name in ("generateBackground", "generatePlainBackground"):
+        controls_text = _replace_once(
+            controls_text,
+            "private func " + name + "(theme: PresentationTheme) -> UIImage? {\n"
+            "    return generateImage(",
+            "private func " + name + "(theme: PresentationTheme) -> UIImage? {\n"
+            "    // AorusGram: no panel and no shadow under Interface 2.0 -- the controls stand on the\n"
+            "    // same pane of glass as the playlist above them, and this is the fill that used to cut\n"
+            "    // the player in two across the middle.\n"
+            "    if AorusGlassPane.isEnabled {\n"
+            "        return nil\n"
+            "    }\n"
+            "    return generateImage(",
+            "music controls panel " + name,
+        )
+    controls_text = _replace_once(
+        controls_text,
+        "        self.addSubnode(self.scrubberNode)\n",
+        "        // AorusGram: the position line is drawn as a wave under Interface 2.0. Shape only: the\n"
+        "        // two colours it is drawn in are the ones handed to the content above, unchanged.\n"
+        "        self.scrubberNode.aorusWaveStyle = AorusGlassPane.isEnabled\n"
+        "        self.addSubnode(self.scrubberNode)\n",
+        "music controls wave",
+    )
+    controls_text = _replace_once(
+        controls_text,
+        "            let profileAudioButtonContent: AnyComponentWithIdentity<Empty>\n"
+        "            var buttonBackgroundColor = self.presentationData.theme.list.itemCheckColors.fillColor\n",
+        "            let profileAudioButtonContent: AnyComponentWithIdentity<Empty>\n"
+        "            // AorusGram: \"Добавить в профиль\" in the page's ink -- white on a dark theme, near-black\n"
+        "            // on a light one -- with its label and glyph in the inverse of it, which is the pair the\n"
+        "            // profile's own header buttons are drawn with. The accent fill it replaces was the last\n"
+        "            // colour in the player that answered to no surface behind it.\n"
+        "            let aorusPlayerInk: UIColor? = AorusGlassPane.isEnabled ? AorusGlassPane.ink(over: self.presentationData.theme.list.plainBackgroundColor) : nil\n"
+        "            let aorusButtonInk: UIColor = aorusPlayerInk.flatMap { AorusGlassPane.ink(over: $0) } ?? self.presentationData.theme.list.itemCheckColors.foregroundColor\n"
+        "            var buttonBackgroundColor = aorusPlayerInk ?? self.presentationData.theme.list.itemCheckColors.fillColor\n",
+        "music controls button ink",
+    )
+    controls_text = _replace_once(
+        controls_text,
+        "                            BundleIconComponent(name: \"Peer Info/SaveMusic\", tintColor: self.presentationData.theme.list.itemCheckColors.foregroundColor)\n",
+        "                            BundleIconComponent(name: \"Peer Info/SaveMusic\", tintColor: aorusButtonInk)\n",
+        "music controls button icon",
+    )
+    controls_text = _replace_once(
+        controls_text,
+        "                            MultilineTextComponent(text: .plain(NSAttributedString(string: self.presentationData.strings.MediaPlayer_SavedMusic_AddToProfile, font: Font.semibold(17.0), textColor: self.presentationData.theme.list.itemCheckColors.foregroundColor)))\n",
+        "                            MultilineTextComponent(text: .plain(NSAttributedString(string: self.presentationData.strings.MediaPlayer_SavedMusic_AddToProfile, font: Font.semibold(17.0), textColor: aorusButtonInk)))\n",
+        "music controls button label",
+    )
+    controls.write_text(controls_text, encoding="utf-8")
+    print("InterfaceV2: stood the music player on glass")
+
+
+def _patch_wave_scrubber(tg: Path) -> None:
+    """Teach the scrubbing node to draw its line as a wave, and leave every colour where it was.
+
+    The music player's position line is a 7pt bar: a stretchable rounded rectangle in the background
+    colour, a second rectangle in the foreground colour, and a clipping node over the second one whose
+    width is the progress. Interface 2.0 asks for a wave in the same two colours -- the shape changes
+    and nothing else does.
+
+    Off by default, and set from one place. Every other scrubber in the app -- the video player, the
+    voice message, the chat's own music panel -- is a bar and stays one, so this is a property rather
+    than a change to what `.standard` means; adding a case to that enum would have to be answered at
+    every construction site in the client.
+
+    Drawn at the width it is laid out at rather than tiled. A layer stretches an image, it does not
+    repeat one, and a stretched wave is a different wave: the crests slide off the ones behind them.
+    So the pair of images is regenerated when the size or the colours change, which for a player
+    already on screen is never -- the layout pass runs on every frame of playback, and the key below
+    is what keeps it from redrawing two images sixty times a second.
+
+    The played part is the same wave in the other colour, clipped by the foreground node. Both images
+    are generated for the same size and pinned to the same left edge, so a crest sits exactly over the
+    crest behind it however far along the track is, and the cut edge falls wherever the playhead is --
+    which is what a played waveform looks like everywhere else in the app.
+    """
+    path = tg / "submodules/MediaPlayer/Sources/MediaPlayerScrubbingNode.swift"
+    text = _read(path, "MediaPlayerScrubbingNode.swift")
+    if "aorusWaveStyle" in text:
+        print("InterfaceV2: scrubber already waves")
+        return
+    text = _replace_once(
+        text,
+        "    public var ignoreSeekId: Int?\n",
+        "    public var ignoreSeekId: Int?\n"
+        "    \n"
+        "    // AorusGram: Interface 2.0's designer line -- a wave rather than a bar, in the two colours\n"
+        "    // the content already carries. Set from the overlay music player and nowhere else.\n"
+        "    public var aorusWaveStyle: Bool = false {\n"
+        "        didSet {\n"
+        "            if self.aorusWaveStyle != oldValue {\n"
+        "                self.aorusWaveKey = nil\n"
+        "                self.updateProgressAnimations()\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    // What the pair of wave images was last drawn for: size and colours. The layout pass runs\n"
+        "    // on every frame of playback, so this is what stops two images being generated per frame.\n"
+        "    private var aorusWaveKey: String?\n"
+        "    \n"
+        "    // The colours to draw the wave in. Kept because the content is not: the node holds the\n"
+        "    // nodes it built out of it and lets the enum go.\n"
+        "    private var aorusWaveColors: (background: UIColor, foreground: UIColor)?\n"
+        "    \n"
+        "    // One cubic per half period, alternating side. Symmetric control points at four thirds of\n"
+        "    // the amplitude put the crest exactly on it -- a cubic reaches three quarters of the way to\n"
+        "    // a pair of controls that agree -- so the curve fills the box it is given and overshoots\n"
+        "    // neither, which is the difference between a wave and a wave with its crests clipped flat.\n"
+        "    private static func aorusWaveImage(size: CGSize, color: UIColor, lineWidth: CGFloat, halfPeriod: CGFloat) -> UIImage? {\n"
+        "        return generateImage(size, rotatedContext: { size, context in\n"
+        "            context.clear(CGRect(origin: CGPoint(), size: size))\n"
+        "            let midY = size.height / 2.0\n"
+        "            let amplitude = max(0.0, (size.height - lineWidth) / 2.0)\n"
+        "            context.setStrokeColor(color.cgColor)\n"
+        "            context.setLineWidth(lineWidth)\n"
+        "            context.setLineCap(.round)\n"
+        "            context.setLineJoin(.round)\n"
+        "            context.beginPath()\n"
+        "            context.move(to: CGPoint(x: 0.0, y: midY))\n"
+        "            var x: CGFloat = 0.0\n"
+        "            var isUp = true\n"
+        "            while x < size.width {\n"
+        "                let nextX = min(x + halfPeriod, size.width)\n"
+        "                let control = isUp ? midY - amplitude * 4.0 / 3.0 : midY + amplitude * 4.0 / 3.0\n"
+        "                context.addCurve(\n"
+        "                    to: CGPoint(x: nextX, y: midY),\n"
+        "                    control1: CGPoint(x: x + (nextX - x) * 0.36, y: control),\n"
+        "                    control2: CGPoint(x: x + (nextX - x) * 0.64, y: control)\n"
+        "                )\n"
+        "                x = nextX\n"
+        "                isUp = !isUp\n"
+        "            }\n"
+        "            context.strokePath()\n"
+        "        })\n"
+        "    }\n"
+        "    \n"
+        "    // The wave, redrawn when its size or its colours change and left alone every other time.\n"
+        "    //\n"
+        "    // The bar's own rounding and its buffering line both go: a pill behind a wave, or a fat\n"
+        "    // rounded line through it, is the shape the wave was put there instead of.\n"
+        "    private func aorusUpdateWave(node: StandardMediaPlayerScrubbingNodeContentNode, size: CGSize) {\n"
+        "        guard size.width > 1.0, size.height > 1.0, let colors = self.aorusWaveColors else {\n"
+        "            return\n"
+        "        }\n"
+        "        let key = \"\\(size.width)x\\(size.height)|\\(colors.background.hashValue)|\\(colors.foreground.hashValue)\"\n"
+        "        if self.aorusWaveKey == key {\n"
+        "            return\n"
+        "        }\n"
+        "        self.aorusWaveKey = key\n"
+        "        let lineWidth: CGFloat = 3.0\n"
+        "        let halfPeriod: CGFloat = 15.0\n"
+        "        node.backgroundNode.backgroundColor = nil\n"
+        "        node.backgroundNode.image = MediaPlayerScrubbingNode.aorusWaveImage(size: size, color: colors.background, lineWidth: lineWidth, halfPeriod: halfPeriod)\n"
+        "        node.foregroundContentNode.backgroundColor = nil\n"
+        "        node.foregroundContentNode.image = MediaPlayerScrubbingNode.aorusWaveImage(size: size, color: colors.foreground, lineWidth: lineWidth, halfPeriod: halfPeriod)\n"
+        "        node.foregroundNode.layer.cornerRadius = 0.0\n"
+        "        node.bufferingNode.isHidden = true\n"
+        "    }\n",
+        "wave scrubber state",
+    )
+    text = _replace_once(
+        text,
+        "    public init(content: MediaPlayerScrubbingNodeContent) {\n"
+        "        self.contentNodes = MediaPlayerScrubbingNode.contentNodesFromContent(content, enableScrubbing: self.enableScrubbing)\n",
+        "    public init(content: MediaPlayerScrubbingNodeContent) {\n"
+        "        self.contentNodes = MediaPlayerScrubbingNode.contentNodesFromContent(content, enableScrubbing: self.enableScrubbing)\n"
+        "        // AorusGram: the colours the wave is drawn in, taken while the content is still here.\n"
+        "        if case let .standard(_, _, _, backgroundColor, foregroundColor, _, _) = content {\n"
+        "            self.aorusWaveColors = (background: backgroundColor, foreground: foregroundColor)\n"
+        "        }\n",
+        "wave scrubber colours at init",
+    )
+    text = _replace_once(
+        text,
+        "    public func updateContent(_ content: MediaPlayerScrubbingNodeContent) {\n"
+        "        self.contentNodes = MediaPlayerScrubbingNode.contentNodesFromContent(content, enableScrubbing: self.enableScrubbing)\n",
+        "    public func updateContent(_ content: MediaPlayerScrubbingNodeContent) {\n"
+        "        self.contentNodes = MediaPlayerScrubbingNode.contentNodesFromContent(content, enableScrubbing: self.enableScrubbing)\n"
+        "        // AorusGram: a new set of nodes, so the wave has to be drawn into them again -- and the\n"
+        "        // colours come off the new content, which is where a track change puts them.\n"
+        "        if case let .standard(_, _, _, backgroundColor, foregroundColor, _, _) = content {\n"
+        "            self.aorusWaveColors = (background: backgroundColor, foreground: foregroundColor)\n"
+        "        }\n"
+        "        self.aorusWaveKey = nil\n",
+        "wave scrubber colours on content change",
+    )
+    text = _replace_once(
+        text,
+        "                    case .square:\n"
+        "                        node.backgroundNode.backgroundColor = backgroundColor\n"
+        "                        node.foregroundContentNode.backgroundColor = foregroundColor\n"
+        "                }\n",
+        "                    case .square:\n"
+        "                        node.backgroundNode.backgroundColor = backgroundColor\n"
+        "                        node.foregroundContentNode.backgroundColor = foregroundColor\n"
+        "                }\n"
+        "                // AorusGram: the wave takes the new pair over the bar's, and is redrawn in place.\n"
+        "                // A theme can change while the player is open, and the two lines above have just\n"
+        "                // put a bar back where the wave was.\n"
+        "                if self.aorusWaveStyle {\n"
+        "                    self.aorusWaveColors = (background: backgroundColor, foreground: foregroundColor)\n"
+        "                    self.aorusWaveKey = nil\n"
+        "                    self.aorusUpdateWave(node: node, size: node.backgroundNode.bounds.size)\n"
+        "                }\n",
+        "wave scrubber colours on theme change",
+    )
+    text = _replace_once(
+        text,
+        "                let backgroundFrame = CGRect(origin: CGPoint(x: 0.0, y: floor((bounds.size.height - node.lineHeight) / 2.0)), size: CGSize(width: bounds.size.width, height: node.lineHeight))\n",
+        "                // AorusGram: a wave needs room to be one -- 16pt of box for a 3pt line with 6.5pt\n"
+        "                // of crest either side of the middle, where the bar it replaces asked for 7. Never\n"
+        "                // more than the height the scrubber was laid out at: a caller with less room than\n"
+        "                // that gets a shorter wave rather than a clipped one. Every frame below is measured\n"
+        "                // off this one, so the played part and the handle follow it without being told.\n"
+        "                let aorusLineHeight: CGFloat = self.aorusWaveStyle ? min(bounds.size.height, max(node.lineHeight, 16.0)) : node.lineHeight\n"
+        "                let backgroundFrame = CGRect(origin: CGPoint(x: 0.0, y: floor((bounds.size.height - aorusLineHeight) / 2.0)), size: CGSize(width: bounds.size.width, height: aorusLineHeight))\n"
+        "                if self.aorusWaveStyle {\n"
+        "                    self.aorusUpdateWave(node: node, size: backgroundFrame.size)\n"
+        "                }\n",
+        "wave scrubber layout",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the player's position line a wave")
+
+
 def _patch_chat_nav_glass(tg: Path) -> None:
     """Take the tablet out from behind the chat's title and its avatar, and leave the rest.
 
@@ -3317,10 +3877,13 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_overlay_palette(tg)
     _patch_static_avatar(tg)
     _patch_compact_music(tg)
+    _patch_music_player_glass(tg)
+    _patch_wave_scrubber(tg)
     _patch_chat_nav_glass(tg)
     _patch_legacy_menu_glass(tg)
     _patch_profile_tap_menu_glass(tg)
     _patch_action_sheet_glass(tg)
+    _patch_action_sheet_icon_rows(tg)
     _patch_share_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)

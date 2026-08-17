@@ -244,20 +244,30 @@ public enum AorusGlassProfileTint {
 
     /// How many pixels across and down the band is sampled at, before the blur.
     ///
-    /// Small on purpose: it is stretched over a whole screen, so anything finer is detail the page
-    /// has no business showing. Square rather than one row tall because the blur's box kernel has to
-    /// fit inside both dimensions, and fifteen does not fit inside one. The row is taken back out of
-    /// it afterwards, so what the page ends up holding is still thirty-two pixels by one.
-    private static let sampleSize = 32
+    /// Coarse on purpose -- it is stretched over a whole screen, so anything finer is detail the page
+    /// has no business showing -- but not so coarse that the blur below cannot be expressed in it.
+    /// Ninety-six across a 390-point screen is close enough to four points a pixel that a kernel
+    /// measured in points can be written down in pixels without the figure turning into a lie.
+    /// Square rather than one row tall because the blur's box kernel has to fit inside both
+    /// dimensions; the rows are averaged into one afterwards, so what the page ends up holding is
+    /// ninety-six pixels by one.
+    private static let sampleSize = 96
 
     /// Radius the sampled band is blurred with, in that sample's own pixels.
     ///
-    /// Telegram's band over the mirrored strip is a fifteen-point variable blur, and this is the same
-    /// figure read in the sample's units: after three box passes it is a standard deviation of about
-    /// a quarter of the picture's width. Enough that a figure in the middle of the frame becomes
-    /// shading instead of a shape, and not so much that a landscape's left-to-right colours collapse
-    /// into one flat tone.
-    private static let sampleBlurRadius: CGFloat = 15.0
+    /// Telegram blurs a picture it means to show behind something at screen scale: the band over the
+    /// mirrored strip in this very header is a fifteen-point variable blur, and a picture the size of
+    /// a screen blurred by fifteen points still reads as the picture. The sample is not at screen
+    /// scale, so the same figure has to be converted rather than copied -- one pixel here is about
+    /// four points there, and seven pixels of box kernel is what those fifteen points come to.
+    ///
+    /// This is the whole of what was wrong with the first version: it took Telegram's fifteen points
+    /// and spent them as fifteen pixels of a thirty-two pixel sample, which is a kernel half the
+    /// width of the picture -- a blur an order of magnitude past anything the app itself draws, and
+    /// the flat wash of one colour that was reported. Vertically nothing is lost by being gentle,
+    /// because the rows are averaged; across the band this is what keeps the avatar's own light and
+    /// dark sides on the page instead of their average.
+    private static let sampleBlurRadius: CGFloat = 7.0
 
     /// What the page is painted with right now, per peer on screen.
     private static var pageColors: [Int64: UIColor] = [:]
@@ -394,7 +404,8 @@ public enum AorusGlassProfileTint {
         }
         // Copied into a Data the image owns. CGContext.makeImage over a client-supplied buffer is a
         // copy-on-write of memory this function frees on the way out, which is a use after free the
-        // first time the page is drawn -- four kilobytes is not worth being clever about.
+        // first time the page is drawn -- thirty-six kilobytes, once per photo, is not worth being
+        // clever about.
         guard let provider = CGDataProvider(data: Data(bytes: pixels, count: count) as CFData),
               let band = CGImage(
                   width: size,
@@ -422,33 +433,75 @@ public enum AorusGlassProfileTint {
         return Sample(color: color, image: AorusGlassProfileTint.flattened(blurred ?? sampled))
     }
 
-    /// The row through the middle of a blurred sample, which is what makes the backdrop safe to
+    /// The blurred sample averaged down to a single row, which is what makes the backdrop safe to
     /// stretch over more than one rectangle.
     ///
-    /// The blur is square -- it runs down the sample as well as across it -- and the page is not the
-    /// only thing that stretches the result. The members pane lays the same image over its own
-    /// bounds, which start below the header and end above the tab bar, so a picture with a vertical
-    /// gradient in it would be drawn at two different heights and meet itself at the pane's edge as a
-    /// seam. Taking one row keeps every bit of the blur's work across the band, which is where the
-    /// artefact this fixes lives, and leaves nothing down it for two rectangles to disagree about.
+    /// The page is not the only thing that stretches the result. The members pane lays the same image
+    /// over its own bounds, which start below the header and end above the tab bar, so a picture with
+    /// a vertical gradient in it would be drawn at two different heights and meet itself at the pane's
+    /// edge as a seam. One row leaves nothing down the picture for two rectangles to disagree about,
+    /// and every bit of the blur's work across the band -- which is the direction the page shows -- is
+    /// kept.
     ///
-    /// The middle row rather than the top or the bottom: three box passes of a fifteen-pixel kernel
-    /// over thirty-two rows leave it holding an average of the whole band, where the outer rows are
-    /// weighted towards whatever `kvImageEdgeExtend` repeated past the edge.
+    /// Averaged rather than cropped out of the middle. Cropping was only ever right while the kernel
+    /// was wide enough to mix the whole band into every row; at the width Telegram itself blurs with,
+    /// the middle row is the middle of the band and not the band, and the page would no longer be the
+    /// colour `bottomBandSample` published beside it -- that colour is the average of every pixel
+    /// here. An average down each column is that same figure taken one column at a time, so the
+    /// stretched picture and the flat colour behind it cannot drift apart.
+    ///
+    /// The lanes are averaged where they lie. Which of the four is alpha is a property of the
+    /// bitmap's byte order and this does not need to know it: a mean is a mean in any order, and the
+    /// row is handed back with the byte order it came in with.
     private static func flattened(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage, cgImage.height > 1 else {
+        guard let cgImage = image.cgImage, cgImage.height > 1,
+              cgImage.bitsPerComponent == 8, cgImage.bitsPerPixel == 32,
+              let data = cgImage.dataProvider?.data
+        else {
             return image
         }
-        let row = CGRect(
-            x: 0.0,
-            y: CGFloat(cgImage.height / 2),
-            width: CGFloat(cgImage.width),
-            height: 1.0
-        )
-        guard let cropped = cgImage.cropping(to: row) else {
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerRow = cgImage.bytesPerRow
+        guard let source = CFDataGetBytePtr(data), CFDataGetLength(data) >= bytesPerRow * height else {
             return image
         }
-        return UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
+        var row = [UInt8](repeating: 0, count: width * 4)
+        for column in 0 ..< width {
+            var first = 0
+            var second = 0
+            var third = 0
+            var fourth = 0
+            for line in 0 ..< height {
+                let offset = line * bytesPerRow + column * 4
+                first += Int(source[offset])
+                second += Int(source[offset + 1])
+                third += Int(source[offset + 2])
+                fourth += Int(source[offset + 3])
+            }
+            row[column * 4] = UInt8(first / height)
+            row[column * 4 + 1] = UInt8(second / height)
+            row[column * 4 + 2] = UInt8(third / height)
+            row[column * 4 + 3] = UInt8(fourth / height)
+        }
+        guard let provider = CGDataProvider(data: Data(row) as CFData),
+              let flattened = CGImage(
+                  width: width,
+                  height: 1,
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: width * 4,
+                  space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: cgImage.bitmapInfo,
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: true,
+                  intent: .defaultIntent
+              )
+        else {
+            return image
+        }
+        return UIImage(cgImage: flattened, scale: image.scale, orientation: image.imageOrientation)
     }
 
     private static func shaded(_ component: UInt8) -> UInt8 {
