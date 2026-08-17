@@ -739,11 +739,17 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "                sampledView = nil\n"
             "            }\n"
             "        }\n"
+            "        // How far the header reaches below the square photo. Telegram fills that strip by\n"
+            "        // mirroring the picture into it -- flipped and stretched threefold -- so it decides\n"
+            "        // which row of the photo the page has to be painted in, and the two numbers here are\n"
+            "        // the two the header itself adds to the expanded avatar's height.\n"
+            "        let aorusMirroredTail: CGFloat = (self.isSettings || self.isMyProfile) ? 60.0 : 98.0\n"
             "        AorusGlassProfileTint.publishAvatarTint(\n"
             "            for: peer.id.id._internalGetInt64Value(),\n"
             "            photo: photo,\n"
             "            photoCount: listContainerNode.galleryEntries.count,\n"
             "            view: sampledView,\n"
+            "            mirroredTail: aorusMirroredTail,\n"
             "            isFullPhoto: isFullPhoto,\n"
             "            onUpdate: { [weak self] in\n"
             "                self?.requestUpdateLayout?(false)\n"
@@ -2143,12 +2149,15 @@ def _patch_rating_shield(tg: Path) -> None:
         "            }\n"
         "        }\n"
         "        \n"
-        "        // AorusGram: the white shield, on every profile and in every state, because every\n"
-        "        // one of them puts it on the page the photo is the colour of. This is the same\n"
-        "        // triple the expanded-photo branch above sets, taken out of that one condition.\n"
+        "        // AorusGram: the knocked-out shield, on every profile and in every state, because\n"
+        "        // every one of them puts it on the page the photo is the colour of. This is the same\n"
+        "        // triple the expanded-photo branch above sets, taken out of that one condition --\n"
+        "        // except for the shield itself, which is the page's ink rather than always white.\n"
+        "        // A profile whose photo ends pale is drawn in near-black text, and a white badge\n"
+        "        // beside near-black digits was the one thing on the page not reading as part of it.\n"
         "        let aorusWhiteShield = AorusGlassPane.isEnabled\n"
         "        if aorusWhiteShield {\n"
-        "            ratingBackgroundColor = .white\n"
+        "            ratingBackgroundColor = AorusGlassPane.profilePageInk\n"
         "            ratingBorderColor = .clear\n"
         "            ratingForegroundColor = .clear\n"
         "        }\n"
@@ -2809,6 +2818,188 @@ def _patch_legacy_menu_glass(tg: Path) -> None:
     print("InterfaceV2: made the legacy menu rows translucent")
 
 
+_TAP_MENU_SWIFT = '''
+// MARK: - AorusGram Interface 2.0
+
+// The five menus a *tap* opens in a profile -- on a birthday, a bio, a phone number, a username, a
+// business address -- are the last ones in the app built on ContextMenuNode, and next to the system
+// menu a long press brings up on the very same rows they read as a panel from an older version of
+// iOS. Under Interface 2.0 they are presented through the controller everything else uses, so they
+// arrive in the same material, with the same rows and the same dismissal. Answering false leaves
+// the caller to present the old menu exactly as it always did.
+//
+// The anchor is a point and not a view: sourceRect is the rect of the one username that was tapped
+// inside a row that may list several of them, and a reference source can only be handed a view.
+extension PeerInfoScreenNode {
+    func aorusPresentTapMenu(actions: [ContextMenuAction], sourceNode: ASDisplayNode, sourceRect: CGRect?) -> Bool {
+        guard AorusGlassPane.isEnabled, let controller = self.controller else {
+            return false
+        }
+        let strings = self.presentationData.strings
+        var items: [ContextMenuItem] = []
+        for action in actions {
+            let title: String
+            switch action.content {
+            case let .text(text, _):
+                title = text
+            case let .textWithIcon(text, _):
+                title = text
+            case let .textWithSubtitleAndIcon(text, _, _):
+                title = text
+            case .icon:
+                // An action carrying a picture in place of a title has nothing to put in a list
+                // row. No caller here makes one; if one ever does, the old menu draws it correctly.
+                return false
+            }
+            // Copy and Translate are the only two titles these five menus ever carry. Reading the
+            // icon off the string is what lets the rows keep the glyphs every other menu shows.
+            let iconName: String?
+            if title == strings.Conversation_ContextMenuCopy {
+                iconName = "Chat/Context Menu/Copy"
+            } else if title == strings.Conversation_ContextMenuTranslate {
+                iconName = "Chat/Context Menu/Translate"
+            } else {
+                iconName = nil
+            }
+            let performAction = action.action
+            items.append(.action(ContextMenuActionItem(text: title, icon: { theme in
+                guard let iconName else {
+                    return nil
+                }
+                return generateTintedImage(image: UIImage(bundleImageName: iconName), color: theme.contextMenu.primaryColor)
+            }, action: { c, _ in
+                c?.dismiss {
+                    performAction()
+                }
+            })))
+        }
+        if items.isEmpty {
+            return false
+        }
+        // The left edge and the bottom of the tapped text, in the window's own coordinates: a
+        // location source lays the menu out downwards from its left edge, which is where the old
+        // menu opened too.
+        let anchorRect = sourceRect ?? sourceNode.bounds
+        let location = sourceNode.view.convert(CGPoint(x: anchorRect.minX, y: anchorRect.maxY), to: nil)
+        let contextController = makeContextController(
+            presentationData: self.presentationData,
+            source: .location(AorusTapMenuLocationSource(location: location)),
+            items: .single(ContextController.Items(content: .list(items))),
+            gesture: nil
+        )
+        controller.present(contextController, in: .window(.root))
+        return true
+    }
+}
+
+private final class AorusTapMenuLocationSource: ContextLocationContentSource {
+    private let location: CGPoint
+
+    init(location: CGPoint) {
+        self.location = location
+    }
+
+    func transitionInfo() -> ContextControllerLocationViewInfo? {
+        return ContextControllerLocationViewInfo(location: self.location, contentAreaInScreenSpace: UIScreen.main.bounds)
+    }
+}
+'''
+
+
+def _legacy_tap_present(indent: str) -> str:
+    """The present block all five branches end on, byte for byte, at whatever depth it sits."""
+    return (
+        indent + "controller.present(contextMenuController, in: .window(.root), with: ContextMenuControllerPresentationArguments(sourceNodeAndRect: { [weak self, weak sourceNode] in\n"
+        + indent + "    if let controller = self?.controller, let sourceNode = sourceNode {\n"
+        + indent + "        var rect = sourceNode.bounds.insetBy(dx: 0.0, dy: 2.0)\n"
+        + indent + "        if let sourceRect = sourceRect {\n"
+        + indent + "            rect = sourceRect.insetBy(dx: 0.0, dy: 2.0)\n"
+        + indent + "        }\n"
+        + indent + "        return (sourceNode, rect, controller.displayNode, controller.view.bounds)\n"
+        + indent + "    } else {\n"
+        + indent + "        return nil\n"
+        + indent + "    }\n"
+        + indent + "}))\n"
+    )
+
+
+def _glass_tap_present(indent: str, call: str, actions: str) -> str:
+    return (
+        indent + "// AorusGram: the glass menu under Interface 2.0, the old panel without it.\n"
+        + indent + "if " + call + " {\n"
+        + indent + "    let contextMenuController = makeContextMenuController(actions: " + actions + ")\n"
+        + _legacy_tap_present(indent + "    ")
+        + indent + "}\n"
+    )
+
+
+def _patch_profile_tap_menu_glass(tg: Path) -> None:
+    """Send the profile's tap menus through the system context controller.
+
+    The container and the rows of the old menu were taught the material in the pass above, and it
+    is still the right fix for the menus elsewhere in the app that use it. In a profile it is not
+    enough: what a username opens there sits inches from the long-press menu on the same row, and
+    side by side the difference in shape, in the arrow and in the spring is the whole complaint.
+    So these five present the real thing instead.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenOpenPeerInfoContextMenu.swift"
+    text = _read(path, "PeerInfoScreenOpenPeerInfoContextMenu.swift")
+    if "aorusPresentTapMenu" in text:
+        print("InterfaceV2: profile tap menus already glass")
+        return
+
+    text = _replace_once(
+        text,
+        "import AsyncDisplayKit\nimport UndoUI\n",
+        "import AsyncDisplayKit\nimport ContextUI\nimport TelegramPresentationData\nimport UndoUI\n",
+        "profile tap menu imports",
+    )
+
+    # A birthday, a bio and a business address build their actions into a local first. The bio does
+    # it inside a `[weak self]` closure, so there self is an optional and the call has to be one.
+    #
+    # Deepest first: each of these keeps the old menu nested one level inside the new branch, which
+    # leaves a second copy of the block four spaces further in. Working outwards means that copy is
+    # always deeper than anything still to be matched -- run the other way round and the bio's
+    # pattern finds the birthday's leftovers instead of the bio.
+    for indent, call, label in (
+        (" " * 20, "self?.aorusPresentTapMenu(actions: actions, sourceNode: sourceNode, sourceRect: sourceRect) != true", "bio"),
+        (" " * 16, "!self.aorusPresentTapMenu(actions: actions, sourceNode: sourceNode, sourceRect: sourceRect)", "birthday"),
+        (" " * 12, "!self.aorusPresentTapMenu(actions: actions, sourceNode: sourceNode, sourceRect: sourceRect)", "business address"),
+    ):
+        text = _replace_once(
+            text,
+            indent + "let contextMenuController = makeContextMenuController(actions: actions)\n" + _legacy_tap_present(indent),
+            _glass_tap_present(indent, call, "actions"),
+            f"profile tap menu ({label})",
+        )
+
+    # A phone number and a username pass their one action straight into the call. Naming the array
+    # is what lets both menus read it, and both branches are the same two lines.
+    for label in ("phone", "username"):
+        text = _replace_once(
+            text,
+            "            let contextMenuController = makeContextMenuController(actions: [ContextMenuAction(content: .text(title: self.presentationData.strings.Conversation_ContextMenuCopy, accessibilityLabel: self.presentationData.strings.Conversation_ContextMenuCopy), action: { [weak self] in\n",
+            "            let aorusTapActions: [ContextMenuAction] = [ContextMenuAction(content: .text(title: self.presentationData.strings.Conversation_ContextMenuCopy, accessibilityLabel: self.presentationData.strings.Conversation_ContextMenuCopy), action: { [weak self] in\n",
+            f"profile tap menu actions ({label})",
+        )
+    for label in ("phone", "username"):
+        text = _replace_once(
+            text,
+            "            })])\n" + _legacy_tap_present(" " * 12),
+            "            })]\n"
+            + _glass_tap_present(
+                " " * 12,
+                "!self.aorusPresentTapMenu(actions: aorusTapActions, sourceNode: sourceNode, sourceRect: sourceRect)",
+                "aorusTapActions",
+            ),
+            f"profile tap menu ({label})",
+        )
+
+    path.write_text(text + _TAP_MENU_SWIFT, encoding="utf-8")
+    print("InterfaceV2: made the profile tap menus glass")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -2851,6 +3042,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_compact_music(tg)
     _patch_chat_nav_glass(tg)
     _patch_legacy_menu_glass(tg)
+    _patch_profile_tap_menu_glass(tg)
     _patch_action_sheet_glass(tg)
     _patch_gift_glass(tg)
     _patch_undo_glass(tg)

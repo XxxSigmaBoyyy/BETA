@@ -122,7 +122,11 @@ public enum AorusGlassProfileTint {
     /// yield anything: the round one is a centre crop behind a circular mask, so a strip across its
     /// bottom is mostly the transparent corners outside the circle, and `bottomBandSample` refuses
     /// it rather than average three-quarters of nothing into the page.
-    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
+    ///
+    /// `mirroredTail` is how far the header reaches below the square photo -- the strip Telegram
+    /// fills by mirroring, and the strip the page has to continue. It decides which row of the
+    /// picture is sampled; see `mirrorDepth(tail:)`.
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
@@ -137,7 +141,7 @@ public enum AorusGlassProfileTint {
         guard isFullPhoto, let view else {
             return
         }
-        AorusGlassProfileTint.sample(key: key, view: view, attempt: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sample(key: key, view: view, tail: mirroredTail, attempt: 0, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -204,14 +208,28 @@ public enum AorusGlassProfileTint {
         let image: UIImage?
     }
 
-    /// How much of the picture the page is taken from: its last 6%.
+    /// How far above the photo's bottom edge the row the page has to continue actually sits.
     ///
-    /// Shallow, because what continues below the photo is the photo's *edge*. A sixth of the picture
-    /// is most of a torso on a portrait, so a white shirt over a dark background averaged to
-    /// mid-grey, met a pale photo edge, and drew a line across the whole width of the screen. Six
-    /// percent of an expanded avatar is around twenty-five points -- still tens of thousands of
-    /// source pixels wide, so one dark hair or a watermark cannot decide the colour.
-    private static let bandFraction: CGFloat = 0.06
+    /// Not at the edge, which is what this used to sample. The header is taller than the square
+    /// photo, and Telegram fills the strip below it by mirroring: a replicator layer draws a second
+    /// copy of the picture flipped and stretched threefold, hinged four points above the photo's
+    /// edge. So the row that reaches the bottom of the header -- the one the page begins under -- is
+    /// a third of the way up that strip, `(tail + 4) / 3` above the edge, and the algebra cancels the
+    /// photo's own size out of it entirely. Thirty-four points on a phone, against the eleven the
+    /// last-six-percent band was centred on: enough that a page could come out plainly a different
+    /// colour than the strip immediately above it, which is what was reported.
+    private static func mirrorDepth(tail: CGFloat) -> CGFloat {
+        return (max(0.0, tail) + 4.0) / 3.0
+    }
+
+    /// How tall a slice of the picture the page is averaged over, centred on that row: ten points.
+    ///
+    /// The band over the mirrored strip is blurred with a fifteen-point radius, and the strip is
+    /// stretched threefold, so each row of it already carries about five points of picture either
+    /// way -- this is the same average, taken at the source. Wider would drag in rows the bottom of
+    /// the header never shows; narrower would let one dark hair or a watermark decide the colour of
+    /// a whole page.
+    private static let bandHeight: CGFloat = 10.0
 
     /// The darkening Telegram's own bottom band puts on the photo's last row: a gradient that
     /// reaches 0.4 black, in an image view held at 0.8 alpha.
@@ -229,8 +247,8 @@ public enum AorusGlassProfileTint {
     private static var sampledColors: [PhotoKey: Sample] = [:]
     private static var pendingKeys = Set<PhotoKey>()
 
-    private static func sample(key: PhotoKey, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
-        if let sample = AorusGlassProfileTint.bottomBandSample(of: view) {
+    private static func sample(key: PhotoKey, view: UIView, tail: CGFloat, attempt: Int, onUpdate: @escaping () -> Void) {
+        if let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) {
             AorusGlassProfileTint.pendingKeys.remove(key)
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
@@ -257,7 +275,7 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(key: key, view: view, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sample(key: key, view: view, tail: tail, attempt: attempt + 1, onUpdate: onUpdate)
         }
     }
 
@@ -265,16 +283,20 @@ public enum AorusGlassProfileTint {
     ///
     /// One pass and one buffer, not two of each: the colour is the average of the very pixels the
     /// strip is built from, so the flat page behind the screen and the image stretched over it
-    /// cannot disagree about what the photo ends in.
+    /// cannot disagree about the row the header ends on.
     ///
     /// Returns nil when the view has drawn next to nothing, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark -- a dark photo is still opaque.
-    private static func bottomBandSample(of view: UIView) -> Sample? {
+    private static func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample? {
         let bounds = view.bounds
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
         }
-        let bandHeight = max(3.0, bounds.height * AorusGlassProfileTint.bandFraction)
+        let bandHeight = min(AorusGlassProfileTint.bandHeight, bounds.height)
+        // Centred on the row the header ends on, and kept inside the picture: a tail deeper than the
+        // photo is a shape this was never given, but clamping is a line and a crash is a crash.
+        let center = bounds.height - AorusGlassProfileTint.mirrorDepth(tail: tail)
+        let bandTop = max(0.0, min(bounds.height - bandHeight, center - bandHeight / 2.0))
         let width = 32
         let count = width * 4
         // Allocated rather than borrowed from an Array's buffer: the context outlives the call that
@@ -308,7 +330,7 @@ public enum AorusGlassProfileTint {
         // the kind of almost that survives review.
         context.translateBy(x: 0.0, y: 1.0)
         context.scaleBy(x: CGFloat(width) / bounds.width, y: -1.0 / bandHeight)
-        context.translateBy(x: 0.0, y: -(bounds.height - bandHeight))
+        context.translateBy(x: 0.0, y: -bandTop)
         // render(in:) rather than drawHierarchy(in:afterScreenUpdates:): the avatar is a layer
         // with an image in it, this stays on the current thread without a screen update, and it
         // is the cheaper of the two by a wide margin.

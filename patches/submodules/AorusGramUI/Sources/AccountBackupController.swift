@@ -12,9 +12,22 @@ import Postbox
 
 // Render an SF Symbol into a pre-tinted image for the action rows (the reference
 // Keychain-backup screen shows a key / restore / trash glyph next to each action).
+//
+// Drawn into a bitmap here, with the colour already in the pixels, rather than handed over as
+// `withTintColor`: that is a tint applied when the image is *rendered*, and the row's icon node is
+// layer-backed and displays without processing -- it puts the image's own CGImage straight into
+// layer contents, so the tint never runs. Which is why every glyph on this screen came out black
+// whatever colour it was asked for.
 private func aorusBackupActionIcon(_ systemName: String, color: UIColor) -> UIImage? {
     let cfg = UIImage.SymbolConfiguration(pointSize: 20.0, weight: .regular)
-    return UIImage(systemName: systemName, withConfiguration: cfg)?.withTintColor(color, renderingMode: .alwaysOriginal)
+    guard let symbol = UIImage(systemName: systemName, withConfiguration: cfg) else {
+        return nil
+    }
+    let format = UIGraphicsImageRendererFormat()
+    format.opaque = false
+    return UIGraphicsImageRenderer(size: symbol.size, format: format).image { _ in
+        symbol.withTintColor(color, renderingMode: .alwaysOriginal).draw(in: CGRect(origin: .zero, size: symbol.size))
+    }
 }
 
 // Downscale a captured avatar to a small PNG so it fits comfortably in the Keychain.

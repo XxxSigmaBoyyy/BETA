@@ -2803,12 +2803,15 @@ def main() -> None:
                 "photoCount: Int",
                 "sampledColors",
                 "pageKey",
-                # The page is the photo's own bottom band -- the strip Telegram already darkens so
-                # the name stays readable -- sampled through the same shading and stretched down.
-                # Sampling anywhere else, or forgetting the shading, is what made the page meet the
-                # picture in a visible line.
+                # The page continues the one row of the photo the header ends on, sampled through
+                # the same shading the header lays over it. That row is not the bottom of the
+                # picture: the strip below the square is the picture mirrored, hinged four points
+                # up and stretched threefold, so the row to match is (tail + 4) / 3 above the edge.
+                # Sampling anywhere else, or forgetting the shading, is what left the page meeting
+                # the picture in a visible line.
                 "bottomBandSample",
-                "bandFraction",
+                "mirrorDepth",
+                "mirroredTail",
                 "bandShadow",
                 # The stretched backdrop, and the flag that keeps it from being sampled off the
                 # round centre-cropped fallback avatar.
@@ -2866,6 +2869,20 @@ def main() -> None:
                 "ContextMenuContainerNode(isBlurred: aorusBlurredMenu",
                 # A rasterized fade would flatten the material into a grey slab.
                 "if !self.blurred {",
+            ),
+        ),
+        # And in a profile the old menu is not shown at all: what a tap on a username opens sits
+        # inches from the long-press menu on the same row, so it is presented through the same
+        # controller. All five branches, or the one left behind is the one that gets tapped.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenOpenPeerInfoContextMenu.swift",
+            (
+                "aorusPresentTapMenu",
+                "AorusTapMenuLocationSource",
+                "import ContextUI",
+                "!self.aorusPresentTapMenu(actions: actions",
+                "self?.aorusPresentTapMenu(actions: actions",
+                "!self.aorusPresentTapMenu(actions: aorusTapActions",
             ),
         ),
     )

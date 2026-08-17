@@ -182,10 +182,15 @@ final class AorusBackupSessionItemNode: ListViewItemNode, ItemListItemNode {
             let textLeft: CGFloat = hasAvatar ? (avatarLeft + avatarSize + 12.0) : (16.0 + params.leftInset)
             let rightInset: CGFloat = 16.0 + params.rightInset
 
+            // The badge's own fill decides its text, rather than white deciding it. Under
+            // Interface 2.0 the accent colour a filled badge uses *is* the list's ink, which on a
+            // dark page is white -- so white text on it left the "logged in" badge a blank pill,
+            // which is what was reported. `ink(over:)` answers with whichever of the two reads.
+            let badgeFill = item.isLoggedIn ? item.presentationData.theme.list.itemAccentColor : item.presentationData.theme.list.itemSecondaryTextColor.withAlphaComponent(0.12)
             let badgeImage = AorusBackupSessionItemNode.badgeImage(
                 text: item.badgeText,
-                textColor: item.isLoggedIn ? UIColor(rgb: 0xffffff) : item.presentationData.theme.list.itemSecondaryTextColor,
-                fillColor: item.isLoggedIn ? item.presentationData.theme.list.itemAccentColor : item.presentationData.theme.list.itemSecondaryTextColor.withAlphaComponent(0.12)
+                textColor: item.isLoggedIn ? AorusGlassPane.ink(over: badgeFill) : item.presentationData.theme.list.itemSecondaryTextColor,
+                fillColor: badgeFill
             )
             let badgeWidth = badgeImage?.size.width ?? 0.0
             let textRight = params.width - rightInset - (badgeWidth > 0 ? badgeWidth + 12.0 : 0.0)
