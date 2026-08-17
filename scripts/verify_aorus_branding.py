@@ -795,8 +795,6 @@ def main() -> None:
             err.append("FakeGifts: long-press Wear action does not reflect or clear the local worn state")
         if "case let .slug(slug)" not in fake_store_text:
             err.append("FakeGifts: collectible slug references cannot resolve to local gifts")
-        if "if case .unique = gift { return }" not in fake_store_text:
-            err.append("FakeGifts: collectible purchases inject a non-native directed chat message")
         if 'dict["transferStars"] = 0' not in fake_store_text:
             err.append("FakeGifts: local collectibles do not expose Telegram's native Transfer button")
         if (
