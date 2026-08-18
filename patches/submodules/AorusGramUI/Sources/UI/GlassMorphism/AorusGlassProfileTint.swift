@@ -152,11 +152,13 @@ public enum AorusGlassProfileTint {
     /// is mostly the transparent corners outside the circle, and `bottomBandSample` refuses it
     /// rather than average three-quarters of nothing into the page.
     ///
-    /// `mirroredTail` and `nativeShadowHeight` are the two numbers that place Telegram's own bottom
-    /// blur block inside the photo: how far the header reaches below the square picture -- the strip
-    /// it fills by mirroring -- and how tall the block along that bottom edge is. Together they say
-    /// which rows of the photo the block is made of; see `bandRange(tail:shadowHeight:)`.
-    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, nativeShadowHeight: CGFloat, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
+    /// `mirroredTail` is the one number that places Telegram's own bottom blur block on the photo:
+    /// how far the header reaches below the square picture -- the strip it fills by mirroring that
+    /// picture upside down. That single figure decides which row of the photo the bottom edge of the
+    /// header shows, and the block's own kernel decides how far either side of it to read; see
+    /// `bandRange(tail:)`. The block's height is deliberately not among the arguments -- see the same
+    /// place for why it cannot matter.
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
@@ -171,7 +173,7 @@ public enum AorusGlassProfileTint {
         guard isFullPhoto, let view else {
             return
         }
-        AorusGlassProfileTint.sample(key: key, view: view, tail: mirroredTail, shadowHeight: nativeShadowHeight, attempt: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sample(key: key, view: view, tail: mirroredTail, attempt: 0, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -265,32 +267,49 @@ public enum AorusGlassProfileTint {
     /// `AvatarListContentNode.View` is a replicator layer with two instances, the second scaled by
     /// -3 down the y axis and hinged four points below the photo's edge. Threefold: so a point of
     /// that strip is a third of a point of picture, which is the conversion `bandRange` and
-    /// `bandHeight` are both divided by.
+    /// `bandDepth` are both divided by.
     private static let mirrorStretch: CGFloat = 3.0
 
     /// Which rows of the photo Telegram's bottom blur block is made of, as a distance above the
-    /// photo's bottom edge: the row its own bottom edge shows, and how far up from there it reaches.
+    /// photo's bottom edge: the row its own bottom edge shows, and how deep a band around that row
+    /// its blur reads.
     ///
-    /// The block is `shadowHeight` tall and sits at the bottom of the expanded avatar, so its bottom
-    /// edge is the bottom of the header -- and the header is taller than the square photo by `tail`,
-    /// a strip filled by the mirror above. The row reaching the bottom of the header is therefore a
-    /// third of the way up that strip, `(tail + 4) / mirrorStretch` above the photo's edge, and the
-    /// algebra cancels the photo's own size out of it entirely: thirty-four points on a phone. From
-    /// there the block reaches `shadowHeight - tail` further into the picture, and never less than
-    /// the kernel it blurs that first row with.
-    private static func bandRange(tail: CGFloat, shadowHeight: CGFloat) -> (edge: CGFloat, depth: CGFloat) {
+    /// Both figures come out of the replicator's own transform rather than out of trial and error.
+    /// The header is `tail` taller than the square picture, and it fills that strip with the second
+    /// instance of `AvatarListContentNode.View` -- `Translate(0, (W - tail) * 2 - 4, 0)` over
+    /// `Scale(1, -3, 1)`, in a layer whose origin is the header's own centre. Writing `u` for a row
+    /// of the container measured from the top of the picture and `s` for where that row is displayed,
+    /// the pair composes to `s = 4(W - 1) - 3u`; setting `s` to the bottom of the header, `W + tail`,
+    /// leaves `u = W - (tail + 4) / 3`. So the row the header's last line shows is
+    /// `(tail + 4) / mirrorStretch` above the bottom of the picture -- thirty-four points on a phone
+    /// -- and the picture's own size cancels out of it completely. That is `edge`, and it is measured
+    /// off `imageNode`'s bounds, which `PeerInfoAvatarListItemNode` lays out as the square picture
+    /// itself and not as the taller container.
+    ///
+    /// `depth` is the block's own fifteen-point kernel converted into that same picture: the blur
+    /// runs in screen points over the mirrored strip, and the strip is stretched threefold, so
+    /// fifteen points either side of the seam are five points of picture either side of it.
+    ///
+    /// How tall the block is does not appear here, and that is the correction rather than an
+    /// omission. All three of its ingredients are at their extreme along its bottom edge whatever
+    /// its height: the mask that scales the blur reaches 1.0 there, the gradient layer that fades
+    /// the whole effect out reaches full opacity there, and the black gradient over it reaches its
+    /// 0.4. The row the page continues is that bottom edge, so the block's height cannot change the
+    /// page's colour -- and an earlier version that reached `shadowHeight - tail` into the picture
+    /// spent ninety points of it, averaging rows the header never shows anywhere near its bottom and
+    /// landing the page some thirty points of picture -- ninety of screen -- away from the row it
+    /// joins. That was the seam that was reported twice.
+    private static func bandRange(tail: CGFloat) -> (edge: CGFloat, depth: CGFloat) {
         let edge = (max(0.0, tail) + 4.0) / AorusGlassProfileTint.mirrorStretch
-        let reach = max(0.0, shadowHeight - max(0.0, tail))
-        return (edge, max(AorusGlassProfileTint.bandHeight, reach))
+        return (edge, AorusGlassProfileTint.bandDepth)
     }
 
-    /// The kernel that first row is blurred with, taken at the source: ten points.
+    /// The kernel that row is blurred with, taken at the source: ten points of picture, five either
+    /// side of the row the header's bottom edge shows.
     ///
     /// The block blurs fifteen points of whatever is behind it, and behind it there is the mirrored
     /// strip -- stretched threefold, so fifteen points of strip are five points of photo either way.
-    /// This is the floor under `bandRange`'s reach, so that a block barely deeper than the strip it
-    /// covers still averages the picture over the width of its own blur.
-    private static var bandHeight: CGFloat {
+    private static var bandDepth: CGFloat {
         return AorusGlassProfileTint.nativeBlurRadius * 2.0 / AorusGlassProfileTint.mirrorStretch
     }
 
@@ -334,8 +353,8 @@ public enum AorusGlassProfileTint {
     private static var sampledColors: [PhotoKey: Sample] = [:]
     private static var pendingKeys = Set<PhotoKey>()
 
-    private static func sample(key: PhotoKey, view: UIView, tail: CGFloat, shadowHeight: CGFloat, attempt: Int, onUpdate: @escaping () -> Void) {
-        if let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail, shadowHeight: shadowHeight) {
+    private static func sample(key: PhotoKey, view: UIView, tail: CGFloat, attempt: Int, onUpdate: @escaping () -> Void) {
+        if let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) {
             AorusGlassProfileTint.pendingKeys.remove(key)
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
@@ -362,7 +381,7 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(key: key, view: view, tail: tail, shadowHeight: shadowHeight, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sample(key: key, view: view, tail: tail, attempt: attempt + 1, onUpdate: onUpdate)
         }
     }
 
@@ -372,28 +391,35 @@ public enum AorusGlassProfileTint {
     /// backdrop is built from, so the flat page behind a photo-less profile and the row stretched
     /// over one with a photo are the same decision made twice rather than two decisions.
     ///
-    /// What is rendered is the band Telegram's own bottom blur block is made of -- `bandRange` says
-    /// which rows those are -- weighted the way the block weighs them. Its gradient is at full
-    /// strength along its bottom edge and gone by its top, so a row counts here in proportion to how
-    /// near that edge it lies: the average lands a third of the way up the band, which on a phone is
-    /// the row the bottom of the header actually shows. An unweighted average over ninety points of
-    /// picture would be the block's material without being the block's colour, and the page would
-    /// step away from the row it continues.
+    /// What is rendered is the band Telegram's own bottom blur block reads -- `bandRange` says where
+    /// that is -- weighted the way the block's own kernel weighs it. The row the header's bottom edge
+    /// shows sits in the middle of the band, and a row counts here in proportion to how near it lies:
+    /// a tent, peaking on that row and gone five points of picture either side of it, which is the
+    /// fifteen-point kernel converted through the mirror's threefold stretch. So the average lands on
+    /// the row the page has to join, with no bias to either side of it.
     ///
     /// Returns nil when the view has drawn next to nothing, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark -- a dark photo is still opaque.
-    private static func bottomBandSample(of view: UIView, tail: CGFloat, shadowHeight: CGFloat) -> Sample? {
+    private static func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample? {
         let bounds = view.bounds
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
         }
-        // Kept inside the picture at both ends: a header taller than the photo it is built from is a
-        // shape this was never given, but clamping is two lines and a crash is a crash.
-        let range = AorusGlassProfileTint.bandRange(tail: tail, shadowHeight: shadowHeight)
-        let bandBottom = min(bounds.height, max(1.0, bounds.height - range.edge))
-        let bandTop = max(0.0, bandBottom - range.depth)
+        // `seam` is the row of the picture that the bottom edge of the header shows, and the whole of
+        // this function exists to hand the page that row's colour. The band is centred on it and both
+        // ends are kept inside the picture: a header taller than three times the photo it is built
+        // from is a shape this was never given, but clamping is three lines and a crash is a crash.
+        let range = AorusGlassProfileTint.bandRange(tail: tail)
+        let seam = min(bounds.height, max(0.0, bounds.height - range.edge))
+        let bandTop = max(0.0, seam - range.depth * 0.5)
+        let bandBottom = min(bounds.height, max(bandTop + 1.0, seam + range.depth * 0.5))
         let bandHeight = max(1.0, bandBottom - bandTop)
         let size = AorusGlassProfileTint.sampleSize
+        // Where the seam ended up in the buffer, once the band was scaled into it. Half way down when
+        // nothing clamped, and this is what the weights below are hung on rather than a fixed row --
+        // clamping moves the seam within the band, and a weight that assumed the middle would quietly
+        // start averaging the wrong rows on the shapes where that happens.
+        let seamRow = min(Double(size), max(0.0, Double(size) * Double((seam - bandTop) / bandHeight)))
         let bytesPerRow = size * 4
         let count = bytesPerRow * size
         // Allocated rather than borrowed from an Array's buffer: the context outlives the call that
@@ -417,16 +443,17 @@ public enum AorusGlassProfileTint {
         ) else {
             return nil
         }
-        // The band is squashed across and down into a fraction of its own size, so ask for the
-        // filtering that averages what it drops rather than the one that is free to pick one source
-        // pixel out of it.
+        // The band is stretched across and down into a shape of its own, so ask for the filtering
+        // that averages the rows it lands between rather than the one that is free to pick one source
+        // pixel out of them.
         context.interpolationQuality = .high
         // Three transforms, applied in the order written and composing right to left, so read them
         // bottom up: put the band's top-left at the origin, express the context in the view's own
         // points, then flip, because a bitmap context counts y upwards and a layer counts it down.
         // Getting the flip wrong here samples the top of the photo and looks almost right, which is
-        // the kind of almost that survives review. It also decides which end of the buffer the
-        // weights below belong to: the band's bottom edge lands in the last row of it.
+        // the kind of almost that survives review. It also fixes which end of the buffer is which for
+        // everything below: row zero is the top of the band, the last row its bottom edge, and
+        // `seamRow` lies between them wherever the seam does.
         context.translateBy(x: 0.0, y: CGFloat(size))
         context.scaleBy(x: CGFloat(size) / bounds.width, y: -CGFloat(size) / bandHeight)
         context.translateBy(x: 0.0, y: -bandTop)
@@ -443,7 +470,7 @@ public enum AorusGlassProfileTint {
         // that test on a perfectly good photo simply because most of the weight is in a few rows.
         var coverage = 0.0
         for row in 0 ..< size {
-            let weight = AorusGlassProfileTint.bandWeight(row: row, of: size)
+            let weight = AorusGlassProfileTint.bandWeight(row: row, seamRow: seamRow, of: size)
             let offset = row * bytesPerRow
             for column in 0 ..< size {
                 let index = offset + column * 4
@@ -507,20 +534,34 @@ public enum AorusGlassProfileTint {
         // a little too much detail is still the right colours, where no page at all is the flat theme
         // background this whole feature exists to get rid of.
         let blurred = ImageBlur.blurredImage(sampled, radius: AorusGlassProfileTint.sampleBlurRadius(width: bounds.width))
-        return Sample(color: color, image: AorusGlassProfileTint.flattened(blurred ?? sampled))
+        // No image rather than the unflattened one if the flatten fails. `color` is the same weighted
+        // average of the same band, so a page painted flat with it is the right colour and simply
+        // shows no left-to-right variation; a ninety-six row gradient stretched over the screen and
+        // over each pane separately would be two scales of one gradient meeting at the pane's edge,
+        // which is worse than not having the variation at all.
+        return Sample(color: color, image: AorusGlassProfileTint.flattenedRow(of: blurred ?? sampled, seamRow: seamRow))
     }
 
-    /// How much a row of the sampled band counts, from nothing at its top to all of it at its bottom.
+    /// How much a row of the sampled band counts: all of it on the row the header's bottom edge
+    /// shows, tapering to nothing five points of picture either side of that.
     ///
-    /// This is the gradient Telegram's block is drawn with, read as a weight instead of as an alpha:
-    /// linear, zero where the block fades out and one along the edge the page continues. Row zero of
-    /// the buffer is the top of the band -- see the flip in `bottomBandSample` -- so the weight grows
-    /// with the index, and `+ 1` keeps the first row from counting for literally nothing.
-    private static func bandWeight(row: Int, of size: Int) -> Double {
+    /// This is the block's own kernel read as a weight instead of as a blur -- a tent over the band,
+    /// hung on `seamRow` rather than on either end of the buffer. Symmetric, so the average lands
+    /// exactly on the row the page has to join: a one-sided weight biases it into the picture by a
+    /// third of its reach, and that bias is a step in colour at the join, which is the only place on
+    /// the whole screen where a step is visible.
+    private static func bandWeight(row: Int, seamRow: Double, of size: Int) -> Double {
         guard size > 0 else {
             return 1.0
         }
-        return Double(row + 1) / Double(size)
+        // Half the buffer is half the band, which is the five points the kernel reaches. Measured
+        // from the middle of the row rather than its edge, so a tent centred on the middle of the
+        // buffer weighs the two rows nearest it alike.
+        let reach = max(1.0, Double(size) * 0.5)
+        let distance = abs(Double(row) + 0.5 - seamRow)
+        // Never quite zero at the far edge: a row that counts for literally nothing is a row that
+        // could have been left unrendered, and the arithmetic below still has to divide by the total.
+        return max(0.001, 1.0 - distance / reach)
     }
 
     /// The blurred sample averaged down to a single row, which is what makes the backdrop safe to
@@ -536,68 +577,84 @@ public enum AorusGlassProfileTint {
     /// Weighted exactly as the colour beside it was, by `bandWeight`, so the row and the flat colour
     /// cannot drift apart: the colour is one average of the whole band, this is that same average
     /// taken one column at a time. The lanes are averaged where they lie -- which of the four is
-    /// alpha is a property of the bitmap's byte order, and a mean is a mean in any order, so the row
-    /// is handed back with the byte order it came in with.
-    private static func flattened(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage, cgImage.height > 1,
-              cgImage.bitsPerComponent == 8, cgImage.bitsPerPixel == 32,
-              let data = cgImage.dataProvider?.data
-        else {
-            return image
+    /// alpha is a property of the bitmap's byte order, and a mean is a mean in any order -- and the
+    /// alpha lane is then forced opaque, because a backdrop with holes in it would show the theme's
+    /// own background through the page.
+    ///
+    /// The blurred image is redrawn into a buffer of this file's own making rather than read out of
+    /// whatever `ImageBlur` handed back. That version asked the image for its data provider and its
+    /// layout and gave up -- silently, returning the picture unflattened -- when either was not what
+    /// it expected. Unflattened means ninety-six rows of gradient, drawn at one height by the screen's
+    /// backdrop and at another by every pane over it: two scales of the same gradient meeting at the
+    /// pane's top edge, which is a seam produced by the very code written to avoid one. Failing here
+    /// is now a nil the caller answers for, and the common path cannot fail at all.
+    private static func flattenedRow(of image: UIImage, seamRow: Double) -> UIImage? {
+        let size = AorusGlassProfileTint.sampleSize
+        guard let cgImage = image.cgImage, size > 0 else {
+            return nil
         }
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerRow = cgImage.bytesPerRow
-        guard let source = CFDataGetBytePtr(data), CFDataGetLength(data) >= bytesPerRow * height else {
-            return image
+        let bytesPerRow = size * 4
+        let count = bytesPerRow * size
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        let pixels = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+        pixels.initialize(repeating: 0, count: count)
+        defer {
+            pixels.deinitialize(count: count)
+            pixels.deallocate()
         }
-        var weights = [Double](repeating: 0.0, count: height)
+        guard let context = CGContext(
+            data: pixels,
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+        context.interpolationQuality = .high
+        // Drawn upright into a bitmap context, which puts the image's own first row in the buffer's
+        // first row -- the same end `seamRow` is measured from.
+        context.draw(cgImage, in: CGRect(origin: CGPoint(), size: CGSize(width: size, height: size)))
+        var lanes = [Double](repeating: 0.0, count: bytesPerRow)
         var totalWeight = 0.0
-        for line in 0 ..< height {
-            let weight = AorusGlassProfileTint.bandWeight(row: line, of: height)
-            weights[line] = weight
+        for line in 0 ..< size {
+            let weight = AorusGlassProfileTint.bandWeight(row: line, seamRow: seamRow, of: size)
             totalWeight += weight
+            let offset = line * bytesPerRow
+            for lane in 0 ..< bytesPerRow {
+                lanes[lane] += Double(pixels[offset + lane]) * weight
+            }
         }
         guard totalWeight > 0.0 else {
-            return image
+            return nil
         }
-        var row = [UInt8](repeating: 0, count: width * 4)
-        for column in 0 ..< width {
-            var first = 0.0
-            var second = 0.0
-            var third = 0.0
-            var fourth = 0.0
-            for line in 0 ..< height {
-                let offset = line * bytesPerRow + column * 4
-                let weight = weights[line]
-                first += Double(source[offset]) * weight
-                second += Double(source[offset + 1]) * weight
-                third += Double(source[offset + 2]) * weight
-                fourth += Double(source[offset + 3]) * weight
-            }
-            row[column * 4] = AorusGlassProfileTint.byte(first / totalWeight)
-            row[column * 4 + 1] = AorusGlassProfileTint.byte(second / totalWeight)
-            row[column * 4 + 2] = AorusGlassProfileTint.byte(third / totalWeight)
-            row[column * 4 + 3] = AorusGlassProfileTint.byte(fourth / totalWeight)
+        var row = [UInt8](repeating: 0, count: bytesPerRow)
+        for column in 0 ..< size {
+            row[column * 4] = AorusGlassProfileTint.byte(lanes[column * 4] / totalWeight)
+            row[column * 4 + 1] = AorusGlassProfileTint.byte(lanes[column * 4 + 1] / totalWeight)
+            row[column * 4 + 2] = AorusGlassProfileTint.byte(lanes[column * 4 + 2] / totalWeight)
+            row[column * 4 + 3] = 255
         }
         guard let provider = CGDataProvider(data: Data(row) as CFData),
               let flattened = CGImage(
-                  width: width,
+                  width: size,
                   height: 1,
                   bitsPerComponent: 8,
                   bitsPerPixel: 32,
-                  bytesPerRow: width * 4,
-                  space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
-                  bitmapInfo: cgImage.bitmapInfo,
+                  bytesPerRow: bytesPerRow,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
                   provider: provider,
                   decode: nil,
                   shouldInterpolate: true,
                   intent: .defaultIntent
               )
         else {
-            return image
+            return nil
         }
-        return UIImage(cgImage: flattened, scale: image.scale, orientation: image.imageOrientation)
+        return UIImage(cgImage: flattened, scale: 1.0, orientation: .up)
     }
 
     /// A weighted mean back into the lane it came from, clamped rather than trusted: the arithmetic

@@ -2752,6 +2752,10 @@ def main() -> None:
             (
                 "aorusCentredHeader",
                 "publishAvatarTint",
+                # Taken from the size the avatar list was actually laid out with, because the row of
+                # the photo the page has to match is worked out from it. Hardcoding the 98 a phone in
+                # portrait computes made the page a container-shape away from the header on any other.
+                "self.aorusMirroredTail = expandedAvatarListSize.height",
                 "aorusHidesButtonsBlur",
                 "aorusScrollingHeader",
                 "aorusOverlayPalette",
@@ -2986,12 +2990,18 @@ def main() -> None:
                 "sampledColors",
                 "pageKey",
                 # The page is the band Telegram itself blurs under the header buttons, stretched
-                # behind the whole screen: the two numbers that place that band on the photo, the
-                # rows it is made of, and the mirrored copy that lets one rectangle be drawn twice
-                # without a seam where the two meet.
+                # behind the whole screen: the one number that places that band on the photo -- the
+                # mirrored strip below the square picture, which is what says which row of it the
+                # bottom edge of the header shows -- the band around that row, and the weight that
+                # keeps the average on the row itself rather than a third of the way off it. The
+                # block's own height is deliberately not among them: every gradient it is drawn with
+                # is at its extreme along that bottom edge whatever its height, and a version that
+                # reached `shadowHeight - tail` into the picture averaged ninety points of it and
+                # landed the page a visible step away from the row it joins.
                 "mirroredTail",
-                "nativeShadowHeight",
-                "bandRange",
+                "bandRange(tail:",
+                "bandDepth",
+                "seamRow",
                 "bottomBandSample",
                 "bandShadow",
                 # The tab panes draw the same rectangle the screen does, and find it by tag rather
@@ -3012,11 +3022,12 @@ def main() -> None:
                 # The band is blurred with Telegram's own thumbnail blur at the header's own fifteen
                 # points, converted from points into the sample's pixels -- spending them as pixels
                 # is a kernel half the width of the sample, which is the flat wash that was reported
-                # as "too blurred". Flattened afterwards so the stretched copy has no alpha to let
-                # the black behind it through.
+                # as "too blurred". Flattened afterwards into a buffer of our own, so the stretched
+                # copy has neither alpha to let the black behind it through nor rows left for the
+                # screen and the panes to draw at two different heights.
                 "nativeBlurRadius",
                 "sampleBlurRadius(width:",
-                "flattened",
+                "flattenedRow(of:",
             ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that
