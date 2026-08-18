@@ -724,6 +724,30 @@ def main() -> None:
         # Returning early here is what left the purchase as a bare toast.
         if "action = .starGiftUnique(gift: ownedGift, isUpgrade: false, isTransferred: false, savedToProfile: true" not in fake_store_text:
             err.append("FakeGifts: a local collectible purchase does not deliver its gift card")
+        # Wearing a local gift writes an emoji-status override, and the switch that hides the gifts
+        # has to take that override back off the name. The badge is a field on the peer and nothing
+        # re-reads the override between server syncs, so without the reconcile a worn fake kept
+        # showing as «Носится» with the gifts switched off, until some unrelated sync came along.
+        premium_registry = tg / "submodules" / "TelegramCore" / "Sources" / "Utils" / "AorusGramPremium.swift"
+        premium_text = premium_registry.read_text(encoding="utf-8")
+        required_premium_markers = (
+            "if !AorusFakeGiftsStore.isEnabled, AorusFakeGiftsStore.wornGift() != nil {",
+            "public static func reconcileEmojiStatus(account: Account)",
+            # The override exactly as it sits on disk, so a status the account really has can be
+            # told apart from ours and is left alone when ours is taken off.
+            "private static func storedEmojiStatus(_ rawId: Int64)",
+            "public static func observeFakeGiftsSwitch(account: Account)",
+            "AorusFakeGiftsStore.changedNotification",
+        )
+        if any(marker not in premium_text for marker in required_premium_markers):
+            err.append(
+                "FakeGifts: Utils/AorusGramPremium.swift does not follow the local gifts switch out of the emoji status"
+            )
+        account_context_text = (tg / "submodules" / "TelegramUI" / "Sources" / "AccountContext.swift").read_text(
+            encoding="utf-8"
+        )
+        if "AorusGramPremium.observeFakeGiftsSwitch(account: account)" not in account_context_text:
+            err.append("FakeGifts: AccountContext.swift does not observe the local gifts switch for the signed-in account")
         fake_gift_view = (
             tg
             / "submodules"
@@ -2686,6 +2710,17 @@ def main() -> None:
                 "aorusGlassProfileTheme",
                 "AorusGlassThemeCache",
                 "blockMarker",
+                # The cache holds its source themes, and asks the theme itself whether it has been
+                # derived by looking for the marker fill. It used to remember them by
+                # ObjectIdentifier alone, and an object identifier is an address: a screen that
+                # mints a theme per state emission (the chat-folder editor does, through
+                # withModalBlocksBackground) could put a fresh, underived theme at the address of a
+                # derived one that had just been freed, whereupon it was handed back untouched --
+                # no marker, nothing for the pane finder to find, and every block on that screen
+                # came out as a flat rectangle with no glass behind it.
+                "private final class Entry",
+                "entry.source === theme",
+                "itemBlocksBackgroundColor.isEqual(AorusGlassPane.blockMarker)",
                 # The inset a block takes when it has to read as a card rather than a band. Shared,
                 # because the editing header's rows are laid out from it and so is the pane behind
                 # them: the two disagreeing by a point shows as glass sticking out past the text.
@@ -2767,6 +2802,44 @@ def main() -> None:
                 # previous avatar's backdrop until the list was scrolled.
                 "AorusGlassProfileTint.pageDidChangeNotification",
                 "aorusPageDidChange",
+            ),
+        ),
+        # The groups tab of a bot or a user. Same band and same fade as the members tab, plus one
+        # thing that tab does not have: its rows are ItemListPeerItems in the plain style, and a
+        # plain row paints the list's own background colour over the card unless it is told not to.
+        # That fill is the black rectangle the tab showed under a tinted page.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoGroupsInCommonPaneNode.swift",
+            (
+                "displayBackground: !AorusGlassPane.isEnabled",
+                "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
+                "aorusUpdateGlass",
+                "aorusPageFillView",
+                "aorusGlassProfileTheme",
+                "import GlassBackgroundComponent",
+                "aorusPageBackdrop",
+                "AorusGlassProfileTint.pageDidChangeNotification",
+                "aorusPageDidChange",
+                # The rows are merged by stable id, so the ink has to be part of what makes a row
+                # equal to itself -- otherwise flipping the page's ink rebuilds nothing.
+                "aorusPageIsDark",
+            ),
+        ),
+        # "Similar channels" / "Similar bots" -- the same plain-style rows as the groups tab, and so
+        # the same black band over the page, but with no card of its own to keep: upstream lets these
+        # rows run edge to edge over the pane, and under Interface 2.0 the pane shows the page.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoRecommendedPeersPane.swift",
+            (
+                "displayBackground: !AorusGlassPane.isEnabled",
+                "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
+                "import AorusGramUI",
+                "aorusGlassProfileTheme",
+                "AorusGlassProfileTint.pageDidChangeNotification",
+                "aorusPageDidChange",
+                # The entry holds the theme it was built with and compares it by identity, so the
+                # derived theme has to reach the promise the rows are built from, not just the layout.
+                "aorusPresentationData",
             ),
         ),
         # Editing a profile keeps the page behind the header, and the name fields were the last
@@ -2912,11 +2985,14 @@ def main() -> None:
                 "photoCount: Int",
                 "sampledColors",
                 "pageKey",
-                # The page is the whole photo, mirrored and stretched behind the screen, in the
-                # shading the header lays over the picture's own lower edge. Mirrored by leaving
-                # the y flip out of the bitmap context, which is the one arrangement of a single
-                # rectangle drawn twice that cannot show a seam where the two meet.
-                "mirroredPhotoSample",
+                # The page is the band Telegram itself blurs under the header buttons, stretched
+                # behind the whole screen: the two numbers that place that band on the photo, the
+                # rows it is made of, and the mirrored copy that lets one rectangle be drawn twice
+                # without a seam where the two meet.
+                "mirroredTail",
+                "nativeShadowHeight",
+                "bandRange",
+                "bottomBandSample",
                 "bandShadow",
                 # The tab panes draw the same rectangle the screen does, and find it by tag rather
                 # than by walking a fixed number of superviews.
@@ -2933,12 +3009,14 @@ def main() -> None:
                 # drawn from is published instead. Without this the page stays black and the whole
                 # profile disappears into it.
                 "publishPageColor",
-                # The page is blurred with Telegram's own thumbnail blur, and with the fifteen
-                # points the header itself uses converted into the sample's pixels. Spending them
-                # as pixels is a kernel half the width of the sample -- the flat wash that was
-                # reported as "too blurred".
-                "sampleBlurRadius",
-                "ImageBlur.blurredImage(sampled, radius: AorusGlassProfileTint.sampleBlurRadius)",
+                # The band is blurred with Telegram's own thumbnail blur at the header's own fifteen
+                # points, converted from points into the sample's pixels -- spending them as pixels
+                # is a kernel half the width of the sample, which is the flat wash that was reported
+                # as "too blurred". Flattened afterwards so the stretched copy has no alpha to let
+                # the black behind it through.
+                "nativeBlurRadius",
+                "sampleBlurRadius(width:",
+                "flattened",
             ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that
