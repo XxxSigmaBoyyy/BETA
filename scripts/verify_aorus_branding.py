@@ -695,6 +695,11 @@ def main() -> None:
             "public static func transfer(reference: StarGiftReference",
             "public static func updateCollectionOrder(collectionId: Int32",
             "public static func isWorn(reference: StarGiftReference)",
+            # The badges around the avatar in the settings preview read this one, and they cache
+            # what it returns until changedNotification fires -- so the switch has to be checked
+            # inside it, or switching fake gifts off leaves them pinned to the profile.
+            "public static func pinnedProfileWrappers() -> [ProfileGiftsContext.State.StarGift] {\n"
+            "        guard isEnabled else {",
         )
         if any(marker not in fake_store_text for marker in required_store_markers):
             err.append("FakeStars: local balance/gift persistence pipeline is incomplete")
@@ -2681,6 +2686,10 @@ def main() -> None:
                 "aorusGlassProfileTheme",
                 "AorusGlassThemeCache",
                 "blockMarker",
+                # The inset a block takes when it has to read as a card rather than a band. Shared,
+                # because the editing header's rows are laid out from it and so is the pane behind
+                # them: the two disagreeing by a point shows as glass sticking out past the text.
+                "blockSideInset",
                 # The page ink: one source for the name, the status, the header glyphs and the
                 # selected tab, so a pale photo cannot leave white text on a white page.
                 "profilePageKey",
@@ -2750,7 +2759,35 @@ def main() -> None:
                 "aorusPageFillView",
                 "aorusGlassProfileTheme",
                 "import GlassBackgroundComponent",
+                # The pane draws the screen's own backdrop rectangle, found by tag, so page and tab
+                # stretch one image over one frame and cannot meet in a seam.
+                "aorusPageBackdrop",
+                # And it is told when the avatar changed: its update memoises its parameters, none
+                # of which a swipe between avatars touches, so without this the tab kept the
+                # previous avatar's backdrop until the list was scrolled.
+                "AorusGlassProfileTint.pageDidChangeNotification",
+                "aorusPageDidChange",
             ),
+        ),
+        # Editing a profile keeps the page behind the header, and the name fields were the last
+        # block on it still painted as an opaque card: upstream fills them with the list's block
+        # colour and rounds them through cornersImage, which Interface 2.0 returns nil for.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderEditingContentNode.swift",
+            (
+                "aorusFieldsGlassView",
+                "aorusGlassProfileTheme",
+                "import GlassBackgroundComponent",
+                "AorusGlassPane.blockSideInset",
+            ),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderSingleLineTextFieldNode.swift",
+            ("AorusGlassPane.blockSideInset",),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderMultiLineTextFieldNode.swift",
+            ("AorusGlassPane.blockSideInset",),
         ),
         (
             "submodules/TelegramUI/Components/MultiScaleTextNode/Sources/MultiScaleTextNode.swift",
@@ -2875,16 +2912,19 @@ def main() -> None:
                 "photoCount: Int",
                 "sampledColors",
                 "pageKey",
-                # The page continues the one row of the photo the header ends on, sampled through
-                # the same shading the header lays over it. That row is not the bottom of the
-                # picture: the strip below the square is the picture mirrored, hinged four points
-                # up and stretched threefold, so the row to match is (tail + 4) / 3 above the edge.
-                # Sampling anywhere else, or forgetting the shading, is what left the page meeting
-                # the picture in a visible line.
-                "bottomBandSample",
-                "mirrorDepth",
-                "mirroredTail",
+                # The page is the whole photo, mirrored and stretched behind the screen, in the
+                # shading the header lays over the picture's own lower edge. Mirrored by leaving
+                # the y flip out of the bitmap context, which is the one arrangement of a single
+                # rectangle drawn twice that cannot show a seam where the two meet.
+                "mirroredPhotoSample",
                 "bandShadow",
+                # The tab panes draw the same rectangle the screen does, and find it by tag rather
+                # than by walking a fixed number of superviews.
+                "backdropTag",
+                # A swipe between avatars changes none of the parameters a pane's update memoises,
+                # so the panes are told the page changed instead of discovering it on the next
+                # scroll -- which is how the Members tab kept the previous avatar's backdrop.
+                "pageDidChangeNotification",
                 # The stretched backdrop, and the flag that keeps it from being sampled off the
                 # round centre-cropped fallback avatar.
                 "pageBackgroundImage",

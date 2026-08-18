@@ -88,6 +88,12 @@ public enum AorusGlassPane {
     /// their own content.
     public static let blockCornerRadius: CGFloat = 26.0
 
+    /// The side inset a block needs when it has to read as a card on the page rather than a band
+    /// across it. Upstream lays the editing header's name fields out edge to edge and rounds them
+    /// only in landscape; a pane at `blockCornerRadius` needs room on both sides for the corner to
+    /// be visible at all. Shared so the pane and the rows inside it cannot drift apart.
+    public static let blockSideInset: CGFloat = 16.0
+
     // MARK: - Ink over the profile page
 
     /// Where the profile header publishes the colour it sampled off the avatar. Pinned against
@@ -412,6 +418,148 @@ def _patch_profile_section_glass(tg: Path) -> None:
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: made profile sections glass")
+
+
+_EDITING_FIELD_UPDATE_ANCHOR = (
+    "    func update(width: CGFloat, safeInset: CGFloat, isSettings: Bool, hasPrevious: Bool,"
+    " hasNext: Bool, placeholder: String, isEnabled: Bool, presentationData: PresentationData,"
+    " updateText: String?) -> CGFloat {\n"
+)
+
+
+def _inset_editing_field(path: Path, label: str) -> None:
+    """Move one editing text field in by the block inset when Interface 2.0 is on.
+
+    Every frame in these nodes -- the fill, the text, the top separator, the clear button, the
+    corner mask -- is laid out from `safeInset`, and `safeInset` is the horizontal safe area, which
+    is zero in portrait. That is why the field is a full-width rectangle there. Widening the inset
+    at the top of `update` moves all of those together, which is the whole reason to do it here
+    rather than at each frame: there is one number to keep in step with the pane behind them.
+    """
+    text = _read(path, path.name)
+    if "AorusGlassPane.blockSideInset" in text:
+        print(f"InterfaceV2: editing {label} field already inset")
+        return
+    text = _replace_once(
+        text,
+        _EDITING_FIELD_UPDATE_ANCHOR,
+        _EDITING_FIELD_UPDATE_ANCHOR
+        + "        // AorusGram: Interface 2.0 draws this run of fields as a card on the profile\n"
+        "        // page instead of a band across it. The pane of glass behind them is inset by\n"
+        "        // AorusGlassPane.blockSideInset, so the row is inset by the same amount -- one\n"
+        "        // shared constant, because a pane and its rows disagreeing by a point shows.\n"
+        "        let safeInset = AorusGlassPane.isEnabled ? safeInset + AorusGlassPane.blockSideInset : safeInset\n",
+        f"editing {label} field inset",
+    )
+    path.write_text(text, encoding="utf-8")
+    print(f"InterfaceV2: inset the editing {label} field")
+
+
+def _patch_editing_fields_glass(tg: Path) -> None:
+    """Put the name and description fields of the editing header on glass.
+
+    In edit mode the header keeps the profile page behind it, and the fields are the only block on
+    that page still painted as an opaque card: their fill is `itemBlocksBackgroundColor` and their
+    rounding comes from `PresentationResourcesItemList.cornersImage`, which Interface 2.0 returns
+    nil for. So they end up a bare rectangle in list-background grey over the avatar's colour.
+
+    The fix is the one every other block gets: hand the rows a derived theme, so the fill becomes
+    the invisible marker colour and the labels become ink, and put a single `GlassBackgroundView`
+    behind the whole run of them. One pane, not one per field -- the fields are rows of a block,
+    and each of them carrying its own pane would show a seam at every separator.
+    """
+    base = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources"
+    _inset_editing_field(base / "PeerInfoHeaderSingleLineTextFieldNode.swift", "single line")
+    _inset_editing_field(base / "PeerInfoHeaderMultiLineTextFieldNode.swift", "multi line")
+
+    path = base / "PeerInfoHeaderEditingContentNode.swift"
+    text = _read(path, "PeerInfoHeaderEditingContentNode.swift")
+    if "aorusFieldsGlassView" in text:
+        print("InterfaceV2: editing header fields already glass")
+        return
+    if _GLASS_IMPORT not in text:
+        # ComponentFlow with it: `transition:` on GlassBackgroundView.update is a ComponentTransition
+        # and `.immediate` only resolves where that type is imported.
+        text = _replace_once(
+            text,
+            "import Display\n",
+            "import Display\n" + _GLASS_IMPORT + "import ComponentFlow\n",
+            "editing header glass import",
+        )
+    text = _replace_once(
+        text,
+        "    var itemNodes: [PeerInfoHeaderTextFieldNodeKey: PeerInfoHeaderTextFieldNode] = [:]\n",
+        "    var itemNodes: [PeerInfoHeaderTextFieldNodeKey: PeerInfoHeaderTextFieldNode] = [:]\n"
+        "    // AorusGram: created lazily, so a profile edited with Interface 2.0 off never pays for\n"
+        "    // a visual effect view it will not show.\n"
+        "    private var aorusFieldsGlassView: GlassBackgroundView?\n",
+        "editing header glass property",
+    )
+    text = _replace_once(
+        text,
+        "        let avatarSize: CGFloat = isModalOverlay ? 200.0 : 100.0\n",
+        "        // AorusGram: the derived theme is what makes the rows readable on the page -- their\n"
+        "        // fill becomes the marker colour the glass shows through, their text and cursor\n"
+        "        // become ink, and their separators become a hairline of it. The Set Photo button\n"
+        "        // above them takes its colour from the same accent, which is what puts it on the\n"
+        "        // page rather than in the palette's blue.\n"
+        "        let aorusGlass = AorusGlassPane.isEnabled\n"
+        "        var presentationData = presentationData\n"
+        "        if aorusGlass {\n"
+        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "        }\n"
+        "        let avatarSize: CGFloat = isModalOverlay ? 200.0 : 100.0\n",
+        "editing header glass theme",
+    )
+    text = _replace_once(
+        text,
+        "        var hasPrevious = false\n",
+        "        // Where the block starts: the loop below advances contentHeight field by field, so\n"
+        "        // the pane spans from here to wherever it stops.\n"
+        "        let aorusFieldsTop = contentHeight\n"
+        "        var hasPrevious = false\n",
+        "editing header glass top",
+    )
+    text = _replace_once(
+        text,
+        "        var removeKeys: [PeerInfoHeaderTextFieldNodeKey] = []\n",
+        "        if aorusGlass && !fieldKeys.isEmpty {\n"
+        "            let aorusInset = safeInset + AorusGlassPane.blockSideInset\n"
+        "            let aorusGlassFrame = CGRect(\n"
+        "                origin: CGPoint(x: aorusInset, y: aorusFieldsTop),\n"
+        "                size: CGSize(width: max(1.0, width - aorusInset * 2.0), height: max(0.0, contentHeight - aorusFieldsTop))\n"
+        "            )\n"
+        "            let glassView: GlassBackgroundView\n"
+        "            if let current = self.aorusFieldsGlassView {\n"
+        "                glassView = current\n"
+        "            } else {\n"
+        "                glassView = GlassBackgroundView(frame: aorusGlassFrame)\n"
+        "                glassView.isUserInteractionEnabled = false\n"
+        "                self.aorusFieldsGlassView = glassView\n"
+        "                // At the back: the field nodes are already subviews by now, and a field\n"
+        "                // created on a later pass is appended above this one anyway.\n"
+        "                self.view.insertSubview(glassView, at: 0)\n"
+        "            }\n"
+        "            glassView.isHidden = aorusGlassFrame.height <= 0.0\n"
+        "            transition.updateFrame(view: glassView, frame: aorusGlassFrame)\n"
+        "            glassView.update(\n"
+        "                size: aorusGlassFrame.size,\n"
+        "                cornerRadius: AorusGlassPane.blockCornerRadius,\n"
+        "                isDark: true,\n"
+        "                tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "                isInteractive: false,\n"
+        "                isVisible: true,\n"
+        "                transition: .immediate\n"
+        "            )\n"
+        "        } else if let glassView = self.aorusFieldsGlassView {\n"
+        "            self.aorusFieldsGlassView = nil\n"
+        "            glassView.removeFromSuperview()\n"
+        "        }\n"
+        "        var removeKeys: [PeerInfoHeaderTextFieldNodeKey] = []\n",
+        "editing header glass pane",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the editing header fields glass")
 
 
 def _patch_corner_wedges(tg: Path) -> None:
@@ -739,17 +887,16 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "                sampledView = nil\n"
             "            }\n"
             "        }\n"
-            "        // How far the header reaches below the square photo. Telegram fills that strip by\n"
-            "        // mirroring the picture into it -- flipped and stretched threefold -- so it decides\n"
-            "        // which row of the photo the page has to be painted in, and the two numbers here are\n"
-            "        // the two the header itself adds to the expanded avatar's height.\n"
-            "        let aorusMirroredTail: CGFloat = (self.isSettings || self.isMyProfile) ? 60.0 : 98.0\n"
+            "        // The page under the profile is this photo mirrored: the whole picture, flipped,\n"
+            "        // blurred with Telegram's own kernel and stretched over the screen. The header\n"
+            "        // fills the strip under the square the same way -- a replicator layer drawing a\n"
+            "        // flipped copy -- so the page is that mirror carried the rest of the way down,\n"
+            "        // and there is no row for the two of them to disagree about.\n"
             "        AorusGlassProfileTint.publishAvatarTint(\n"
             "            for: peer.id.id._internalGetInt64Value(),\n"
             "            photo: photo,\n"
             "            photoCount: listContainerNode.galleryEntries.count,\n"
             "            view: sampledView,\n"
-            "            mirroredTail: aorusMirroredTail,\n"
             "            isFullPhoto: isFullPhoto,\n"
             "            onUpdate: { [weak self] in\n"
             "                self?.requestUpdateLayout?(false)\n"
@@ -2347,11 +2494,12 @@ def _patch_members_pane_glass(tg: Path) -> None:
 
     Which is two different things, because the page has two forms. For a peer with no photo the
     page is a flat colour, and it is `blocksBackgroundColor`, the very colour this mask already
-    uses: nothing to change. For a peer with a photo the page is the strip taken from the foot of
-    the photo, so there the mask stops painting and becomes the mask of a view holding that same
-    strip. The strip is blurred across and kept one pixel tall, so there is no vertical detail to
-    line up, and the pane is exactly as wide as the page -- which is what makes it safe to lay
-    across the pane's own bounds and forget about it.
+    uses: nothing to change. For a peer with a photo the page is the avatar mirrored and stretched
+    over the whole screen, so there the mask stops painting and becomes the mask of a view holding
+    that same picture -- laid over the screen backdrop's own rectangle, converted into this pane's
+    coordinates. Not over the pane's bounds: one picture stretched over two rectangles of different
+    heights meets itself at the pane's top edge as a join, which is exactly what a mirrored avatar
+    with real detail down it would have shown.
 
     The block behind the rows becomes real glass, cornered at the same 26 as every other block on
     the page.
@@ -2378,7 +2526,20 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "    // keyed by, and the glass and page fill that replace the card under Interface 2.0.\n"
         "    private let aorusPeerId: Int64\n"
         "    private var aorusGlassBackgroundView: GlassBackgroundView?\n"
-        "    private var aorusPageFillView: UIImageView?\n"
+        "    // The fill is two views: a plain one cut to the shape of the rows, and the picture\n"
+        "    // inside it. They have to be two, because the shape is measured in the pane's own\n"
+        "    // coordinates and the picture is laid over the screen's backdrop -- which begins a few\n"
+        "    // hundred points above the pane, and often at a negative y from here.\n"
+        "    private var aorusPageFillView: UIView?\n"
+        "    private var aorusPageImageView: UIImageView?\n"
+        "    // The screen's own backdrop, so its rectangle can be asked for rather than guessed at.\n"
+        "    // Weak and re-found on demand: it belongs to the screen, not to this pane.\n"
+        "    private weak var aorusPageBackdropView: UIView?\n"
+        "    // What the two rectangles were last laid out at, and the theme they were laid out from,\n"
+        "    // so a page that changes under a pane that is not being laid out can still be answered.\n"
+        "    private var aorusLastBackgroundFrame: CGRect?\n"
+        "    private var aorusPresentationData: PresentationData?\n"
+        "    private var aorusPageObserver: NSObjectProtocol?\n"
         "    // What the page falls back to for a peer with no photo, which is also what the mask\n"
         "    // has to be handed back if a photo it was shaping ever goes away.\n"
         "    private var aorusPageFallbackColor: UIColor = .clear\n",
@@ -2395,6 +2556,36 @@ def _patch_members_pane_glass(tg: Path) -> None:
     )
     text = _replace_once(
         text,
+        "        self.listNode.visibleContentOffsetChanged = { [weak self] _, transition in\n",
+        "        // AorusGram: paging through a peer's avatars changes the page under the profile, and\n"
+        "        // nothing tells a pane about it. PeerInfoPaneWrapper.update memoises its parameters\n"
+        "        // and returns early when none of them have changed -- and a swipe between two photos\n"
+        "        // changes none of them: same size, same insets, same visible height. So the pane kept\n"
+        "        // the previous photo's backdrop until the reader happened to scroll it, which is the\n"
+        "        // report this answers. Listened for here instead, where the pane can lay its own two\n"
+        "        // rectangles out again without the wrapper being involved at all.\n"
+        "        self.aorusPageObserver = NotificationCenter.default.addObserver(forName: AorusGlassProfileTint.pageDidChangeNotification, object: nil, queue: .main) { [weak self] _ in\n"
+        "            self?.aorusPageDidChange()\n"
+        "        }\n"
+        "        \n"
+        "        self.listNode.visibleContentOffsetChanged = { [weak self] _, transition in\n",
+        "members pane page observer",
+    )
+    text = _replace_once(
+        text,
+        "    deinit {\n"
+        "        self.disposable?.dispose()\n"
+        "    }\n",
+        "    deinit {\n"
+        "        self.disposable?.dispose()\n"
+        "        if let aorusPageObserver = self.aorusPageObserver {\n"
+        "            NotificationCenter.default.removeObserver(aorusPageObserver)\n"
+        "        }\n"
+        "    }\n",
+        "members pane observer teardown",
+    )
+    text = _replace_once(
+        text,
         "        self.currentParams = (size, isScrollingLockedAtTop)\n"
         "        self.presentationDataPromise.set(.single(presentationData))\n",
         "        self.currentParams = (size, isScrollingLockedAtTop)\n"
@@ -2402,6 +2593,12 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        // here is what gives them the white labels and hairline separators of every section\n"
         "        // on the page above them. It also turns their block fill into the marker colour,\n"
         "        // which is the other half of why the card below can be cleared rather than painted.\n"
+        "        //\n"
+        "        // The underived one is kept as well, because the derivation depends on the page: the\n"
+        "        // ink is whatever reads over it, and a peer's photos are not all light or all dark.\n"
+        "        // Swiping to a pale avatar has to re-derive from here rather than reuse a theme whose\n"
+        "        // labels were white for the one before it.\n"
+        "        self.aorusPresentationData = presentationData\n"
         "        var presentationData = presentationData\n"
         "        if AorusGlassPane.isEnabled {\n"
         "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
@@ -2437,6 +2634,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "    // the frame around it. Called from the same place the two rectangles are laid out, so\n"
         "    // it tracks them through every scroll without a second pass.\n"
         "    private func aorusUpdateGlass(backgroundFrame: CGRect, transition: ContainedViewLayoutTransition) {\n"
+        "        self.aorusLastBackgroundFrame = backgroundFrame\n"
         "        guard AorusGlassPane.isEnabled else {\n"
         "            self.aorusReleaseMask()\n"
         "            if let glassView = self.aorusGlassBackgroundView {\n"
@@ -2466,31 +2664,95 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "            transition: .immediate\n"
         "        )\n"
         "        \n"
-        "        // No strip means a peer with no photo, and there the page is one flat colour that\n"
+        "        // No picture means a peer with no photo, and there the page is one flat colour that\n"
         "        // the mask is already painting. Nothing to take over.\n"
         "        guard let pageImage = AorusGlassProfileTint.pageBackgroundImage(for: self.aorusPeerId) else {\n"
         "            self.aorusReleaseMask()\n"
         "            return\n"
         "        }\n"
-        "        let fillView: UIImageView\n"
-        "        if let current = self.aorusPageFillView {\n"
-        "            fillView = current\n"
+        "        let fillView: UIView\n"
+        "        let imageView: UIImageView\n"
+        "        if let currentFill = self.aorusPageFillView, let currentImage = self.aorusPageImageView {\n"
+        "            fillView = currentFill\n"
+        "            imageView = currentImage\n"
         "        } else {\n"
-        "            fillView = UIImageView()\n"
-        "            fillView.contentMode = .scaleToFill\n"
+        "            fillView = UIView()\n"
         "            fillView.isUserInteractionEnabled = false\n"
+        "            imageView = UIImageView()\n"
+        "            imageView.contentMode = .scaleToFill\n"
+        "            imageView.layer.magnificationFilter = .linear\n"
+        "            imageView.isUserInteractionEnabled = false\n"
+        "            fillView.addSubview(imageView)\n"
         "            self.aorusPageFillView = fillView\n"
+        "            self.aorusPageImageView = imageView\n"
         "            // The mask leaves the hierarchy to become one: a view cannot both be a subview\n"
         "            // and shape another. Its frame goes on being set by the caller above, and it\n"
-        "            // still lands in the right place, because the fill it now cuts covers the\n"
+        "            // still lands in the right place, because the view it now cuts covers the\n"
         "            // pane's own bounds -- the same space that frame was always measured in.\n"
         "            self.listMaskView.removeFromSuperview()\n"
         "            self.listMaskView.tintColor = .white\n"
         "            fillView.mask = self.listMaskView\n"
         "            self.view.addSubview(fillView)\n"
         "        }\n"
-        "        fillView.image = pageImage\n"
         "        fillView.frame = CGRect(origin: CGPoint(), size: self.listNode.visibleSize)\n"
+        "        if imageView.image !== pageImage {\n"
+        "            imageView.image = pageImage\n"
+        "        }\n"
+        "        // The picture goes exactly where the screen's own backdrop is, converted into this\n"
+        "        // pane's coordinates -- not over the pane's bounds. Both views then stretch one image\n"
+        "        // over one rectangle, so the row of it at the pane's top edge is the row the page has\n"
+        "        // immediately above that edge, whatever the pane's height happens to be. Stretching\n"
+        "        // the same picture over two different rectangles is what put a visible join across the\n"
+        "        // top of the members tab; the earlier backdrop got away with it only because it had\n"
+        "        // been averaged down to a single row and had nothing to line up.\n"
+        "        //\n"
+        "        // With no backdrop found -- which would mean the screen has not laid one out -- the\n"
+        "        // pane's own bounds are the honest fallback rather than nothing at all.\n"
+        "        var imageFrame = CGRect(origin: CGPoint(), size: self.listNode.visibleSize)\n"
+        "        if let backdropView = self.aorusPageBackdrop() {\n"
+        "            imageFrame = self.view.convert(backdropView.bounds, from: backdropView)\n"
+        "        }\n"
+        "        imageView.frame = imageFrame\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: the screen's backdrop, looked up once and kept until it goes away. Walking\n"
+        "    // up from here rather than being handed down: the pane is built by the pane container,\n"
+        "    // which knows nothing about the page, and every view between the two is Telegram's.\n"
+        "    private func aorusPageBackdrop() -> UIView? {\n"
+        "        if let existing = self.aorusPageBackdropView, existing.superview != nil {\n"
+        "            return existing\n"
+        "        }\n"
+        "        var ancestor: UIView? = self.view.superview\n"
+        "        while let current = ancestor {\n"
+        "            for subview in current.subviews {\n"
+        "                if subview.tag == AorusGlassProfileTint.backdropTag {\n"
+        "                    self.aorusPageBackdropView = subview\n"
+        "                    return subview\n"
+        "                }\n"
+        "            }\n"
+        "            ancestor = current.superview\n"
+        "        }\n"
+        "        return nil\n"
+        "    }\n"
+        "    \n"
+        "    // AorusGram: the page changed under a pane nobody is laying out -- an avatar was swiped.\n"
+        "    // Both halves have to follow it: the picture, and the ink the rows are drawn in, which is\n"
+        "    // derived from the page and so is not the same ink for a pale photo as for a dark one.\n"
+        "    private func aorusPageDidChange() {\n"
+        "        guard AorusGlassPane.isEnabled else {\n"
+        "            return\n"
+        "        }\n"
+        "        if let presentationData = self.aorusPresentationData {\n"
+        "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
+        "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
+        "            self.presentationDataPromise.set(.single(presentationData.withUpdated(theme: aorusTheme)))\n"
+        "        }\n"
+        "        if let backgroundFrame = self.aorusLastBackgroundFrame {\n"
+        "            self.aorusUpdateGlass(backgroundFrame: backgroundFrame, transition: .immediate)\n"
+        "        }\n"
+        "        if self.aorusPageFillView == nil {\n"
+        "            self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "        }\n"
         "    }\n"
         "    \n"
         "    // AorusGram: hand the mask back its place above the list, and its own paint with it.\n"
@@ -2499,6 +2761,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "            return\n"
         "        }\n"
         "        self.aorusPageFillView = nil\n"
+        "        self.aorusPageImageView = nil\n"
         "        fillView.mask = nil\n"
         "        fillView.removeFromSuperview()\n"
         "        self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
@@ -3866,6 +4129,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_item_list_theme(tg)
     _patch_corner_wedges(tg)
     _patch_profile_section_glass(tg)
+    _patch_editing_fields_glass(tg)
     _patch_header_centering(tg)
     _patch_multi_scale_centering(tg)
     _patch_glass_action_buttons(tg)

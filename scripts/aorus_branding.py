@@ -10037,7 +10037,17 @@ public enum AorusFakeGiftsStore {
     }
 
     // Only the gifts pinned to top, in pin order — drives the badges around the avatar.
+    //
+    // Gated on the switch here rather than at the call site, unlike the other own-profile
+    // getters: this one is read by the profile cover, which caches what it gets and rebuilds
+    // only when changedNotification fires. Gating it inside the store is what makes the badges
+    // leave the settings preview and Мой профиль the moment fake gifts are switched off, and
+    // come back when they are switched on — setEnabled posts that notification either way.
+    // Own gifts only (ownerPeerId == 0), so a fake sent to somebody else is unaffected.
     public static func pinnedProfileWrappers() -> [ProfileGiftsContext.State.StarGift] {
+        guard isEnabled else {
+            return []
+        }
         return all().filter { $0.showInProfile && $0.ownerPeerId == 0 && $0.pinnedToTop }.sorted { $0.pinnedOrder < $1.pinnedOrder }.compactMap { wrapper(for: $0) }
     }
 

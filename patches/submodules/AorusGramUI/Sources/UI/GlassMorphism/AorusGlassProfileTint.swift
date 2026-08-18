@@ -28,6 +28,26 @@ public enum AorusGlassProfileTint {
     /// from, taken from there rather than spelled out twice: the two sides cannot drift.
     public static let pageKey = AorusGlassPane.profilePageKey
 
+    /// The tag on the one view that holds the stretched backdrop, so everything painting the page
+    /// paints the same rectangle.
+    ///
+    /// The profile screen owns that view and lays it over its own bounds. The members pane cannot:
+    /// it has to cut the same picture into the shape of its rows, and a pane is a few hundred
+    /// points down the screen. Given the frame of the screen's backdrop it can convert it into its
+    /// own coordinates and lay the image exactly there, which is the only arrangement in which the
+    /// two rectangles cannot disagree -- they are one rectangle drawn twice. Written down here
+    /// rather than in either of them because two spellings of a tag is a seam waiting to happen.
+    public static let backdropTag = 0x41475042
+
+    /// Posted, on the main thread, when a peer's page colour or backdrop has changed.
+    ///
+    /// The screen itself needs no notification: the sampler asks it for a layout and the layout
+    /// reads the new page. The panes do, because `PeerInfoPaneWrapper.update` memoises its
+    /// parameters and returns early when none of them have changed -- and paging through a peer's
+    /// avatars changes none of them. That early return is why the members tab kept the previous
+    /// photo's backdrop until the reader happened to scroll it, which is what was reported.
+    public static let pageDidChangeNotification = Notification.Name("AorusGramProfilePageDidChange")
+
     /// Colour for the selected tab's label, or nil to leave the tab bar as Telegram draws it.
     public static var selectedTabColor: UIColor? {
         return AorusGlassProfileTint.color(forKey: AorusGlassProfileTint.key)
@@ -75,29 +95,28 @@ public enum AorusGlassProfileTint {
         return AorusGlassProfileTint.pageColors[peerId]
     }
 
-    /// The photo's last few points of picture, blurred and kept tiny, for the page to stretch behind
-    /// the whole screen -- sections, tabs, gifts and all.
+    /// The photo itself, mirrored, blurred and kept tiny, for the page to stretch behind the whole
+    /// screen -- sections, tabs, gifts and all.
     ///
-    /// This is Telegram's own bottom blur carried on downwards rather than a second effect invented
-    /// for the page. An expanded avatar already ends in `PeerAvatarBottomShadowNode`: a variable
-    /// blur of the photo's own bottom band under a gradient that reaches 0.32 black at the very
-    /// last row, there so that the name and the buttons read against the picture. The page has to
-    /// begin in exactly the colour that band ends in, and it cannot *be* that view -- the node
-    /// lives inside the clipped avatar container, exists only while the photo is expanded, and a
-    /// UIVisualEffectView has nothing to blur below the photo in any case. So the page reproduces
-    /// the same material: the same pixels, the same darkening, through the same blur.
+    /// This is Telegram's own mirror carried on downwards rather than a second effect invented for
+    /// the page. An expanded avatar is taller than the square photo, and Telegram fills the strip
+    /// below it by mirroring: a replicator layer draws a second copy of the picture flipped and
+    /// stretched, and `PeerAvatarBottomShadowNode` blurs the join under a gradient that reaches
+    /// 0.32 black at the last row, there so that the name and the buttons read against the picture.
+    /// The page is that same mirror taken the rest of the way: the whole photo flipped, so the row
+    /// meeting the bottom of the header is the row the photo ends on, and the picture goes on
+    /// receding upside down all the way to the tab bar. Nothing is invented and nothing is cropped
+    /// -- which is exactly what the reader asked for, and it is also why there is no join left to
+    /// see. The page cannot *be* Telegram's node: it lives inside the clipped avatar container,
+    /// exists only while the photo is expanded, and a UIVisualEffectView has nothing to blur below
+    /// the photo in any case. So the page reproduces the same material: the same pixels, the same
+    /// darkening, through the same blur.
     ///
     /// The blur is `ImageBlur.blurredImage` -- the box convolution Telegram blurs its own thumbnails
-    /// and wallpapers with -- run over a small square sample of that band. Scaling is not a blur:
+    /// and wallpapers with -- run over a small square sample of the photo. Scaling is not a blur:
     /// an earlier version stretched a strip thirty-two pixels wide straight across the screen, and
-    /// every vertical edge in it stayed perfectly sharp. A person standing in the middle of a selfie
-    /// came out as one long band down the page, which is what was reported. Blurring the sample
-    /// first is what makes the stretch read as the picture's colours rather than as the picture.
-    ///
-    /// What comes back out of the blur is one row of it, so the picture varies across and not down.
-    /// The page is not the only rectangle this is stretched over -- the members pane lays the same
-    /// image across its own bounds, which begin further down the screen -- and a vertical gradient
-    /// stretched over two different heights meets itself at the pane's edge as a seam.
+    /// every vertical edge in it stayed perfectly sharp. Blurring the sample first is what makes
+    /// the stretch read as the avatar rather than as a smear of it.
     public static func pageBackgroundImage(for peerId: Int64) -> UIImage? {
         return AorusGlassProfileTint.pageImages[peerId]
     }
@@ -122,14 +141,10 @@ public enum AorusGlassProfileTint {
     /// colour until something unrelated happened to lay the screen out again.
     /// `isFullPhoto` says whether `view` is the full-width photo or the small round avatar the
     /// header falls back to before the expanded page's node exists. Only the full-width one can
-    /// yield anything: the round one is a centre crop behind a circular mask, so a strip across its
-    /// bottom is mostly the transparent corners outside the circle, and `bottomBandSample` refuses
-    /// it rather than average three-quarters of nothing into the page.
-    ///
-    /// `mirroredTail` is how far the header reaches below the square photo -- the strip Telegram
-    /// fills by mirroring, and the strip the page has to continue. It decides which row of the
-    /// picture is sampled; see `mirrorDepth(tail:)`.
-    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
+    /// yield a backdrop: the round one is a centre crop behind a circular mask, so most of what a
+    /// snapshot of it holds is the transparent corners outside the circle, and `mirroredPhotoSample`
+    /// refuses it rather than average three-quarters of nothing into the page.
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
@@ -144,7 +159,7 @@ public enum AorusGlassProfileTint {
         guard isFullPhoto, let view else {
             return
         }
-        AorusGlassProfileTint.sample(key: key, view: view, tail: mirroredTail, attempt: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sample(key: key, view: view, attempt: 0, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -154,6 +169,11 @@ public enum AorusGlassProfileTint {
     /// `publishPageColor`. The repaint is asked for on the next runloop pass rather than inline: the
     /// caller is usually in the middle of the header's layout, and laying the screen out again from
     /// inside that pass is re-entrancy the node hierarchy has no reason to tolerate.
+    ///
+    /// The notification goes out after that layout and not before. `onUpdate` is the header's
+    /// `requestUpdateLayout`, which lays the screen out synchronously and publishes the new page
+    /// colour on the way through; a pane woken any earlier would derive its rows' ink from the
+    /// previous photo's page and read white-on-white under a pale avatar.
     private static func adopt(_ sample: Sample, for peerId: Int64, onUpdate: @escaping () -> Void) {
         let sameColor = AorusGlassProfileTint.pageColors[peerId] == sample.color
         let sameImage = AorusGlassProfileTint.pageImages[peerId] === sample.image
@@ -174,6 +194,7 @@ public enum AorusGlassProfileTint {
         }
         DispatchQueue.main.async {
             onUpdate()
+            NotificationCenter.default.post(name: AorusGlassProfileTint.pageDidChangeNotification, object: nil)
         }
     }
 
@@ -204,56 +225,32 @@ public enum AorusGlassProfileTint {
         let photoCount: Int
     }
 
-    /// One photo's contribution to the page: the colour it ends on, and the same bottom band kept as
-    /// a single blurred row. `image` is nil when only the round fallback avatar was available.
+    /// One photo's contribution to the page: the colour it averages to, and the picture itself kept
+    /// small, mirrored and blurred. `image` is nil when only the round fallback avatar was available.
     private struct Sample {
         let color: UIColor
         let image: UIImage?
     }
 
-    /// How far above the photo's bottom edge the row the page has to continue actually sits.
+    /// The darkening Telegram's own bottom band puts on the photo: a gradient that reaches 0.4
+    /// black, in an image view held at 0.8 alpha.
     ///
-    /// Not at the edge, which is what this used to sample. The header is taller than the square
-    /// photo, and Telegram fills the strip below it by mirroring: a replicator layer draws a second
-    /// copy of the picture flipped and stretched threefold, hinged four points above the photo's
-    /// edge. So the row that reaches the bottom of the header -- the one the page begins under -- is
-    /// a third of the way up that strip, `(tail + 4) / 3` above the edge, and the algebra cancels the
-    /// photo's own size out of it entirely. Thirty-four points on a phone, against the eleven the
-    /// last-six-percent band was centred on: enough that a page could come out plainly a different
-    /// colour than the strip immediately above it, which is what was reported.
-    private static func mirrorDepth(tail: CGFloat) -> CGFloat {
-        return (max(0.0, tail) + 4.0) / 3.0
-    }
-
-    /// How tall a slice of the picture the page is averaged over, centred on that row: ten points.
-    ///
-    /// The band over the mirrored strip is blurred with a fifteen-point radius, and the strip is
-    /// stretched threefold, so each row of it already carries about five points of picture either
-    /// way -- this is the same average, taken at the source. Wider would drag in rows the bottom of
-    /// the header never shows; narrower would let one dark hair or a watermark decide the colour of
-    /// a whole page.
-    private static let bandHeight: CGFloat = 10.0
-
-    /// The darkening Telegram's own bottom band puts on the photo's last row: a gradient that
-    /// reaches 0.4 black, in an image view held at 0.8 alpha.
-    ///
-    /// The page carries the same factor because the row it meets is the darkened one, not the raw
-    /// picture. Sampling the photo as stored and painting the page with that is why the page came
-    /// out a third brighter than the band above it and the join was visible.
+    /// The page carries the same factor because the picture it continues is the darkened one, not
+    /// the raw photo. Sampling the photo as stored and painting the page with that is why the page
+    /// came out a third brighter than the strip above it and the join was visible.
     private static let bandShadow: Double = 0.4 * 0.8
 
-    /// How many pixels across and down the band is sampled at, before the blur.
+    /// How many pixels across and down the photo is sampled at, before the blur.
     ///
     /// Coarse on purpose -- it is stretched over a whole screen, so anything finer is detail the page
     /// has no business showing -- but not so coarse that the blur below cannot be expressed in it.
     /// Ninety-six across a 390-point screen is close enough to four points a pixel that a kernel
     /// measured in points can be written down in pixels without the figure turning into a lie.
-    /// Square rather than one row tall because the blur's box kernel has to fit inside both
-    /// dimensions; the rows are averaged into one afterwards, so what the page ends up holding is
-    /// ninety-six pixels by one.
+    /// Square because the photo is: it keeps one pixel the same number of points each way, so the
+    /// blur is the same blur across and down.
     private static let sampleSize = 96
 
-    /// Radius the sampled band is blurred with, in that sample's own pixels.
+    /// Radius the sampled photo is blurred with, in that sample's own pixels.
     ///
     /// Telegram blurs a picture it means to show behind something at screen scale: the band over the
     /// mirrored strip in this very header is a fifteen-point variable blur, and a picture the size of
@@ -264,9 +261,9 @@ public enum AorusGlassProfileTint {
     /// This is the whole of what was wrong with the first version: it took Telegram's fifteen points
     /// and spent them as fifteen pixels of a thirty-two pixel sample, which is a kernel half the
     /// width of the picture -- a blur an order of magnitude past anything the app itself draws, and
-    /// the flat wash of one colour that was reported. Vertically nothing is lost by being gentle,
-    /// because the rows are averaged; across the band this is what keeps the avatar's own light and
-    /// dark sides on the page instead of their average.
+    /// the flat wash of one colour that was reported. At the width Telegram itself blurs with, the
+    /// avatar is still the avatar on the page: soft, upside down, and recognisably the photo above
+    /// it, which is the whole point of mirroring it rather than averaging it away.
     private static let sampleBlurRadius: CGFloat = 7.0
 
     /// What the page is painted with right now, per peer on screen.
@@ -277,8 +274,8 @@ public enum AorusGlassProfileTint {
     private static var sampledColors: [PhotoKey: Sample] = [:]
     private static var pendingKeys = Set<PhotoKey>()
 
-    private static func sample(key: PhotoKey, view: UIView, tail: CGFloat, attempt: Int, onUpdate: @escaping () -> Void) {
-        if let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) {
+    private static func sample(key: PhotoKey, view: UIView, attempt: Int, onUpdate: @escaping () -> Void) {
+        if let sample = AorusGlassProfileTint.mirroredPhotoSample(of: view) {
             AorusGlassProfileTint.pendingKeys.remove(key)
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
@@ -305,28 +302,23 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(key: key, view: view, tail: tail, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sample(key: key, view: view, attempt: attempt + 1, onUpdate: onUpdate)
         }
     }
 
-    /// Both halves of a sample -- the picture and the colour -- from one render of the view.
+    /// Both halves of a sample -- the mirrored picture and the colour -- from one render of the view.
     ///
     /// One pass and one buffer, not two of each: the colour is the average of the very pixels the
-    /// backdrop is built from, so the flat page behind the screen and the image stretched over it
-    /// cannot disagree about the row the header ends on.
+    /// backdrop is built from, so the flat page behind a photo-less profile and the image stretched
+    /// over one with a photo are the same decision made twice rather than two decisions.
     ///
     /// Returns nil when the view has drawn next to nothing, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark -- a dark photo is still opaque.
-    private static func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample? {
+    private static func mirroredPhotoSample(of view: UIView) -> Sample? {
         let bounds = view.bounds
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
         }
-        let bandHeight = min(AorusGlassProfileTint.bandHeight, bounds.height)
-        // Centred on the row the header ends on, and kept inside the picture: a tail deeper than the
-        // photo is a shape this was never given, but clamping is a line and a crash is a crash.
-        let center = bounds.height - AorusGlassProfileTint.mirrorDepth(tail: tail)
-        let bandTop = max(0.0, min(bounds.height - bandHeight, center - bandHeight / 2.0))
         let size = AorusGlassProfileTint.sampleSize
         let bytesPerRow = size * 4
         let count = bytesPerRow * size
@@ -351,18 +343,17 @@ public enum AorusGlassProfileTint {
         ) else {
             return nil
         }
-        // The band is squashed across and down into a fraction of its own size, so ask for the
-        // filtering that averages what it drops rather than the one that is free to pick one source
-        // pixel out of it.
+        // The photo is squashed into a fraction of its own size, so ask for the filtering that
+        // averages what it drops rather than the one that is free to pick one source pixel out of it.
         context.interpolationQuality = .high
-        // Three transforms, applied in the order written and composing right to left, so read them
-        // bottom up: put the band's top-left at the origin, express the context in the view's own
-        // points, then flip, because a bitmap context counts y upwards and a layer counts it down.
-        // Getting the flip wrong here samples the top of the photo and looks almost right, which is
-        // the kind of almost that survives review.
-        context.translateBy(x: 0.0, y: CGFloat(size))
-        context.scaleBy(x: CGFloat(size) / bounds.width, y: -CGFloat(size) / bandHeight)
-        context.translateBy(x: 0.0, y: -bandTop)
+        // This is the mirror, and it is the *absence* of a transform rather than one. A bitmap
+        // context counts y upwards and a layer counts it down, so a layer rendered into one without
+        // the usual flip comes out upside down -- which is precisely the picture wanted here, the
+        // same flip Telegram's own replicator layer makes to fill the strip under the photo. The row
+        // the photo ends on therefore lands at the top of the backdrop, against the bottom of the
+        // header, and the picture recedes upside down from there. Writing the flip out and then
+        // flipping the image back would be two operations that cancel.
+        context.scaleBy(x: CGFloat(size) / bounds.width, y: CGFloat(size) / bounds.height)
         // render(in:) rather than drawHierarchy(in:afterScreenUpdates:): the avatar is a layer
         // with an image in it, this stays on the current thread without a screen update, and it
         // is the cheaper of the two by a wide margin.
@@ -384,7 +375,7 @@ public enum AorusGlassProfileTint {
         // Premultiplied, so dividing by the accumulated alpha both un-premultiplies and weights the
         // average towards the pixels that are actually opaque. Nothing is pinned afterwards: an
         // earlier version clamped brightness and produced the grey page under a white avatar that
-        // was reported, and the band's own shadow already keeps the result away from white.
+        // was reported, and the photo's own shadow already keeps the result away from white.
         let shade = 1.0 - AorusGlassProfileTint.bandShadow
         let color = UIColor(
             red: CGFloat(min(1.0, totalRed / totalAlpha * shade)),
@@ -392,7 +383,7 @@ public enum AorusGlassProfileTint {
             blue: CGFloat(min(1.0, totalBlue / totalAlpha * shade)),
             alpha: 1.0
         )
-        // Composited over black and darkened by the band's own factor, in place. A premultiplied
+        // Composited over black and darkened by the header's own factor, in place. A premultiplied
         // component *is* the composite over black already, so this is one multiply per channel and
         // a forced alpha -- and the alpha has to be forced, because a backdrop with holes in it
         // would show the theme's background through the page.
@@ -407,7 +398,7 @@ public enum AorusGlassProfileTint {
         // first time the page is drawn -- thirty-six kilobytes, once per photo, is not worth being
         // clever about.
         guard let provider = CGDataProvider(data: Data(bytes: pixels, count: count) as CFData),
-              let band = CGImage(
+              let mirrored = CGImage(
                   width: size,
                   height: size,
                   bitsPerComponent: 8,
@@ -423,85 +414,14 @@ public enum AorusGlassProfileTint {
         else {
             return Sample(color: color, image: nil)
         }
-        let sampled = UIImage(cgImage: band, scale: 1.0, orientation: .up)
+        let sampled = UIImage(cgImage: mirrored, scale: 1.0, orientation: .up)
         // Telegram's own blur, over the picture the page is about to stretch. Module-qualified so
         // that nothing else called `blurredImage` can quietly be picked up instead, and falling back
         // to the unblurred sample rather than to nothing: a page that keeps a little too much detail
-        // is still the right colours, where no page at all is the flat theme background this whole
+        // is still the right picture, where no page at all is the flat theme background this whole
         // feature exists to get rid of.
         let blurred = ImageBlur.blurredImage(sampled, radius: AorusGlassProfileTint.sampleBlurRadius)
-        return Sample(color: color, image: AorusGlassProfileTint.flattened(blurred ?? sampled))
-    }
-
-    /// The blurred sample averaged down to a single row, which is what makes the backdrop safe to
-    /// stretch over more than one rectangle.
-    ///
-    /// The page is not the only thing that stretches the result. The members pane lays the same image
-    /// over its own bounds, which start below the header and end above the tab bar, so a picture with
-    /// a vertical gradient in it would be drawn at two different heights and meet itself at the pane's
-    /// edge as a seam. One row leaves nothing down the picture for two rectangles to disagree about,
-    /// and every bit of the blur's work across the band -- which is the direction the page shows -- is
-    /// kept.
-    ///
-    /// Averaged rather than cropped out of the middle. Cropping was only ever right while the kernel
-    /// was wide enough to mix the whole band into every row; at the width Telegram itself blurs with,
-    /// the middle row is the middle of the band and not the band, and the page would no longer be the
-    /// colour `bottomBandSample` published beside it -- that colour is the average of every pixel
-    /// here. An average down each column is that same figure taken one column at a time, so the
-    /// stretched picture and the flat colour behind it cannot drift apart.
-    ///
-    /// The lanes are averaged where they lie. Which of the four is alpha is a property of the
-    /// bitmap's byte order and this does not need to know it: a mean is a mean in any order, and the
-    /// row is handed back with the byte order it came in with.
-    private static func flattened(_ image: UIImage) -> UIImage {
-        guard let cgImage = image.cgImage, cgImage.height > 1,
-              cgImage.bitsPerComponent == 8, cgImage.bitsPerPixel == 32,
-              let data = cgImage.dataProvider?.data
-        else {
-            return image
-        }
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerRow = cgImage.bytesPerRow
-        guard let source = CFDataGetBytePtr(data), CFDataGetLength(data) >= bytesPerRow * height else {
-            return image
-        }
-        var row = [UInt8](repeating: 0, count: width * 4)
-        for column in 0 ..< width {
-            var first = 0
-            var second = 0
-            var third = 0
-            var fourth = 0
-            for line in 0 ..< height {
-                let offset = line * bytesPerRow + column * 4
-                first += Int(source[offset])
-                second += Int(source[offset + 1])
-                third += Int(source[offset + 2])
-                fourth += Int(source[offset + 3])
-            }
-            row[column * 4] = UInt8(first / height)
-            row[column * 4 + 1] = UInt8(second / height)
-            row[column * 4 + 2] = UInt8(third / height)
-            row[column * 4 + 3] = UInt8(fourth / height)
-        }
-        guard let provider = CGDataProvider(data: Data(row) as CFData),
-              let flattened = CGImage(
-                  width: width,
-                  height: 1,
-                  bitsPerComponent: 8,
-                  bitsPerPixel: 32,
-                  bytesPerRow: width * 4,
-                  space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
-                  bitmapInfo: cgImage.bitmapInfo,
-                  provider: provider,
-                  decode: nil,
-                  shouldInterpolate: true,
-                  intent: .defaultIntent
-              )
-        else {
-            return image
-        }
-        return UIImage(cgImage: flattened, scale: image.scale, orientation: image.imageOrientation)
+        return Sample(color: color, image: blurred ?? sampled)
     }
 
     private static func shaded(_ component: UInt8) -> UInt8 {
