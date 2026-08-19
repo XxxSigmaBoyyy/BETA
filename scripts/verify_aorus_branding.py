@@ -3028,6 +3028,16 @@ def main() -> None:
                 "nativeBlurRadius",
                 "sampleBlurRadius(width:",
                 "flattenedRow(of:",
+                # A gallery item is given its picture twice -- chatAvatarGalleryPhoto emits the
+                # stripped thumbnail, blurred nearly flat, and only later the full-size photo over
+                # it -- and both fill the node opaquely, so nothing here can tell them apart from
+                # one reading. The band is therefore read until two readings agree, which is the
+                # difference between a page painted from the real photo and the permanent step at
+                # the join that was reported three times.
+                "sampleAndSettle",
+                "settledKeys",
+                "settleReads",
+                "currentKeys[key.peerId] == key",
             ),
         ),
         # The chat's navigation bar keeps the pane behind the back button and loses the two that

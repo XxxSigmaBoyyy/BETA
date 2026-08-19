@@ -163,9 +163,18 @@ public enum AorusGlassProfileTint {
             return
         }
         let key = PhotoKey(peerId: peerId, photo: photo, photoCount: photoCount)
+        // Recorded before anything below can return early: a reading still in flight for the photo
+        // the reader has just swiped away from tests this and stops, instead of sampling a node that
+        // has since been given a different picture to hold.
+        AorusGlassProfileTint.currentKeys[peerId] = key
         if let existing = AorusGlassProfileTint.sampledColors[key] {
             AorusGlassProfileTint.adopt(existing, for: peerId, onUpdate: onUpdate)
-            return
+            // What this peer has already sampled to is the page immediately, but it is only the last
+            // word once the picture behind it has stopped changing -- see `sampleAndSettle` for what
+            // reading it once and never again did to the join.
+            if AorusGlassProfileTint.settledKeys.contains(key) {
+                return
+            }
         }
         // Refused here rather than inside the sampler, so that a profile whose photo is not laid out
         // as the expanded page -- or which has no photo at all -- does not pay for a snapshot on
@@ -173,7 +182,12 @@ public enum AorusGlassProfileTint {
         guard isFullPhoto, let view else {
             return
         }
-        AorusGlassProfileTint.sample(key: key, view: view, tail: mirroredTail, attempt: 0, onUpdate: onUpdate)
+        // One reader per photo. This is published from every layout pass, and a second loop started
+        // from the next one would double every snapshot for as long as the two of them overlapped.
+        guard !AorusGlassProfileTint.pendingKeys.contains(key) else {
+            return
+        }
+        AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: mirroredTail, read: 1, stable: 0, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -349,39 +363,110 @@ public enum AorusGlassProfileTint {
     private static var pageColors: [Int64: UIColor] = [:]
     /// The stretched backdrop for each of those, dropped together with the colours.
     private static var pageImages: [Int64: UIImage] = [:]
-    /// What each individual photo sampled to, so paging back and forth never resamples.
+    /// What each individual photo has sampled to so far, so paging back and forth costs nothing once
+    /// the photo has settled.
     private static var sampledColors: [PhotoKey: Sample] = [:]
     private static var pendingKeys = Set<PhotoKey>()
+    /// Photos whose picture has stopped changing. Their sample is the last word, and no further
+    /// reading is booked for them. Cleared together with `sampledColors`, which they are receipts
+    /// for: a key left marked settled with no sample behind it would never be read again.
+    private static var settledKeys = Set<PhotoKey>()
+    /// Which of a peer's photos is on screen right now, so a reading that comes back after the
+    /// reader has swiped can tell that the node it is holding is no longer the picture it was
+    /// started for.
+    private static var currentKeys: [Int64: PhotoKey] = [:]
 
-    private static func sample(key: PhotoKey, view: UIView, tail: CGFloat, attempt: Int, onUpdate: @escaping () -> Void) {
-        if let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) {
-            AorusGlassProfileTint.pendingKeys.remove(key)
+    /// How many times the band is read before the page settles for what it has.
+    ///
+    /// A reading is one `layer.render(in:)` of the avatar into a ninety-six pixel buffer and a box
+    /// blur across that, and the loop stops the moment two of them agree -- so a photo already in the
+    /// cache costs exactly two, and the cap is only ever reached by one that never finishes arriving.
+    private static let settleReads = 16
+
+    /// How long to wait before reading again: close together at first, then further apart.
+    ///
+    /// The page can only be out of step with the header for one of these gaps, so the early ones are
+    /// short -- the reader has just opened the profile, and the photo usually lands within a few
+    /// hundred milliseconds of that. The later ones are long, so sixteen readings still cover the
+    /// five seconds a photo can take to arrive over a bad connection instead of running out after
+    /// three: running out early is exactly how the placeholder became the page permanently, and a
+    /// slow line should not be enough to bring that back.
+    private static func settleDelay(after read: Int) -> Double {
+        return read < 8 ? 0.12 : 0.5
+    }
+
+    /// Read the band, give the page what it says, and keep reading until the picture stops changing.
+    ///
+    /// The loop is the correction, and it is worth writing down why the single reading it replaces
+    /// could not have worked. Telegram hands a gallery item its picture in two stages:
+    /// `PeerInfoAvatarListItemNode` builds its image signal with
+    /// `chatAvatarGalleryPhoto(... immediateThumbnailData:)`, and that signal emits the stripped
+    /// thumbnail first -- decoded at ninety pixels, run through `telegramFastBlurMore`, scaled up and
+    /// blurred a second time -- then emits again with the full-size photo drawn over it once it has
+    /// downloaded. Both stages fill the node edge to edge and both are opaque, so nothing measurable
+    /// from here tells them apart: the placeholder renders, it covers the band, it averages to a
+    /// colour. An earlier version took the first reading it got, memoised it under the photo's key
+    /// and never looked again -- and when that reading was the placeholder, the page stayed painted
+    /// from a picture blurred nearly flat while the header's own block, which is a live backdrop
+    /// filter, went on showing the real photo. Measured off the report: twenty points of blue apart
+    /// at the join, and permanent. That is the seam that was reported three times over, and every
+    /// attempt to close it by correcting the geometry was reading the right rows of the wrong picture.
+    ///
+    /// So the page follows the photo rather than guessing when it has arrived -- which is what the
+    /// block it continues does, blurring whatever is behind it at that moment, placeholder included.
+    /// Two identical readings in a row end the loop. One would not do: a placeholder is perfectly
+    /// stable for exactly as long as the download takes.
+    private static func sampleAndSettle(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+        guard let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) else {
+            // Nothing drawn yet: the picture is still decoding, or the node has not been laid out at
+            // the size the header gives it. Read again on a delay rather than from the next layout
+            // pass, because a profile that is simply sitting there gets no further passes, and
+            // drawing the avatar on every pass of one being scrolled would cost a snapshot a frame.
+            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, stable: stable, onUpdate: onUpdate)
+            return
+        }
+        let previous = AorusGlassProfileTint.sampledColors[key]
+        let unchanged = previous?.color == sample.color && (previous?.image != nil) == (sample.image != nil)
+        if !unchanged {
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
                 AorusGlassProfileTint.sampledColors.removeAll()
+                AorusGlassProfileTint.settledKeys.removeAll()
             }
             AorusGlassProfileTint.sampledColors[key] = sample
             AorusGlassProfileTint.adopt(sample, for: key.peerId, onUpdate: onUpdate)
-            return
         }
-        // Nothing to sample yet: the photo is still decoding. Retried on a delay rather than
-        // from the next layout pass, because a profile that is simply sitting there gets no
-        // further passes, and drawing the avatar on every pass of one that is being scrolled
-        // would cost a snapshot per frame.
-        if attempt == 0, AorusGlassProfileTint.pendingKeys.contains(key) {
-            return
-        }
-        guard attempt < 6 else {
+        guard stable + (unchanged ? 1 : 0) < 2 else {
             AorusGlassProfileTint.pendingKeys.remove(key)
+            AorusGlassProfileTint.settledKeys.insert(key)
+            return
+        }
+        AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, stable: unchanged ? stable + 1 : 0, onUpdate: onUpdate)
+    }
+
+    /// Book the next reading of a photo, or stop when there is nothing left to read for.
+    private static func scheduleRead(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+        guard read < AorusGlassProfileTint.settleReads else {
+            // Out of readings. Marked settled rather than left open: the page keeps whatever the last
+            // one gave it, and a photo that never finished arriving should not go on costing a
+            // snapshot every time the profile lays itself out.
+            AorusGlassProfileTint.pendingKeys.remove(key)
+            AorusGlassProfileTint.settledKeys.insert(key)
             return
         }
         AorusGlassProfileTint.pendingKeys.insert(key)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak view] in
-            guard let view, AorusGlassProfileTint.sampledColors[key] == nil else {
+        DispatchQueue.main.asyncAfter(deadline: .now() + AorusGlassProfileTint.settleDelay(after: read)) { [weak view] in
+            // The node is gone, the reader has swiped to another photo, or this one settled in the
+            // meantime. Nothing is marked settled in the swipe case, so coming back to that photo
+            // starts a fresh loop instead of trusting a reading that was cut short.
+            guard let view,
+                  AorusGlassProfileTint.currentKeys[key.peerId] == key,
+                  !AorusGlassProfileTint.settledKeys.contains(key)
+            else {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sample(key: key, view: view, tail: tail, attempt: attempt + 1, onUpdate: onUpdate)
+            AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: tail, read: read + 1, stable: stable, onUpdate: onUpdate)
         }
     }
 
