@@ -1264,7 +1264,11 @@ def main() -> None:
             '"runXrayFromJson"',
             '"packetEncoding": "xudp"',
             '"security": "reality"',
-            'publishRequirement(required: authorizationAllowsTunnel)',
+            # The requirement Telegram reads is the route's decision, not the licence's: an
+            # authorized account whose direct route works must not be redirected at all. The
+            # authorization is still a gate, one step earlier -- the route refuses to escalate
+            # without it -- so what is published here is the route and nothing else.
+            "publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)",
             '"required": required',
             "AorusSessionMetrics.metricFlag",
             "waitForCoreAndLocalSocks(",
