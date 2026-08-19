@@ -24,6 +24,8 @@ swift_library(
         "//submodules/PresentationDataUtils:PresentationDataUtils",
         "//submodules/AccountContext:AccountContext",
         "//submodules/ComponentFlow",
+        "//submodules/ActivityIndicator:ActivityIndicator",
+        "//submodules/TextFormat:TextFormat",
         "//submodules/AppBundle:AppBundle",
         "//submodules/MediaResources:MediaResources",
         "//submodules/AnimatedStickerNode:AnimatedStickerNode",

@@ -213,25 +213,41 @@ public final class AorusRealityManager {
             licenseDidLock()
             return
         }
-        publishRequirement(required: true)
+        publishTunnelRequirement()
         queue.async { [weak self] in
             guard let self else { return }
             self.resetDiagnosticTraceOncePerProcess()
-            self.recordDiagnostic(stage: "awaiting_profile")
+            self.recordDiagnostic(stage: "route_decision_pending")
         }
-        AorusProxyManager.shared.refresh(force: false)
+        // APP START in the hybrid design: find out whether this network needs the tunnel at
+        // all before anything is provisioned. Escalation, if it is needed, calls the
+        // provisioner from there.
+        AorusHybridRoute.shared.evaluate(reason: "app_start", force: true)
     }
 
     /// Process-bound readiness signal used by diagnostics and release invariants.
-    /// Telegram itself remains fail-closed on the reserved loopback endpoint until
-    /// this becomes true; the app UI does not need a separate launch overlay.
+    ///
+    /// True once this process has a route it has actually proven: either Telegram reached its
+    /// datacentres directly, or a local inbound of ours is up and published. It is never true
+    /// on the strength of the license alone.
     public var isReadyForAuthorizedTraffic: Bool {
         guard authorizationAllowsTunnel else { return false }
-        return endpointForCurrentProcess() != nil
+        switch AorusHybridRoute.shared.mode {
+        case .direct:
+            return true
+        case .tunnel:
+            return endpointForCurrentProcess() != nil
+        case .unknown, .escalating, .unavailable:
+            return false
+        }
     }
 
     public func ensureRunning() {
-        publishRequirement(required: authorizationAllowsTunnel)
+        publishTunnelRequirement()
+        guard AorusHybridRoute.shared.allowsTunnelBringUp else {
+            standDownForDirectRoute()
+            return
+        }
         queue.async { [weak self] in
             guard let self else { return }
             if self.mayRun,
@@ -277,7 +293,7 @@ public final class AorusRealityManager {
         rankedEndpoints: [AorusRealityEndpoint],
         reselectEndpoint: Bool = false
     ) {
-        publishRequirement(required: authorizationAllowsTunnel)
+        publishTunnelRequirement()
         queue.async { [weak self] in
             guard let self else { return }
             guard self.authorizationAllowsTunnel,
@@ -304,6 +320,14 @@ public final class AorusRealityManager {
                     errorCode: rejected.reason,
                     endpointId: rejected.id
                 )
+            }
+            // Telegram reaches its datacentres without help on this network, so the signed
+            // profile is banked and nothing is started. Escalation, if the network changes
+            // under the user or the engine stalls, finds it already here.
+            guard AorusHybridRoute.shared.allowsTunnelBringUp else {
+                self.recordDiagnostic(stage: "core_held_for_direct")
+                self.cancelRestartRetryLocked(resetAttempt: true)
+                return
             }
             var canKeepRunning = false
             // Endpoint ranking is advisory. Latency/jitter probes can reorder two
@@ -348,10 +372,13 @@ public final class AorusRealityManager {
     }
 
     public func licenseDidLock() {
-        // This method is also used when provisioning fails. Reconcile against the
-        // actual license state so a transient control-plane error cannot reopen a
-        // direct route for a still-subscribed account.
-        publishRequirement(required: authorizationAllowsTunnel)
+        // This method is also used when provisioning fails. Reconcile against the actual
+        // license state, and release Telegram either way: the requirement follows the route
+        // that exists, and after this call there is none. A still-subscribed account whose
+        // control plane merely blipped goes back through the route decision, which is what
+        // re-takes the requirement once an endpoint is proven again.
+        AorusHybridRoute.shared.tunnelDidStandDown()
+        publishTunnelRequirement()
         queue.async { [weak self] in
             self?.stopLocked(clearProfile: true)
         }
@@ -383,7 +410,8 @@ public final class AorusRealityManager {
     }
 
     private var authorizationAllowsTunnel: Bool {
-        guard LicenseKeyProvider.isProvisioned,
+        guard AorusConnectionPreferences.shared.bypassEnabled,
+              LicenseKeyProvider.isProvisioned,
               !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04"),
               !AorusSessionMetrics.metricFlag,
               !UserDefaults.standard.bool(forKey: "c0a8b1e2-6f4d-4a9c-b3e7-1d520f8a6b34"),
@@ -391,6 +419,34 @@ public final class AorusRealityManager {
             return false
         }
         return LicenseStore.shared.effectiveOfflineStatus().allowsAppAccess
+    }
+
+    /// Same question, asked by the route decision, which has to know whether escalating is
+    /// even possible before it reports a state to the user.
+    var tunnelIsAuthorized: Bool {
+        return authorizationAllowsTunnel
+    }
+
+    /// Direct works, so the core has no job. The signed profile is deliberately kept: it is
+    /// short-lived and already verified, and a network change that puts the user back behind a
+    /// block should not have to wait for another provisioning round trip.
+    func standDownForDirectRoute() {
+        publishTunnelRequirement()
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard self.isCoreRunning() || self.activePort != nil else {
+                self.cancelRestartRetryLocked(resetAttempt: true)
+                self.clearEndpoint(postUpdate: true)
+                return
+            }
+            self.recordDiagnostic(stage: "core_stood_down_for_direct")
+            self.stopLocked(clearProfile: false)
+        }
+    }
+
+    /// The route decision changed, so what Telegram is told has to change with it.
+    func routeModeDidChange() {
+        publishTunnelRequirement()
     }
 
     private var mayRun: Bool {
@@ -455,14 +511,16 @@ public final class AorusRealityManager {
                 }
             }
         }
-        // Nothing published: MTProto stays on the closed loopback port, which is what the
-        // user sees as a connection that never finishes.
+        // Nothing published. Telegram is released rather than left pointing at the reserved
+        // loopback port: a client with no working bridge keeps whatever route it had, and the
+        // retry ladder below goes on trying to earn the requirement back.
         recordDiagnostic(
             stage: "no_endpoint_published",
             errorCode: "all_endpoints_failed",
             detail: "tried=\(endpointOrder.count)"
         )
         clearEndpoint(postUpdate: true)
+        AorusHybridRoute.shared.tunnelDidExhaustEndpoints()
         scheduleRestartRetryLocked()
     }
 
@@ -613,6 +671,7 @@ public final class AorusRealityManager {
             rankedEndpoints.removeAll(keepingCapacity: false)
         }
         clearEndpoint(postUpdate: true)
+        AorusHybridRoute.shared.tunnelDidStandDown()
     }
 
     private func waitForCoreAndLocalSocks(port: Int, endpointPriority: Int) -> Bool {
@@ -991,6 +1050,16 @@ public final class AorusRealityManager {
             "updatedAt": Date().timeIntervalSince1970
         ], forKey: Self.endpointKey)
         postProxyUpdate()
+        // Strictly after the port is on disk. This is what takes the requirement, and an
+        // observer woken by it has to be able to find the inbound it is being pointed at.
+        AorusHybridRoute.shared.tunnelDidActivate()
+    }
+
+    /// The one place that tells Telegram whether it must use our inbound, and it asks the
+    /// route decision rather than the license: being entitled to a tunnel is not the same as
+    /// having one, and only a proven local inbound may redirect MTProto.
+    private func publishTunnelRequirement() {
+        publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)
     }
 
     private func publishRequirement(required: Bool) {

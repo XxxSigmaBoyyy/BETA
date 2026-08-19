@@ -26,6 +26,15 @@ private func aorusRecordCallProxyDiagnostic(
     ], forKey: aorusCallProxyDiagnosticKey)
 }
 
+/// A mirrored AorusGram connection switch that the user has explicitly turned off.
+///
+/// Absent is not the same as off: it means this process has not yet copied the switches out of
+/// the keychain, and the fail-closed defaults below depend on not confusing the two.
+private func aorusConnectionSwitchIsOff(store: UserDefaults, key: String) -> Bool {
+    guard store.object(forKey: key) != nil else { return false }
+    return !store.bool(forKey: key)
+}
+
 // AorusGram: use the same in-process VLESS/REALITY loopback SOCKS endpoint for calls.
 // The marker is process-bound, so a value persisted by an earlier launch can never
 // route a call into a dead local port while libXray is still starting.
@@ -38,6 +47,18 @@ public func aorusCallProxyServerSettings() -> ProxyServerSettings? {
             port: aorusClosedProxyPort,
             connection: .socks5(username: nil, password: nil)
         )
+    }
+    // "Режим без VPN" off: nothing of this client's transport is used at all.
+    if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_bypass_enabled") {
+        aorusRecordCallProxyDiagnostic(store: store, status: "native_bypass_disabled")
+        return nil
+    }
+    // "Стабильные звонки" off: call media goes natively even while MTProto is being carried
+    // over the tunnel. The two are separate on purpose — UDP over the tunnel is what makes a
+    // call survive a filtered network, and also the part a user is most likely to want off.
+    if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_stable_calls_enabled") {
+        aorusRecordCallProxyDiagnostic(store: store, status: "native_stable_calls_disabled")
+        return nil
     }
     let currentPid = ProcessInfo.processInfo.processIdentifier
     let requirement = store.dictionary(forKey: aorusRealityRequirementKey)

@@ -131,7 +131,8 @@ public final class AorusProxyManager {
     }
 
     private var licenseAllowsReality: Bool {
-        guard LicenseKeyProvider.isProvisioned,
+        guard AorusConnectionPreferences.shared.bypassEnabled,
+              LicenseKeyProvider.isProvisioned,
               !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04"),
               !AorusSessionMetrics.metricFlag,
               !UserDefaults.standard.bool(forKey: "c0a8b1e2-6f4d-4a9c-b3e7-1d520f8a6b34"),
@@ -214,6 +215,13 @@ public final class AorusProxyManager {
     public func refresh(force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard licenseAllowsReality else {
             clearProvisioning(stopTunnel: true)
+            DispatchQueue.main.async { completion?(false) }
+            return
+        }
+        // Telegram is reaching its datacentres on its own, so there is nothing to provision.
+        // No signed profile is requested at all until the route decision says direct is
+        // blocked, which is also one fewer request from a client that has no need of one.
+        guard AorusHybridRoute.shared.allowsTunnelBringUp else {
             DispatchQueue.main.async { completion?(false) }
             return
         }
@@ -953,7 +961,10 @@ public final class AorusProxyManager {
                 // load on the control plane for nothing.
                 guard !busy, !arrived else { return }
             }
-            self.reprobeCurrentProfile()
+            // NETWORK CHANGED in the hybrid design: whether this network needs the tunnel is
+            // decided from scratch, and only a network that blocks Telegram gets one. The
+            // escalation below is what used to run here unconditionally.
+            AorusHybridRoute.shared.networkDidChange()
         }
         pathSettleWork = work
         pathQueue.asyncAfter(deadline: .now() + pathSettleDelay, execute: work)
@@ -964,7 +975,35 @@ public final class AorusProxyManager {
         let allowed = Date().timeIntervalSince(lastDiagnosticRefresh) >= diagnosticCooldown
         if allowed { lastDiagnosticRefresh = Date() }
         lock.unlock()
-        if allowed { reprobeCurrentProfile() } else { writeDiagnostics() }
+        guard allowed else {
+            writeDiagnostics()
+            return
+        }
+        // On the direct route there is no endpoint set to re-measure; what the user is asking
+        // to refresh is the verdict itself.
+        if AorusHybridRoute.shared.allowsTunnelBringUp {
+            reprobeCurrentProfile()
+        } else {
+            writeDiagnostics()
+            AorusHybridRoute.shared.evaluate(reason: "diagnostics_refresh", force: true)
+        }
+    }
+
+    /// Called by the route decision once direct has been ruled out: get a signed profile,
+    /// measure the signed endpoints, hand the order to the core. This is the "Получаем signed
+    /// profile → authenticated route race" leg, and it only ever runs behind that verdict.
+    func beginTunnelEscalation(reason: String) {
+        AorusRealityManager.shared.recordProxyEvent(
+            stage: "tunnel_escalation_started",
+            detail: "reason=\(reason)"
+        )
+        reprobeCurrentProfile()
+    }
+
+    /// "Режим без VPN" was switched off. Everything of the tunnel goes: the client is stock
+    /// Telegram, on the user's own proxy settings, until they say otherwise.
+    func bypassDidTurnOff() {
+        clearProvisioning(stopTunnel: true)
     }
 
     /// Re-measures the signed endpoints and hands the result back to the core.
@@ -1055,6 +1094,16 @@ public final class AorusProxyManager {
         }
         guard failureSince > 0,
               nowTimestamp - failureSince >= failureThreshold else {
+            return
+        }
+
+        // The engine has the final word on the direct route. A handshake to port 443 completes
+        // on plenty of networks that then drop the session, and this is that client: direct
+        // measured fine and did not carry Telegram. Hand the network to the tunnel, and reset
+        // the grace period first so the escalation is not judged by the stall that caused it.
+        if AorusHybridRoute.shared.mode == .direct {
+            resetMTProtoHealthGracePeriod()
+            AorusHybridRoute.shared.directRouteDidStall()
             return
         }
 

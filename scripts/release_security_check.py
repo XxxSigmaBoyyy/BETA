@@ -278,7 +278,7 @@ def main() -> int:
             '"packetEncoding": "xudp"',
             '"security": "reality"',
             '"127.0.0.1"',
-            'publishRequirement(required: authorizationAllowsTunnel)',
+            "publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)",
             '"required": required',
             "AorusSessionMetrics.metricFlag",
             "isReadyForAuthorizedTraffic",
@@ -349,6 +349,73 @@ def main() -> int:
         ):
             if forbidden in reality_profile or forbidden in reality_manager:
                 fail(errors, f"static REALITY profile path remains: {forbidden}")
+
+        # The hybrid route decides whether Telegram is redirected at all. Its whole point is
+        # that `required` is true only while a proven local inbound exists: every other state
+        # leaves the client on the route it already had instead of on a closed loopback port.
+        hybrid_route_path = root / "AorusGram/Sources/Features/Network/AorusHybridRoute.swift"
+        preferences_path = root / "AorusGram/Sources/Features/Network/AorusConnectionPreferences.swift"
+        if not hybrid_route_path.is_file() or not preferences_path.is_file():
+            fail(errors, "hybrid route sources are missing")
+        else:
+            hybrid_route = hybrid_route_path.read_text(encoding="utf-8")
+            preferences = preferences_path.read_text(encoding="utf-8")
+            for marker in (
+                "return self.mode == .tunnel",
+                "AorusRealityManager.shared.standDownForDirectRoute()",
+                "AorusProxyManager.shared.beginTunnelEscalation(reason: reason)",
+                "guard AorusRealityManager.shared.tunnelIsAuthorized else {",
+                "requiredDirectSuccesses = 2",
+                "directHoldInterval",
+                "directUnreliableUntil",
+                "AorusConnectionPreferences.shared.bypassEnabled",
+            ):
+                if marker not in hybrid_route:
+                    fail(errors, f"hybrid route invariant is missing {marker}")
+            for marker in (
+                "private func publishTunnelRequirement()",
+                "AorusHybridRoute.shared.tunnelDidActivate()",
+                "AorusHybridRoute.shared.tunnelDidExhaustEndpoints()",
+                "AorusHybridRoute.shared.tunnelDidStandDown()",
+                "AorusConnectionPreferences.shared.bypassEnabled",
+            ):
+                if marker not in reality_manager:
+                    fail(errors, f"tunnel requirement is not route-derived: {marker}")
+            if "publishRequirement(required: true)" in reality_manager:
+                fail(errors, "the tunnel requirement must never be published unconditionally")
+            activate_index = reality_manager.find("AorusHybridRoute.shared.tunnelDidActivate()")
+            port_index = reality_manager.find('"port": port,')
+            if port_index < 0 or activate_index < port_index:
+                fail(errors, "the tunnel requirement can be taken before the live port is published")
+            for marker in (
+                "AorusHybridRoute.shared.networkDidChange()",
+                "AorusHybridRoute.shared.directRouteDidStall()",
+                "AorusHybridRoute.shared.allowsTunnelBringUp",
+                "AorusConnectionPreferences.shared.bypassEnabled",
+            ):
+                if marker not in reality_proxy:
+                    fail(errors, f"route escalation invariant is missing {marker}")
+            # The switches are the user's, stored locally, and reachable by nothing remote.
+            for marker in (
+                "kSecClassGenericPassword",
+                "kSecAttrAccessibleAfterFirstUnlock",
+                "aorusgram_connection_bypass_enabled",
+                "aorusgram_connection_stable_calls_enabled",
+            ):
+                if marker not in preferences:
+                    fail(errors, f"connection preferences invariant is missing {marker}")
+            for forbidden in ("URLSession", "URLRequest", "https://"):
+                if forbidden in preferences:
+                    fail(errors, f"connection preferences must not be remotely settable: {forbidden}")
+            for marker in (
+                'aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_bypass_enabled")',
+                'aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_stable_calls_enabled")',
+                'guard store.object(forKey: key) != nil else { return false }',
+            ):
+                if marker not in call_proxy:
+                    fail(errors, f"call transport must honour the connection switches: {marker}")
+            if 'aorusStore.object(forKey: \\"aorusgram_connection_bypass_enabled\\") != nil' not in branding:
+                fail(errors, "the MTProto override must honour the bypass switch")
 
     atunnel_status_path = root / "patches/submodules/AorusGramUI/Sources/ATunnelStatusViewController.swift"
     atunnel_status = atunnel_status_path.read_text(encoding="utf-8")

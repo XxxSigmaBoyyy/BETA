@@ -24,6 +24,22 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _replace_span(text: str, start: str, end: str, new: str, label: str) -> str:
+    """Swap out everything from `start` through `end`, both ends included.
+
+    For replacing a whole function whose middle is not worth transcribing: upstream's own text is
+    still the anchor at both ends, so a rebase that touches either one fails here instead of
+    quietly leaving the old body in place.
+    """
+    first = text.find(start)
+    if first < 0:
+        raise RuntimeError(f"InterfaceV2: missing {label} start anchor")
+    last = text.find(end, first)
+    if last < 0:
+        raise RuntimeError(f"InterfaceV2: missing {label} end anchor")
+    return text[:first] + new + text[last + len(end):]
+
+
 def _read(path: Path, label: str) -> str:
     if not path.is_file():
         raise RuntimeError(f"InterfaceV2: {label} is missing")
@@ -322,6 +338,31 @@ public extension PresentationTheme {
         }
         return AorusGlassThemeCache.shared.derive(from: self, dark: AorusGlassPane.profilePageIsDark)
     }
+
+    /// A legible foreground for a badge filled with `fill`.
+    ///
+    /// Interface 2.0 makes `list.itemAccentColor` the page's own ink -- white letters on a dark pane,
+    /// black on a pale one -- and most badges in the settings lists are filled with that accent,
+    /// while the theme's own badge foreground stays white in both. The unread count beside an
+    /// account in Settings therefore came out white on a white pill: legible only as the shape it
+    /// left in the pane, which is what was reported.
+    ///
+    /// Answered from the fill rather than from a flag. A badge that carries a colour of its own --
+    /// the red "!" on notifications, the blue pill on a new bot -- has legible white digits already
+    /// and keeps them; only a badge whose fill has ended up on the same side of the ink as its own
+    /// text is flipped, and it is flipped to that fill's opposite rather than to a fixed colour. Off
+    /// Interface 2.0 this is not a derived theme and the stock colour is returned untouched, so the
+    /// call sites need no test of their own.
+    func aorusBadgeForegroundColor(over fill: UIColor?) -> UIColor {
+        let stock = self.list.itemCheckColors.foregroundColor
+        guard self.list.itemBlocksBackgroundColor.isEqual(AorusGlassPane.blockMarker), let fill else {
+            return stock
+        }
+        guard AorusGlassPane.isLight(fill) == AorusGlassPane.isLight(stock) else {
+            return stock
+        }
+        return AorusGlassPane.ink(over: fill)
+    }
 }
 '''
 
@@ -583,6 +624,91 @@ def _patch_editing_fields_glass(tg: Path) -> None:
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: made the editing header fields glass")
+
+
+def _patch_badge_contrast(tg: Path) -> None:
+    """Digits inside a badge, not the hole they leave in it.
+
+    Every badge in the client is drawn as two independent things: a filled pill, whose colour the
+    row picks, and a string on top of it, whose colour comes from `list.itemCheckColors.foreground`.
+    Stock can keep those two apart because the fill is always the accent and the foreground always
+    white. Interface 2.0 breaks that pairing -- the derived theme makes `itemAccentColor` the page's
+    own ink so that accent-coloured *text* stays legible on glass -- and a pill filled with white ink
+    then has white digits on it. That is the unread count beside an account in Settings: the number
+    is there, drawn white on white, readable only as the shape it leaves in the pane.
+
+    Fixed by asking the theme for a foreground that suits the fill, at each of the three rows that
+    draw a badge from the list theme. `aorusBadgeForegroundColor(over:)` answers with the stock
+    colour unless the fill has landed on the same side of the luminance split as that colour, so a
+    red or blue pill is untouched and so is every one of these rows with Interface 2.0 off.
+    """
+    peer_item = tg / "submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift"
+    text = _read(peer_item, "ItemListPeerItem.swift")
+    if "aorusBadgeForegroundColor" in text:
+        print("InterfaceV2: badge contrast already applied")
+        return
+    # The fill is `itemAccentColor`, chosen a few hundred lines up where `badgeColor` is decided.
+    text = _replace_once(
+        text,
+        "            case let .badge(text):\n"
+        "                labelAttributedString = NSAttributedString(string: text, font: badgeFont, "
+        "textColor: item.presentationData.theme.list.itemCheckColors.foregroundColor)\n",
+        "            case let .badge(text):\n"
+        "                // AorusGram: over the accent, which Interface 2.0 turns into the pane's ink.\n"
+        "                labelAttributedString = NSAttributedString(string: text, font: badgeFont, "
+        "textColor: item.presentationData.theme.aorusBadgeForegroundColor("
+        "over: item.presentationData.theme.list.itemAccentColor))\n",
+        "peer item badge foreground",
+    )
+    peer_item.write_text(text, encoding="utf-8")
+
+    disclosure = tg / "submodules/ItemListUI/Sources/Items/ItemListDisclosureItem.swift"
+    text = _read(disclosure, "ItemListDisclosureItem.swift")
+    # `badgeColor` is the pill this same closure is about to generate, and nil when there is no pill.
+    text = _replace_once(
+        text,
+        "            switch item.labelStyle {\n"
+        "            case .badge:\n"
+        "                labelBadgeColor = item.presentationData.theme.list.itemCheckColors.foregroundColor\n",
+        "            switch item.labelStyle {\n"
+        "            case .badge:\n"
+        "                // AorusGram: over the pill this row is about to fill, whatever colour it took.\n"
+        "                labelBadgeColor = item.presentationData.theme.aorusBadgeForegroundColor(over: badgeColor)\n",
+        "disclosure item badge foreground",
+    )
+    disclosure.write_text(text, encoding="utf-8")
+
+    info_item = tg / (
+        "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/ListItems/"
+        "PeerInfoScreenDisclosureItem.swift"
+    )
+    text = _read(info_item, "PeerInfoScreenDisclosureItem.swift")
+    # Both arms carry their fill on the label itself; `.labelBadge` is left alone because its fill is
+    # the check *fill* colour, which stock already pairs with this foreground.
+    text = _replace_once(
+        text,
+        "        } else if case .badge = item.label {\n"
+        "            labelColorValue = presentationData.theme.list.itemCheckColors.foregroundColor\n"
+        "            labelFont = Font.regular(15.0)\n",
+        "        } else if case .badge = item.label {\n"
+        "            // AorusGram: over the fill the label carries.\n"
+        "            labelColorValue = presentationData.theme.aorusBadgeForegroundColor(over: item.label.badgeColor)\n"
+        "            labelFont = Font.regular(15.0)\n",
+        "peer info badge foreground",
+    )
+    text = _replace_once(
+        text,
+        "        } else if case .titleBadge = item.label {\n"
+        "            labelColorValue = presentationData.theme.list.itemCheckColors.foregroundColor\n"
+        "            labelFont = Font.medium(11.0)\n",
+        "        } else if case .titleBadge = item.label {\n"
+        "            // AorusGram: same, for the pill that sits beside a title rather than after it.\n"
+        "            labelColorValue = presentationData.theme.aorusBadgeForegroundColor(over: item.label.badgeColor)\n"
+        "            labelFont = Font.medium(11.0)\n",
+        "peer info title badge foreground",
+    )
+    info_item.write_text(text, encoding="utf-8")
+    print("InterfaceV2: gave badges a foreground their fill can be read against")
 
 
 def _patch_corner_wedges(tg: Path) -> None:
@@ -945,6 +1071,75 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "\n"
             "    func updateAvatarIsHidden(entry: AvatarGalleryEntry?) {\n",
             "avatar tint method",
+        )
+        # And the structural half of it. Everything above predicts what the bottom line of
+        # Telegram's blur block comes out as, from its own recipe; this makes the two sides of the
+        # join the same pixels instead of two computations of the same pixels, so that whatever is
+        # left of the model's error is a gradient over the block's height and not a step at one line.
+        text = _replace_once(
+            text,
+            "        self.avatarListNode.listContainerNode.bottomShadowNode.update(size: bottomShadowFrame.size, transition: transition)\n",
+            "        self.avatarListNode.listContainerNode.bottomShadowNode.update(size: bottomShadowFrame.size, transition: transition)\n"
+            "        // AorusGram: and lay the page's own row over the bottom of that block, faded up\n"
+            "        // from nothing, so the block's last line and the page's first cannot disagree.\n"
+            "        // Here rather than in the publish because this is the pass that knows how tall the\n"
+            "        // block is. See AorusProfileHeaderFadeView.\n"
+            "        self.aorusUpdateHeaderFade(peer: peer, size: bottomShadowFrame.size, transition: transition)\n",
+            "header fade layout",
+        )
+        text = _replace_once(
+            text,
+            "    func aorusPublishAvatarTint(peer: EnginePeer?) {\n",
+            "    // AorusGram: the page's own row, laid over the bottom of Telegram's blur block and\n"
+            "    // faded in, so that the join has no two sides to disagree.\n"
+            "    //\n"
+            "    // The block cannot be photographed -- its blur is a private CAFilter behind a\n"
+            "    // UIVisualEffectView, and layer.render(in:) over a live backdrop filter copies the\n"
+            "    // gradient and none of the blur -- so the page is a model of its recipe, and a model is\n"
+            "    // never exact. Rather than chase the last few levels of it, this puts the page's own row\n"
+            "    // over the bottom of the block and fades it up from nothing across the block's height:\n"
+            "    // what the page is painted with then *is* what the block's last line shows, by\n"
+            "    // construction. Whatever error the model has left costs a gradient a hundred and eighty\n"
+            "    // points tall instead of a step at one line, and only one of those two can be seen.\n"
+            "    var aorusHeaderFadeView: AorusProfileHeaderFadeView?\n"
+            "\n"
+            "    func aorusUpdateHeaderFade(peer: EnginePeer?, size: CGSize, transition: ContainedViewLayoutTransition) {\n"
+            "        guard let peer, UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") else {\n"
+            "            // Interface 2.0 off, or no peer yet: the block goes back to being Telegram's own.\n"
+            "            self.aorusHeaderFadeView?.removeFromSuperview()\n"
+            "            self.aorusHeaderFadeView = nil\n"
+            "            return\n"
+            "        }\n"
+            "        let image = AorusGlassProfileTint.pageBackgroundImage(for: peer.id.id._internalGetInt64Value())\n"
+            "        if image == nil && self.aorusHeaderFadeView == nil {\n"
+            "            // A peer with no photo has no page, so there is nothing to continue and nothing\n"
+            "            // built earlier that would need hiding. The publish asks for another layout pass\n"
+            "            // once it has sampled one, and this runs again then.\n"
+            "            return\n"
+            "        }\n"
+            "        let fadeView: AorusProfileHeaderFadeView\n"
+            "        if let current = self.aorusHeaderFadeView {\n"
+            "            fadeView = current\n"
+            "        } else {\n"
+            "            fadeView = AorusProfileHeaderFadeView(frame: CGRect())\n"
+            "            self.aorusHeaderFadeView = fadeView\n"
+            "        }\n"
+            "        let shadowView = self.avatarListNode.listContainerNode.bottomShadowNode.view\n"
+            "        if fadeView.superview !== shadowView {\n"
+            "            shadowView.addSubview(fadeView)\n"
+            "        } else if shadowView.subviews.last !== fadeView {\n"
+            "            // PeerAvatarBottomShadowNode builds its blur on its first update and adds it\n"
+            "            // above whatever is already there, so being on top is something to re-assert\n"
+            "            // rather than to arrange once. Only when it is actually out of order, because\n"
+            "            // reordering the layer tree from every layout pass is work for nothing.\n"
+            "            shadowView.bringSubviewToFront(fadeView)\n"
+            "        }\n"
+            "        transition.updateFrame(view: fadeView, frame: CGRect(origin: CGPoint(), size: size))\n"
+            "        fadeView.update(image: image)\n"
+            "    }\n"
+            "\n"
+            "    func aorusPublishAvatarTint(peer: EnginePeer?) {\n",
+            "header fade method",
         )
         path.write_text(text, encoding="utf-8")
         print("InterfaceV2: published the avatar tint")
@@ -4606,6 +4801,337 @@ def _patch_profile_tap_menu_glass(tg: Path) -> None:
     print("InterfaceV2: made the profile tap menus glass")
 
 
+_PROXY_ORDER_SWIFT = '''    /// Ordering by one number per case instead of a switch over every pair of them.
+    ///
+    /// Upstream compared each case against all the others, which means four new cases would have
+    /// meant a new arm inside each of the seven existing ones -- seven places to get wrong, and a
+    /// comparison that disagrees with itself sorts a list into nonsense. One number per case says
+    /// the same thing once. Servers keep their own relative order because a server's index is added
+    /// to its base, and the three trailing rows are parked far above any list of servers.
+    private var sortIndex: Int {
+        switch self {
+            case .aorusHeader:
+                return 0
+            case .aorusBypass:
+                return 1
+            case .aorusStableCalls:
+                return 2
+            case .aorusInfo:
+                return 3
+            case .enabled:
+                return 4
+            case .serversHeader:
+                return 5
+            case .addServer:
+                return 6
+            case let .server(index, _, _, _, _, _, _, _):
+                return 1000 + index
+            case .shareProxyList:
+                return 10000000
+            case .useForCalls:
+                return 10000001
+            case .useForCallsInfo:
+                return 10000002
+        }
+    }
+
+    static func <(lhs: ProxySettingsControllerEntry, rhs: ProxySettingsControllerEntry) -> Bool {
+        return lhs.sortIndex < rhs.sortIndex
+    }
+'''
+
+
+def _patch_proxy_connection_section(tg: Path) -> None:
+    """AorusGram's own transport, on Telegram's own Proxy screen.
+
+    Two switches. One decides whether this client carries a tunnel at all; the other whether calls
+    go through it instead of straight out. They belong on this screen rather than on a screen of
+    ours: it is where a user goes when a connection will not come up, and the rest of it is already
+    about that. Settings gains one row above "Диагностика прокси" that opens this same screen.
+
+    The rows themselves, the state signal and the support-chat jump live in AorusGramUI, in
+    AorusConnectionSection.swift. What is added here is the four entries, their place in the order,
+    and the four closures behind them -- nothing upstream draws is changed, and with the switches
+    left alone the screen behaves exactly as it shipped.
+    """
+    path = tg / "submodules/SettingsUI/Sources/Data and Storage/ProxyListSettingsController.swift"
+    text = _read(path, "ProxyListSettingsController.swift")
+    if "aorusConnectionSwitchItem" in text:
+        print("InterfaceV2: proxy connection section already applied")
+        return
+
+    text = _replace_once(
+        text,
+        "import ShareController\nimport UrlEscaping\n",
+        "import ShareController\nimport UrlEscaping\nimport AorusGramUI\n",
+        "proxy list imports",
+    )
+
+    # The three halves of the arguments object: fields, init parameters, assignments.
+    text = _replace_once(
+        text,
+        "    let shareProxyList: () -> Void\n",
+        "    let shareProxyList: () -> Void\n"
+        "    // The context is what the caption's tappable link needs; the second entry point can be\n"
+        "    // built without one, and the block is then left out rather than drawn half-working.\n"
+        "    let aorusContext: AccountContext?\n"
+        "    let aorusToggleBypass: (Bool) -> Void\n"
+        "    let aorusToggleStableCalls: (Bool) -> Void\n"
+        "    let aorusOpenSupport: () -> Void\n",
+        "proxy arguments fields",
+    )
+    text = _replace_once(
+        text,
+        "toggleUseForCalls: @escaping (Bool) -> Void, shareProxyList: @escaping () -> Void) {\n",
+        "toggleUseForCalls: @escaping (Bool) -> Void, shareProxyList: @escaping () -> Void, "
+        "aorusContext: AccountContext?, aorusToggleBypass: @escaping (Bool) -> Void, "
+        "aorusToggleStableCalls: @escaping (Bool) -> Void, aorusOpenSupport: @escaping () -> Void) {\n",
+        "proxy arguments init",
+    )
+    text = _replace_once(
+        text,
+        "        self.shareProxyList = shareProxyList\n",
+        "        self.shareProxyList = shareProxyList\n"
+        "        self.aorusContext = aorusContext\n"
+        "        self.aorusToggleBypass = aorusToggleBypass\n"
+        "        self.aorusToggleStableCalls = aorusToggleStableCalls\n"
+        "        self.aorusOpenSupport = aorusOpenSupport\n",
+        "proxy arguments assignments",
+    )
+
+    text = _replace_once(
+        text,
+        "private enum ProxySettingsControllerSection: Int32 {\n    case enabled\n",
+        "private enum ProxySettingsControllerSection: Int32 {\n"
+        "    case aorusConnection\n"
+        "    case enabled\n",
+        "proxy section enum",
+    )
+
+    text = _replace_once(
+        text,
+        "private enum ProxySettingsControllerEntry: ItemListNodeEntry {\n"
+        "    case enabled(PresentationTheme, String, Bool, Bool)\n",
+        "private enum ProxySettingsControllerEntry: ItemListNodeEntry {\n"
+        "    case aorusHeader(PresentationTheme, String)\n"
+        "    case aorusBypass(PresentationTheme, String, String?, AorusConnectionIndicator, Bool)\n"
+        "    case aorusStableCalls(PresentationTheme, String, Bool)\n"
+        "    case aorusInfo(PresentationTheme, String, String)\n"
+        "    case enabled(PresentationTheme, String, Bool, Bool)\n",
+        "proxy entry cases",
+    )
+
+    text = _replace_once(
+        text,
+        "            case .enabled:\n"
+        "                return ProxySettingsControllerSection.enabled.rawValue\n",
+        "            case .aorusHeader, .aorusBypass, .aorusStableCalls, .aorusInfo:\n"
+        "                return ProxySettingsControllerSection.aorusConnection.rawValue\n"
+        "            case .enabled:\n"
+        "                return ProxySettingsControllerSection.enabled.rawValue\n",
+        "proxy entry section",
+    )
+
+    # Well clear of upstream's 0...5 so a row added upstream cannot collide with one of these.
+    text = _replace_once(
+        text,
+        "            case .enabled:\n                return .index(0)\n",
+        "            case .aorusHeader:\n"
+        "                return .index(20)\n"
+        "            case .aorusBypass:\n"
+        "                return .index(21)\n"
+        "            case .aorusStableCalls:\n"
+        "                return .index(22)\n"
+        "            case .aorusInfo:\n"
+        "                return .index(23)\n"
+        "            case .enabled:\n"
+        "                return .index(0)\n",
+        "proxy entry stable id",
+    )
+
+    text = _replace_once(
+        text,
+        "        switch lhs {\n"
+        "            case let .enabled(lhsTheme, lhsText, lhsValue, lhsCreatesNew):\n",
+        "        switch lhs {\n"
+        "            case let .aorusHeader(lhsTheme, lhsText):\n"
+        "                if case let .aorusHeader(rhsTheme, rhsText) = rhs, lhsTheme === rhsTheme, "
+        "lhsText == rhsText {\n"
+        "                    return true\n"
+        "                } else {\n"
+        "                    return false\n"
+        "                }\n"
+        "            case let .aorusBypass(lhsTheme, lhsText, lhsStatus, lhsIndicator, lhsValue):\n"
+        "                if case let .aorusBypass(rhsTheme, rhsText, rhsStatus, rhsIndicator, rhsValue) = rhs, "
+        "lhsTheme === rhsTheme, lhsText == rhsText, lhsStatus == rhsStatus, "
+        "lhsIndicator == rhsIndicator, lhsValue == rhsValue {\n"
+        "                    return true\n"
+        "                } else {\n"
+        "                    return false\n"
+        "                }\n"
+        "            case let .aorusStableCalls(lhsTheme, lhsText, lhsValue):\n"
+        "                if case let .aorusStableCalls(rhsTheme, rhsText, rhsValue) = rhs, "
+        "lhsTheme === rhsTheme, lhsText == rhsText, lhsValue == rhsValue {\n"
+        "                    return true\n"
+        "                } else {\n"
+        "                    return false\n"
+        "                }\n"
+        "            case let .aorusInfo(lhsTheme, lhsText, lhsLink):\n"
+        "                if case let .aorusInfo(rhsTheme, rhsText, rhsLink) = rhs, "
+        "lhsTheme === rhsTheme, lhsText == rhsText, lhsLink == rhsLink {\n"
+        "                    return true\n"
+        "                } else {\n"
+        "                    return false\n"
+        "                }\n"
+        "            case let .enabled(lhsTheme, lhsText, lhsValue, lhsCreatesNew):\n",
+        "proxy entry equality",
+    )
+
+    text = _replace_span(
+        text,
+        "    static func <(lhs: ProxySettingsControllerEntry, rhs: ProxySettingsControllerEntry) -> Bool {\n",
+        "            case .useForCallsInfo:\n                return false\n        }\n    }\n",
+        _PROXY_ORDER_SWIFT,
+        "proxy entry ordering",
+    )
+
+    text = _replace_once(
+        text,
+        "            case let .enabled(_, text, value, createsNew):\n",
+        "            case let .aorusHeader(_, text):\n"
+        "                return ItemListSectionHeaderItem(presentationData: presentationData, text: text, "
+        "sectionId: self.section)\n"
+        "            case let .aorusBypass(_, text, status, indicator, value):\n"
+        "                return aorusConnectionSwitchItem(presentationData: presentationData, title: text, "
+        "statusText: status, indicator: indicator, value: value, sectionId: self.section, updated: { value in\n"
+        "                    arguments.aorusToggleBypass(value)\n"
+        "                })\n"
+        "            case let .aorusStableCalls(_, text, value):\n"
+        "                return aorusConnectionSwitchItem(presentationData: presentationData, title: text, "
+        "statusText: nil, indicator: AorusConnectionIndicator.none, value: value, sectionId: self.section, "
+        "updated: { value in\n"
+        "                    arguments.aorusToggleStableCalls(value)\n"
+        "                })\n"
+        "            case let .aorusInfo(_, text, linkText):\n"
+        "                guard let aorusContext = arguments.aorusContext else {\n"
+        "                    return ItemListTextItem(presentationData: presentationData, text: .plain(text), "
+        "sectionId: self.section)\n"
+        "                }\n"
+        "                return aorusConnectionFooterItem(presentationData: presentationData, "
+        "context: aorusContext, text: text, linkText: linkText, sectionId: self.section, openSupport: {\n"
+        "                    arguments.aorusOpenSupport()\n"
+        "                })\n"
+        "            case let .enabled(_, text, value, createsNew):\n",
+        "proxy entry items",
+    )
+
+    text = _replace_once(
+        text,
+        "connectionStatus: ConnectionStatus) -> [ProxySettingsControllerEntry] {\n",
+        "connectionStatus: ConnectionStatus, aorusContext: AccountContext?, "
+        "aorusState: AorusConnectionSectionState) -> [ProxySettingsControllerEntry] {\n",
+        "proxy entries signature",
+    )
+    text = _replace_once(
+        text,
+        "    entries.append(.enabled(theme, strings.ChatSettings_ConnectionType_UseProxy, "
+        "proxySettings.enabled, proxySettings.servers.isEmpty))\n",
+        "    if aorusContext != nil {\n"
+        "        let l10n = AorusL10n(strings.baseLanguageCode)\n"
+        "        // A switch that is off is not waiting for anything, so it carries no status at all.\n"
+        "        let indicator = aorusState.bypassIndicator\n"
+        "        let status: String?\n"
+        "        switch indicator {\n"
+        "            case .none:\n"
+        "                status = nil\n"
+        "            case .connecting:\n"
+        "                status = l10n.connectionConnecting\n"
+        "            case .connected:\n"
+        "                status = l10n.connectionConnected\n"
+        "        }\n"
+        "        entries.append(.aorusHeader(theme, l10n.connectionHeader))\n"
+        "        entries.append(.aorusBypass(theme, l10n.connectionBypass, status, indicator, "
+        "aorusState.bypassEnabled))\n"
+        "        entries.append(.aorusStableCalls(theme, l10n.connectionStableCalls, "
+        "aorusState.stableCallsEnabled))\n"
+        "        entries.append(.aorusInfo(theme, l10n.connectionFooter, l10n.connectionSupportLink))\n"
+        "    }\n"
+        "\n"
+        "    entries.append(.enabled(theme, strings.ChatSettings_ConnectionType_UseProxy, "
+        "proxySettings.enabled, proxySettings.servers.isEmpty))\n",
+        "proxy entries block",
+    )
+
+    text = _replace_once(
+        text,
+        "    var shareProxyListImpl: (() -> Void)?\n",
+        "    var shareProxyListImpl: (() -> Void)?\n"
+        "    var aorusOpenSupportImpl: (() -> Void)?\n",
+        "proxy support impl declaration",
+    )
+    text = _replace_once(
+        text,
+        "    }, shareProxyList: {\n       shareProxyListImpl?()\n    })\n",
+        "    }, shareProxyList: {\n"
+        "       shareProxyListImpl?()\n"
+        "    }, aorusContext: context, aorusToggleBypass: { value in\n"
+        "        aorusConnectionSetBypassEnabled(value)\n"
+        "    }, aorusToggleStableCalls: { value in\n"
+        "        aorusConnectionSetStableCallsEnabled(value)\n"
+        "    }, aorusOpenSupport: {\n"
+        "        aorusOpenSupportImpl?()\n"
+        "    })\n",
+        "proxy arguments construction",
+    )
+
+    text = _replace_once(
+        text,
+        "    let signal = combineLatest(updatedPresentationData, statePromise.get(), proxySettings.get(), "
+        "statusesContext.statuses(), network.connectionStatus)\n"
+        "    |> map { presentationData, state, proxySettings, statuses, connectionStatus -> "
+        "(ItemListControllerState, (ItemListNodeState, Any)) in\n",
+        "    let signal = combineLatest(updatedPresentationData, statePromise.get(), proxySettings.get(), "
+        "statusesContext.statuses(), network.connectionStatus, aorusConnectionSectionState())\n"
+        "    |> map { presentationData, state, proxySettings, statuses, connectionStatus, aorusState -> "
+        "(ItemListControllerState, (ItemListNodeState, Any)) in\n",
+        "proxy state signal",
+    )
+    text = _replace_once(
+        text,
+        "statuses: statuses, connectionStatus: connectionStatus), style: .blocks, "
+        "ensureVisibleItemTag: focusOnItemTag)\n",
+        "statuses: statuses, connectionStatus: connectionStatus, aorusContext: context, "
+        "aorusState: aorusState), style: .blocks, ensureVisibleItemTag: focusOnItemTag)\n",
+        "proxy list state",
+    )
+
+    text = _replace_once(
+        text,
+        "    shareProxyListImpl = { [weak controller] in\n",
+        "    aorusOpenSupportImpl = { [weak controller] in\n"
+        "        guard let context = context, let strongController = controller else {\n"
+        "            return\n"
+        "        }\n"
+        "        // This screen is a modal container, and anything pushed after it joins that container:\n"
+        "        // the support chat would open inside the sheet. Taking the screen out of the stack first\n"
+        "        // leaves the chat on the main one, where a chat opened from settings belongs. Filtering a\n"
+        "        // controller that is not in the stack -- the modally presented variant -- does nothing.\n"
+        "        let navigationController = strongController.navigationController as? NavigationController\n"
+        "        navigationController?.filterController(strongController, animated: true)\n"
+        "        aorusOpenConnectionSupportChat(context: context, navigationController: navigationController)\n"
+        "    }\n"
+        "    \n"
+        "    shareProxyListImpl = { [weak controller] in\n",
+        "proxy support impl",
+    )
+
+    path.write_text(text, encoding="utf-8")
+    # The dep is also added by patch_custom_font, which runs later; asking here as well keeps this
+    # pass standing on its own, and both write the same line so neither can double it.
+    _add_build_deps(tg / "submodules/SettingsUI/BUILD", ["//submodules/AorusGramUI"], "SettingsUI")
+    print("InterfaceV2: put the AorusGram connection block on the Proxy screen")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -4638,6 +5164,7 @@ def patch_interface_v2(tg: Path) -> None:
     """
     _patch_glass_theme(tg)
     _patch_item_list_theme(tg)
+    _patch_badge_contrast(tg)
     _patch_corner_wedges(tg)
     _patch_profile_section_glass(tg)
     _patch_editing_fields_glass(tg)
@@ -4672,4 +5199,5 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_groups_pane_glass(tg)
     _patch_recommended_pane_glass(tg)
     _patch_rating_shield(tg)
+    _patch_proxy_connection_section(tg)
     _patch_build(tg)

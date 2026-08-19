@@ -207,6 +207,9 @@ extension PeerInfoScreenNode {
                             updatedPresentationData: updatedPresentationData,
                             focusOnItemTag: .aorusAnimatedBackground
                         )
+                    },
+                    connectionSettings: {
+                        return proxySettingsController(context: context)
                     }
                 )
             ))

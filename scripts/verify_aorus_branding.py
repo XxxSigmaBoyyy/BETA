@@ -2730,6 +2730,11 @@ def main() -> None:
                 "profilePageKey",
                 "profilePageInk",
                 "profilePageScrim",
+                # A badge is a pill the row fills and a string the theme colours, and the derived
+                # theme moves the first without moving the second: the accent became the pane's ink
+                # so accent *text* would stay legible, which left the unread count beside an account
+                # in Settings drawn white on a white pill.
+                "aorusBadgeForegroundColor",
                 # The profile's personal-channel row is a real ChatListItem, so its greys come from
                 # theme.chatList and not theme.list -- it needs its own derivation.
                 "theme.chatList.withUpdated",
@@ -2743,6 +2748,20 @@ def main() -> None:
             ("aorusNoCornerWedges",),
         ),
         ("submodules/ItemListUI/Sources/ItemListItem.swift", ("theme.aorusGlassListTheme",)),
+        # The three rows that draw a badge out of the list theme. All three ask the theme for a
+        # foreground that suits the fill instead of taking the check foreground unconditionally.
+        (
+            "submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
+            ("aorusBadgeForegroundColor(over: item.presentationData.theme.list.itemAccentColor)",),
+        ),
+        (
+            "submodules/ItemListUI/Sources/Items/ItemListDisclosureItem.swift",
+            ("aorusBadgeForegroundColor(over: badgeColor)",),
+        ),
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/ListItems/PeerInfoScreenDisclosureItem.swift",
+            ("aorusBadgeForegroundColor(over: item.label.badgeColor)",),
+        ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenItemSectionContainerNode.swift",
             ("aorusGlassBackgroundView", "import GlassBackgroundComponent"),
@@ -2756,6 +2775,10 @@ def main() -> None:
                 # the photo the page has to match is worked out from it. Hardcoding the 98 a phone in
                 # portrait computes made the page a container-shape away from the header on any other.
                 "self.aorusMirroredTail = expandedAvatarListSize.height",
+                # And the structural guarantee beside it: the page's own row over the bottom of
+                # Telegram's blur block, faded up from nothing across its height, so the block's last
+                # line and the page's first are one set of pixels rather than two computations of it.
+                "aorusUpdateHeaderFade",
                 "aorusHidesButtonsBlur",
                 "aorusScrollingHeader",
                 "aorusOverlayPalette",
@@ -3019,15 +3042,29 @@ def main() -> None:
                 # drawn from is published instead. Without this the page stays black and the whole
                 # profile disappears into it.
                 "publishPageColor",
-                # The band is blurred with Telegram's own thumbnail blur at the header's own fifteen
-                # points, converted from points into the sample's pixels -- spending them as pixels
-                # is a kernel half the width of the sample, which is the flat wash that was reported
-                # as "too blurred". Flattened afterwards into a buffer of our own, so the stretched
-                # copy has neither alpha to let the black behind it through nor rows left for the
-                # screen and the panes to draw at two different heights.
+                # The band is blurred with the block's own fifteen-point gaussian, converted from
+                # points into the sample's pixels -- spending them as pixels is a kernel half the
+                # width of the sample, which is the flat wash that was reported as "too blurred".
+                # The gaussian is this file's own, because ImageBlur's `radius` is the width of a box
+                # it convolves three times against a clamped edge: the wrong unit and the wrong edge
+                # policy, and handing it a sigma cost two and a half times the blur asked for, which
+                # measured as two and a quarter times the block's contrast at the join. Flattened
+                # afterwards into a buffer of our own, so the stretched copy has neither alpha to let
+                # the black behind it through nor rows left for the screen and the panes to draw at
+                # two different heights.
                 "nativeBlurRadius",
-                "sampleBlurRadius(width:",
-                "flattenedRow(of:",
+                "sampleBlurSigma(width:",
+                "horizontallyBlurred(",
+                "flattenedRow(of image:",
+                # The vertical weight is half a gaussian and not a tent: the block's bottom edge is
+                # both where the page joins and where its kernel is renormalised, so its last line
+                # averages rows from inside the block only. A symmetric tent spent half its weight
+                # on rows the join never shows.
+                "bandSigma",
+                # The structural half of the fix -- the page's own row laid over the bottom of the
+                # block and faded up from nothing, so the join has no two sides to disagree. Without
+                # it every residual error in the model above is a step at one line.
+                "AorusProfileHeaderFadeView",
                 # A gallery item is given its picture twice -- chatAvatarGalleryPhoto emits the
                 # stripped thumbnail, blurred nearly flat, and only later the full-size photo over
                 # it -- and both fill the node opaquely, so nothing here can tell them apart from
@@ -3100,6 +3137,49 @@ def main() -> None:
                 "!self.aorusPresentTapMenu(actions: actions",
                 "self?.aorusPresentTapMenu(actions: actions",
                 "!self.aorusPresentTapMenu(actions: aorusTapActions",
+            ),
+        ),
+        # The connection section on Telegram's own Proxy screen. Its rows are added by anchor
+        # surgery into a file we do not ship a copy of, so this is the only place that can tell a
+        # half-applied edit from a clean one: the section reaching the screen without the state
+        # signal behind it would draw two switches that forget themselves on the next redraw.
+        (
+            "submodules/SettingsUI/Sources/Data and Storage/ProxyListSettingsController.swift",
+            (
+                "import AorusGramUI",
+                "case aorusConnection",
+                "aorusConnectionSwitchItem",
+                "aorusConnectionFooterItem",
+                # The entries builder is fed the live state, and the switches write through the
+                # preference store rather than into a local copy of it.
+                "aorusState: AorusConnectionSectionState",
+                "aorusConnectionSectionState()",
+                "aorusConnectionSetBypassEnabled(value)",
+                "aorusConnectionSetStableCallsEnabled(value)",
+                # The support chat opens on the main stack. This screen is a modal container and
+                # anything pushed after it joins that container, so the screen leaves the stack
+                # first or the chat opens inside the sheet.
+                "navigationController?.filterController(strongController, animated: true)",
+                "aorusOpenConnectionSupportChat(context: context",
+            ),
+        ),
+        # And the section's own implementation, which is copied rather than patched.
+        (
+            "submodules/AorusGramUI/Sources/Features/Network/AorusConnectionSection.swift",
+            (
+                "aorusgram_support",
+                # The two switches are the hybrid route's input, not a display of its output: the
+                # bypass one re-evaluates the route immediately instead of waiting for the next
+                # connection failure to notice the preference changed.
+                "AorusConnectionPreferences.shared.bypassEnabled",
+                'AorusHybridRoute.shared.evaluate(reason: "user_bypass_toggle", force: true)',
+                # The indicator is Telegram's own spinner and its own check, so the row reads as a
+                # native one at every stage.
+                "ActivityIndicator(",
+                ".custom(spinnerColor, aorusConnectionStatusSize.width, 2.0, false)",
+                "PresentationResourcesItemList.checkIconImage(",
+                # A signal, so the row follows the route rather than the moment it was built.
+                "|> distinctUntilChanged",
             ),
         ),
     )

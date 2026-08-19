@@ -4,13 +4,18 @@ import Display
 public struct AorusSettingsShortcutRoutes {
     public let animatedWallpapers: () -> ViewController
     public let animatedBanner: () -> ViewController
+    /// Telegram's own "Прокси" screen, the one under Data and Storage. It is built by SettingsUI,
+    /// which depends on this module, so the screen cannot be named here — the caller hands it in.
+    public let connectionSettings: () -> ViewController
 
     public init(
         animatedWallpapers: @escaping () -> ViewController,
-        animatedBanner: @escaping () -> ViewController
+        animatedBanner: @escaping () -> ViewController,
+        connectionSettings: @escaping () -> ViewController
     ) {
         self.animatedWallpapers = animatedWallpapers
         self.animatedBanner = animatedBanner
+        self.connectionSettings = connectionSettings
     }
 }
 

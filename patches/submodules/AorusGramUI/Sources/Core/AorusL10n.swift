@@ -447,6 +447,22 @@ public struct AorusL10n {
     public var accountDetails: String { t("Подробнее", "Details") }
     public var officialChannel: String { t("Официальный канал", "Official channel") }
     public var proxyDiagnostics: String { t("Диагностика прокси", "Proxy diagnostics") } // AORUS-DIAG — opens ATunnelStatusViewController
+    // MARK: Connection settings (the AorusGram block on Telegram's Proxy screen)
+    public var connectionSettings: String { t("Настройки соединения", "Connection settings") } // AORUS-CONN
+    public var connectionHeader: String { t("ПРОКСИ AORUSGRAM", "AORUSGRAM PROXY") } // AORUS-CONN
+    public var connectionBypass: String { t("Режим без VPN", "No-VPN mode") } // AORUS-CONN
+    public var connectionStableCalls: String { t("Стабильные звонки", "Stable calls") } // AORUS-CONN
+    public var connectionConnecting: String { t("соединение", "connecting") } // AORUS-CONN
+    public var connectionConnected: String { t("подключено", "connected") } // AORUS-CONN
+    public var connectionSupportLink: String { t("напишите в поддержку", "contact support") } // AORUS-CONN
+    // One string with the link inside it, because that is how the sentence reads; the block finds
+    // the link by searching for connectionSupportLink in it.
+    public var connectionFooter: String {
+        t(
+            "Включайте при сбоях в соединении. Если Режим без VPN завис в статусе \"Соединение\", попробуйте включить его еще раз или напишите в поддержку. Это безопасно. Архитектура и шифрование Telegram защищают ваши данные.",
+            "Turn these on if your connection fails. If No-VPN mode is stuck at \"Connecting\", try turning it on again or contact support. It is safe. Telegram's architecture and encryption protect your data."
+        )
+    } // AORUS-CONN
 
     // MARK: Messages section (tap gestures + local editing)
     public var messagesHeader: String { t("СООБЩЕНИЯ", "MESSAGES") }
