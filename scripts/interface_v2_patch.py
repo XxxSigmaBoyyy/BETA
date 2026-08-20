@@ -259,7 +259,9 @@ private final class AorusGlassThemeCache {
             // from coming out striped the way the corner-image version did.
             itemBlocksBackgroundColor: AorusGlassPane.blockMarker,
             itemModalBlocksBackgroundColor: AorusGlassPane.blockMarker,
-            itemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
+            // A rectangular pressed fill leaks outside the rounded glass pane. Native controls
+            // already provide their own interaction feedback, so the list itself stays clear.
+            itemHighlightedBackgroundColor: .clear,
             itemBlocksSeparatorColor: hairline,
             itemPlainSeparatorColor: hairline,
             disclosureArrowColor: aorusInk(0.35),
@@ -275,8 +277,8 @@ private final class AorusGlassThemeCache {
             itemSeparatorColor: hairline,
             itemBackgroundColor: .clear,
             pinnedItemBackgroundColor: .clear,
-            itemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
-            pinnedItemHighlightedBackgroundColor: aorusInk(dark ? 0.1 : 0.06),
+            itemHighlightedBackgroundColor: .clear,
+            pinnedItemHighlightedBackgroundColor: .clear,
             titleColor: ink,
             secretTitleColor: ink,
             dateTextColor: ink,

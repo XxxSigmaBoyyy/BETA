@@ -61,14 +61,16 @@ public final class AorusUserVPNManager {
             AorusHybridRoute.shared.evaluate(reason: "user_vpn_disabled", force: true)
             return
         }
-        // Ownership is published before anything is torn down. Any teardown already queued by
-        // the switches below then finds the lane live and leaves the core alone.
-        AorusUserVPNStore.shared.setEnabled(true)
-        guard AorusUserVPNStore.shared.isActive else {
-            // Nothing importable to point at, so the switch does not pretend to be on.
+        // Refuse an empty configuration before publishing an enabled state. This keeps the
+        // native switch from briefly animating on and back off when there is nothing to dial.
+        guard AorusUserVPNStore.shared.configs.contains(where: { !$0.servers.isEmpty }) else {
             AorusUserVPNStore.shared.setEnabled(false)
             return
         }
+        // Ownership is published before anything is torn down. Any teardown already queued by
+        // the switches below then finds the lane live and leaves the core alone.
+        AorusUserVPNStore.shared.setEnabled(true)
+        guard AorusUserVPNStore.shared.isActive else { return }
         if AorusConnectionPreferences.shared.bypassEnabled {
             AorusConnectionPreferences.shared.setBypassEnabled(false)
         }
@@ -111,6 +113,10 @@ public final class AorusUserVPNManager {
         case let .success(value):
             switch value {
             case let .servers(servers):
+                guard !self.containsEquivalentServers(servers) else {
+                    self.deliver(.failed(.duplicate), to: completion)
+                    return
+                }
                 let name = Self.configName(for: servers)
                 let id = AorusUserVPNStore.shared.addConfig(
                     name: name,
@@ -120,6 +126,10 @@ public final class AorusUserVPNManager {
                 self.restartIfServing(configId: id)
                 self.deliver(.added(configId: id, servers: servers.count), to: completion)
             case let .subscription(url):
+                guard !self.containsSubscription(url) else {
+                    self.deliver(.failed(.duplicate), to: completion)
+                    return
+                }
                 self.fetchSubscription(url: url) { [weak self] result in
                     guard let self else { return }
                     switch result {
@@ -222,15 +232,19 @@ public final class AorusUserVPNManager {
         let servers = config.servers
         guard !servers.isEmpty else { return }
 
+        // Reserve the entire sweep atomically. A second tap used to skip all busy rows, complete
+        // an empty DispatchGroup immediately and select a server from stale partial results.
+        let serverIds = Set(servers.map(\.id))
+        self.lock.lock()
+        let overlapsExistingSweep = !self.serversBeingProbed.isDisjoint(with: serverIds)
+        if !overlapsExistingSweep {
+            self.serversBeingProbed.formUnion(serverIds)
+        }
+        self.lock.unlock()
+        guard !overlapsExistingSweep else { return }
+
         let group = DispatchGroup()
         for server in servers {
-            self.lock.lock()
-            let alreadyProbing = self.serversBeingProbed.contains(server.id)
-            if !alreadyProbing {
-                self.serversBeingProbed.insert(server.id)
-            }
-            self.lock.unlock()
-            guard !alreadyProbing else { continue }
             group.enter()
             AorusTcpLatencyProbe.measure(
                 host: server.address,
@@ -286,6 +300,66 @@ public final class AorusUserVPNManager {
         AorusUserVPNStore.shared.setAutoSelectFastest(configId: configId, value: value)
         guard value else { return }
         self.probeAllServers(configId: configId, selectFastest: true)
+    }
+
+    private func containsEquivalentServers(_ servers: [AorusVlessServer]) -> Bool {
+        // Compare transport credentials rather than persisted ids. Older app versions derived
+        // ids from fewer fields, so an id-only comparison let the same key be imported again
+        // after an update even though the actual VLESS handshake was identical.
+        let importedServers = servers.map(Self.connectionIdentity).sorted()
+        return AorusUserVPNStore.shared.configs.contains { config in
+            config.subscriptionUrl == nil
+                && config.servers.map(Self.connectionIdentity).sorted() == importedServers
+        }
+    }
+
+    private static func connectionIdentity(_ server: AorusVlessServer) -> String {
+        return [
+            server.address.lowercased(),
+            String(server.port),
+            server.userId.lowercased(),
+            server.flow,
+            server.network,
+            server.security,
+            server.serverName ?? "",
+            server.fingerprint ?? "",
+            server.publicKey ?? "",
+            server.shortId ?? "",
+            server.spiderX ?? "",
+            server.alpn.joined(separator: ","),
+            server.path ?? "",
+            server.host ?? "",
+            server.serviceName ?? "",
+            server.headerType ?? "",
+            server.mode ?? "",
+            server.allowInsecure ? "1" : "0"
+        ].joined(separator: "|")
+    }
+
+    private func containsSubscription(_ value: String) -> Bool {
+        guard let imported = Self.normalizedSubscriptionURL(value) else { return false }
+        return AorusUserVPNStore.shared.configs.contains { config in
+            guard let existing = config.subscriptionUrl,
+                  let normalized = Self.normalizedSubscriptionURL(existing) else {
+                return false
+            }
+            return normalized == imported
+        }
+    }
+
+    private static func normalizedSubscriptionURL(_ value: String) -> String? {
+        guard var components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme?.lowercased() == "https",
+              let host = components.host?.lowercased(), !host.isEmpty else {
+            return nil
+        }
+        components.scheme = "https"
+        components.host = host
+        components.fragment = nil
+        if components.port == 443 {
+            components.port = nil
+        }
+        return components.string
     }
 
     public func rename(configId: String, name: String) {

@@ -472,8 +472,8 @@ public struct AorusL10n {
     public var userVPNServersHeader: String { t("СЕРВЕРА", "SERVERS") } // AORUS-VPN
     public var userVPNFooter: String {
         t(
-            "Свой сервер VLESS только для AorusGram: остальные приложения продолжают работать напрямую. Ключ или ссылку на подписку берём из буфера обмена.",
-            "Your own VLESS server, for AorusGram only: every other app keeps going direct. The key or subscription link is taken from the clipboard."
+            "Добавьте ключ VLESS или ссылку на подписку из буфера обмена. Параметры подключения доступны внутри конфигурации.",
+            "Add a VLESS key or subscription link from the clipboard. Connection options are available inside the configuration."
         )
     } // AORUS-VPN
     public var userVPNNoConfigs: String { t("Сначала добавьте конфигурацию.", "Add a configuration first.") } // AORUS-VPN
@@ -503,6 +503,8 @@ public struct AorusL10n {
     public var userVPNImportUnsupported: String { t("Поддерживаются ключи vless:// и ссылки на подписку.", "vless:// keys and subscription links are supported.") } // AORUS-VPN
     public var userVPNImportMalformed: String { t("Ключ повреждён или заполнен не полностью.", "The key is malformed or incomplete.") } // AORUS-VPN
     public var userVPNImportInsecure: String { t("Ссылка на подписку должна начинаться с https://.", "A subscription link has to start with https://.") } // AORUS-VPN
+    public var userVPNImportDuplicate: String { t("Эта конфигурация уже добавлена.", "This configuration has already been added.") } // AORUS-VPN
+    public var userVPNBestServer: String { t("Лучший сервер", "Best server") } // AORUS-VPN
 
     // MARK: User VLESS configurations — the configuration screen
     public var userVPNSettingsTitle: String { t("Конфигурация", "Configuration") } // AORUS-VPN

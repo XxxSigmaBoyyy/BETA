@@ -189,6 +189,9 @@ public final class AorusRealityManager {
     /// idea of what is selected, and its own retry backoff.
     private var userLanePort: Int?
     private var userLaneServerId: String?
+    private var userLaneServer: AorusVlessServer?
+    private var userLaneUdpEnabled: Bool?
+    private var userLaneMuxEnabled: Bool?
     private var userLaneRetryWorkItem: DispatchWorkItem?
     private var userLaneRetryAttempt = 0
 
@@ -1255,6 +1258,10 @@ extension AorusRealityManager {
             guard let self else { return }
             guard self.userLanePort != nil || self.userLaneServerId != nil else {
                 self.cancelUserLaneRetryLocked(resetAttempt: true)
+                self.userLaneServer = nil
+                self.userLaneUdpEnabled = nil
+                self.userLaneMuxEnabled = nil
+                self.userLaneReleaseTelegramLocked()
                 return
             }
             self.recordDiagnostic(stage: "user_core_stopping", detail: reason)
@@ -1270,10 +1277,15 @@ extension AorusRealityManager {
             return
         }
         let settings = AorusUserVPNStore.shared.selectedConfig
+        let udpEnabled = settings?.udpEnabled ?? true
+        let muxEnabled = settings?.muxEnabled ?? false
 
         // Already serving this exact server through a live inbound. A watchdog tick must not
         // interrupt a call to prove something it can check in a few milliseconds.
         if self.userLaneServerId == server.id,
+           self.userLaneServer == server,
+           self.userLaneUdpEnabled == udpEnabled,
+           self.userLaneMuxEnabled == muxEnabled,
            let port = self.userLanePort,
            self.isCoreRunning(),
            self.localSocksIsReady(port: port, timeout: self.localSocksMaxProbeTimeout) {
@@ -1290,6 +1302,9 @@ extension AorusRealityManager {
         waitForCoreStop()
         userLanePort = nil
         userLaneServerId = nil
+        userLaneServer = nil
+        userLaneUdpEnabled = nil
+        userLaneMuxEnabled = nil
         // Whatever the signed lane thought it was serving died with that core.
         activePort = nil
         activeEndpoint = nil
@@ -1300,8 +1315,8 @@ extension AorusRealityManager {
             guard let json = AorusVlessLink.xrayConfiguration(
                 server: server,
                 localPort: port,
-                udpEnabled: settings?.udpEnabled ?? true,
-                muxEnabled: settings?.muxEnabled ?? false
+                udpEnabled: udpEnabled,
+                muxEnabled: muxEnabled
             ) else {
                 recordDiagnostic(stage: "user_config_invalid", errorCode: "config_build_failed")
                 break
@@ -1344,6 +1359,9 @@ extension AorusRealityManager {
             }
             userLanePort = port
             userLaneServerId = server.id
+            userLaneServer = server
+            userLaneUdpEnabled = udpEnabled
+            userLaneMuxEnabled = muxEnabled
             cancelUserLaneRetryLocked(resetAttempt: true)
             recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
             userLanePublishEndpointLocked(port: port)
@@ -1351,12 +1369,9 @@ extension AorusRealityManager {
         }
 
         recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
-        // Released rather than left fail-closed. A key that has expired, a server that has been
-        // taken down, a paste that was subtly wrong — all of them look identical from here, and
-        // all of them would otherwise leave the client with no route at all and no way to reach
-        // the screen that fixes it. The retry below keeps trying in the background, and the row
-        // shows the failure.
-        userLaneReleaseTelegramLocked()
+        // An explicitly enabled VPN must not fail open through the direct route. Its settings
+        // screen remains local and usable while retries continue in the background.
+        userLaneBlockTelegramLocked()
         scheduleUserLaneRetryLocked()
     }
 
@@ -1368,6 +1383,9 @@ extension AorusRealityManager {
         }
         userLanePort = nil
         userLaneServerId = nil
+        userLaneServer = nil
+        userLaneUdpEnabled = nil
+        userLaneMuxEnabled = nil
         activePort = nil
         activeEndpoint = nil
         userLaneReleaseTelegramLocked()
@@ -1384,10 +1402,23 @@ extension AorusRealityManager {
         publishRequirement(required: inheritedRequirement)
     }
 
+    private func userLaneBlockTelegramLocked() {
+        clearEndpoint(postUpdate: false)
+        // Fail closed only while the user-owned lane is still enabled. Reading the durable
+        // state here also prevents a queued failed start from re-blocking Telegram after the
+        // switch was turned off while Xray was stopping.
+        let userLaneRequired = AorusUserVPNStore.shared.isActive
+        publishRequirement(required: userLaneRequired)
+    }
+
     private func userLanePublishEndpointLocked(port: Int) {
         guard AorusUserVPNStore.shared.isActive, (1 ... 65_535).contains(port),
               let store = UserDefaults(suiteName: Self.suiteName) else {
-            userLaneReleaseTelegramLocked()
+            if AorusUserVPNStore.shared.isActive {
+                userLaneBlockTelegramLocked()
+            } else {
+                userLaneReleaseTelegramLocked()
+            }
             return
         }
         store.set([

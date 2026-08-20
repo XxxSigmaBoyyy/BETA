@@ -248,7 +248,7 @@ private let aorusConnectionGlyphLineWidth: CGFloat = 1.98
 /// Keys into the theme's own image cache, which is a dictionary and is taken under a lock, so the
 /// async list layout can generate and read these from any queue. The values are well past anything
 /// PresentationResourceKey can hold: it counts up from zero, case by case.
-private let aorusConnectionRingIconKey: Int32 = 0x41475001
+private let aorusConnectionNetworkIconKey: Int32 = 0x41475001
 private let aorusConnectionCrossIconKey: Int32 = 0x41475002
 
 /// An empty gutter, so that a row with no status keeps the same text inset as one that has it.
@@ -260,7 +260,8 @@ private let aorusConnectionEmptyGlyph: UIImage? = generateImage(
 )
 
 /// The glyph in the row's leading gutter: Telegram's own list checkmark once a route is carrying
-/// traffic, a ring while one is being found, a cross while the tunnel is deliberately down.
+/// traffic, the system network glyph while one is being found, and a cross while the tunnel is
+/// deliberately down.
 ///
 /// All three are in the secondary text colour, the checkmark included — this is a status, not a
 /// selection, and under Interface 2.0 the list accent is the pane's own ink, which would draw the
@@ -273,14 +274,12 @@ private func aorusConnectionIndicatorIcon(
     case .none:
         return aorusConnectionEmptyGlyph
     case .connecting:
-        return theme.image(aorusConnectionRingIconKey, { theme in
-            return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
-                context.clear(CGRect(origin: CGPoint(), size: size))
-                context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
-                context.setLineWidth(aorusConnectionGlyphLineWidth)
-                let inset = aorusConnectionGlyphLineWidth / 2.0
-                context.strokeEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: inset, dy: inset))
-            })
+        return theme.image(aorusConnectionNetworkIconKey, { theme in
+            let configuration = UIImage.SymbolConfiguration(pointSize: 12.0, weight: .semibold)
+            return UIImage(systemName: "network", withConfiguration: configuration)?.withTintColor(
+                theme.list.itemSecondaryTextColor,
+                renderingMode: .alwaysOriginal
+            )
         })
     case .connected:
         return PresentationResourcesItemList.secondaryCheckIconImage(theme)

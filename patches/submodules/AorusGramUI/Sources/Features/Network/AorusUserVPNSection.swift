@@ -175,7 +175,7 @@ public enum AorusUserVPNRow: Equatable {
     case info(String)
     /// "СЕРВЕРА".
     case serversHeader(String)
-    case server(index: Int, configId: String, server: AorusVlessServer, selected: Bool, latency: Double?, probing: Bool)
+    case server(index: Int, configId: String, server: AorusVlessServer, selected: Bool, best: Bool, latency: Double?, probing: Bool)
 
     public var section: AorusUserVPNRowSection {
         switch self {
@@ -208,7 +208,7 @@ public enum AorusUserVPNRow: Equatable {
             return 5001
         case .serversHeader:
             return 5002
-        case let .server(index, _, _, _, _, _):
+        case let .server(index, _, _, _, _, _, _):
             return 6000 + index
         }
     }
@@ -250,6 +250,7 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
     rows.append(.info(l10n.userVPNFooter))
 
     if let config = state.serverListConfig, !config.servers.isEmpty {
+        let bestServerId = aorusUserVPNBestMeasuredServerId(config: config, latencies: state.latencies)
         rows.append(.serversHeader(l10n.userVPNServersHeader))
         for (index, server) in config.servers.enumerated() {
             rows.append(.server(
@@ -257,6 +258,7 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
                 configId: config.id,
                 server: server,
                 selected: state.selectedServerId == server.id,
+                best: bestServerId == server.id,
                 latency: state.latencies[server.id],
                 probing: state.probingServerIds.contains(server.id)
             ))
@@ -286,9 +288,6 @@ public func aorusUserVPNRowItem(
     case let .serversHeader(text):
         return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: sectionId)
     case let .use(title, status, indicator, value, available):
-        // Not intercepted in `updated`: with nothing to dial the store refuses to stay on, and a
-        // switch that reverts itself leaves the row showing a value the state never had. Upstream's
-        // own disabled-switch pair says the same thing without ever moving.
         return aorusConnectionSwitchItem(
             presentationData: presentationData,
             title: title,
@@ -296,11 +295,21 @@ public func aorusUserVPNRowItem(
             indicator: indicator,
             value: value,
             sectionId: sectionId,
-            enabled: available,
+            // Keep the native switch appearance even before the first import. A disabled glass
+            // control gets the system's rectangular disabled tint, which does not match the pane.
+            enabled: true,
             activatedWhileDisabled: {
                 aorusUserVPNPresentPill(context: context, text: l10n.userVPNNoConfigs, present: present)
             },
             updated: { value in
+                guard available || !value else {
+                    // Let the manager perform its normal empty-config refusal as well. It emits
+                    // the store update that puts the native switch back to off immediately;
+                    // merely returning here left the control visually enabled until a redraw.
+                    AorusUserVPNManager.shared.setEnabled(value)
+                    aorusUserVPNPresentPill(context: context, text: l10n.userVPNNoConfigs, present: present)
+                    return
+                }
                 AorusUserVPNManager.shared.setEnabled(value)
             }
         )
@@ -328,15 +337,15 @@ public func aorusUserVPNRowItem(
         return buildAddRow(text)
     case let .info(text):
         return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: sectionId)
-    case let .server(_, configId, server, selected, latency, probing):
+    case let .server(_, configId, server, selected, best, latency, probing):
         // The checkmark is the selection, which is what the user asked the tap to leave behind, and
         // the inset to the left of it is where the measured time goes.
         return ItemListCheckboxItem(
             presentationData: presentationData,
             systemStyle: .glass,
             title: server.name,
-            subtitle: aorusUserVPNServerDetail(server: server, latency: latency, probing: probing, l10n: l10n),
-            style: .right,
+            subtitle: aorusUserVPNServerDetail(server: server, best: best, latency: latency, probing: probing, l10n: l10n),
+            style: .left,
             checked: selected,
             zeroSeparatorInsets: false,
             sectionId: sectionId,
@@ -410,17 +419,32 @@ func aorusUserVPNConfigDetail(config: AorusVlessConfig, updating: Bool, l10n: Ao
 /// The server row's second line: what the key actually is, and the last measured handshake.
 func aorusUserVPNServerDetail(
     server: AorusVlessServer,
+    best: Bool,
     latency: Double?,
     probing: Bool,
     l10n: AorusL10n
 ) -> String {
-    var text = server.summary
-    if probing {
-        text += " · " + l10n.userVPNProbing
-    } else if let latency = latency, latency > 0.0 {
-        text += " · " + l10n.userVPNLatency(Int(latency.rounded()))
+    var parts: [String] = []
+    if best {
+        parts.append(l10n.userVPNBestServer)
     }
-    return text
+    parts.append(server.summary)
+    if probing {
+        parts.append(l10n.userVPNProbing)
+    } else if let latency = latency, latency > 0.0 {
+        parts.append(l10n.userVPNLatency(Int(latency.rounded())))
+    }
+    return parts.joined(separator: " · ")
+}
+
+func aorusUserVPNBestMeasuredServerId(
+    config: AorusVlessConfig,
+    latencies: [String: Double]
+) -> String? {
+    return config.servers.compactMap { server -> (String, Double)? in
+        guard let value = latencies[server.id], value > 0.0 else { return nil }
+        return (server.id, value)
+    }.min(by: { $0.1 < $1.1 })?.0
 }
 
 /// Units follow the system language rather than Telegram's, which is the trade for having correct
@@ -461,6 +485,8 @@ func aorusUserVPNImportErrorText(_ error: AorusVlessImportError, _ l10n: AorusL1
         return l10n.userVPNImportMalformed
     case .insecureSubscription:
         return l10n.userVPNImportInsecure
+    case .duplicate:
+        return l10n.userVPNImportDuplicate
     }
 }
 

@@ -292,7 +292,7 @@ private enum AorusUserVPNSettingsEntry: ItemListNodeEntry {
         case let .serversHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
         case let .server(_, _, serverId, name, detail, checked):
-            return ItemListCheckboxItem(presentationData: presentationData, title: name, subtitle: detail, style: .right, checked: checked, zeroSeparatorInsets: false, sectionId: self.section, action: {
+            return ItemListCheckboxItem(presentationData: presentationData, title: name, subtitle: detail, style: .left, checked: checked, zeroSeparatorInsets: false, sectionId: self.section, action: {
                 args.selectServer(serverId)
             }, deleteAction: {
                 args.removeServer(serverId)
@@ -364,6 +364,7 @@ private func aorusUserVPNSettingsEntries(
     }
 
     if !config.servers.isEmpty {
+        let bestServerId = aorusUserVPNBestMeasuredServerId(config: config, latencies: section.latencies)
         entries.append(.serversHeader(theme, l10n.userVPNServersHeader))
         for (index, server) in config.servers.enumerated() {
             entries.append(.server(
@@ -373,6 +374,7 @@ private func aorusUserVPNSettingsEntries(
                 server.name,
                 aorusUserVPNServerDetail(
                     server: server,
+                    best: bestServerId == server.id,
                     latency: section.latencies[server.id],
                     probing: section.probingServerIds.contains(server.id),
                     l10n: l10n
@@ -471,8 +473,9 @@ public func aorusUserVPNSettingsController(context: AccountContext, configId: St
             pill(l10n.userVPNSourceCopied)
         },
         probeServers: {
-            let selectFastest = AorusUserVPNStore.shared.config(id: configId)?.autoSelectFastest ?? false
-            manager.probeAllServers(configId: configId, selectFastest: selectFastest)
+            // A manual "check" is an explicit request to find and use the winner. The automatic
+            // switch only controls future refreshes/network changes.
+            manager.probeAllServers(configId: configId, selectFastest: true)
         },
         selectServer: { serverId in
             manager.selectServer(id: serverId)

@@ -99,6 +99,9 @@ public enum AorusVlessImportError: Error, Equatable {
     /// A subscription served over plain HTTP. The response is the credential, so this is
     /// refused rather than downgraded.
     case insecureSubscription
+    /// The exact key set or subscription is already present. Existing subscriptions have their
+    /// own refresh action, so importing them again must not create an indistinguishable card.
+    case duplicate
 }
 
 /// Everything that turns text into servers, and servers into Xray configurations.
@@ -285,7 +288,29 @@ public enum AorusVlessLink {
             .filter { !$0.isEmpty && $0.count <= 16 }
         let allowInsecure = ["1", "true", "yes"].contains((query["allowinsecure"] ?? "").lowercased())
 
-        let canonical = "\(address)|\(port)|\(userId)|\(network)|\(security)|\(path ?? "")|\(query["servicename"] ?? "")"
+        // Every value that changes the wire handshake belongs to the identity. REALITY
+        // subscriptions often publish several credentials on the same host and UUID; omitting
+        // pbk/sid/SNI here can collapse them into one row and leave a stale core running.
+        let canonical = [
+            address,
+            String(port),
+            userId,
+            flow,
+            network,
+            security,
+            serverName ?? "",
+            fingerprint,
+            publicKey ?? "",
+            query["sid"] ?? "",
+            query["spx"] ?? "",
+            alpn.joined(separator: ","),
+            path ?? "",
+            normalizedHostname(hostHeader) ?? "",
+            query["servicename"] ?? "",
+            (query["headertype"] ?? "").lowercased(),
+            (query["mode"] ?? "").lowercased(),
+            allowInsecure ? "1" : "0"
+        ].joined(separator: "|")
         let digest = SHA256.hash(data: Data(canonical.utf8))
             .prefix(10)
             .map { String(format: "%02x", $0) }

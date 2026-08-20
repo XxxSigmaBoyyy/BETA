@@ -204,6 +204,18 @@ public final class AorusUserVPNStore {
         return self.latencies[serverId]
     }
 
+    /// Only a measured winner. Falling back to the first row is useful when selecting an initial
+    /// server, but it would falsely label an untested server as the fastest in the interface.
+    public func bestMeasuredServerId(configId: String) -> String? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard let config = self.cached.configs.first(where: { $0.id == configId }) else { return nil }
+        return config.servers.compactMap { server -> (String, Double)? in
+            guard let value = self.latencies[server.id], value > 0.0 else { return nil }
+            return (server.id, value)
+        }.min(by: { $0.1 < $1.1 })?.0
+    }
+
     public func config(id: String) -> AorusVlessConfig? {
         self.lock.lock()
         defer { self.lock.unlock() }
