@@ -86,7 +86,9 @@ public enum AorusVlessImport: Equatable {
     case subscription(String)
 }
 
-public enum AorusVlessImportError: Equatable {
+/// `Error` as well as `Equatable`: the parse and subscription paths both hand this back through
+/// `Result`, whose `Failure` has to conform, and the UI compares cases to pick a message.
+public enum AorusVlessImportError: Error, Equatable {
     /// Nothing on the clipboard, or nothing but whitespace.
     case empty
     /// Recognisably a proxy key, but not one this client can carry (vmess, ss, trojan, or a
