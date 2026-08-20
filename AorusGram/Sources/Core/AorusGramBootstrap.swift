@@ -40,6 +40,12 @@ public final class AorusGramBootstrap {
         // fail-closed until LicenseGate receives a fresh active server response.
         LicenseGate.shared.start()
 
+        // The user's own imported VLESS configuration, if they have one enabled. First, and
+        // deliberately ahead of the signed lane: both drive the one in-process Xray core, and
+        // whichever starts second has to find the other's ownership already published rather
+        // than discover it after having torn the core down.
+        AorusUserVPNManager.shared.startIfEnabled()
+
         // System transport. The signed control plane provisions VLESS/REALITY and
         // the XTLS core exposes it as an in-process loopback SOCKS5
         // endpoint; TelegramCore hot-applies it through the existing observer.

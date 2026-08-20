@@ -48,17 +48,30 @@ public func aorusCallProxyServerSettings() -> ProxyServerSettings? {
             connection: .socks5(username: nil, password: nil)
         )
     }
-    // "Режим без VPN" off: nothing of this client's transport is used at all.
-    if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_bypass_enabled") {
-        aorusRecordCallProxyDiagnostic(store: store, status: "native_bypass_disabled")
-        return nil
-    }
-    // "Стабильные звонки" off: call media goes natively even while MTProto is being carried
-    // over the tunnel. The two are separate on purpose — UDP over the tunnel is what makes a
-    // call survive a filtered network, and also the part a user is most likely to want off.
-    if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_stable_calls_enabled") {
-        aorusRecordCallProxyDiagnostic(store: store, status: "native_stable_calls_disabled")
-        return nil
+    // The user's own imported VLESS configuration owns the transport. Its two switches replace
+    // the hybrid lane's, which say nothing about it: "Режим без VPN" is off by construction
+    // whenever this lane is on, so consulting it would send every call around the tunnel the
+    // user explicitly asked to make calls over.
+    if store.bool(forKey: "aorusgram_uservpn_enabled") {
+        // Call media is UDP, and it only has a path when the loopback inbound was built with UDP
+        // support. The store keeps the two settings coherent, so this one flag answers both.
+        if !store.bool(forKey: "aorusgram_uservpn_calls_enabled") {
+            aorusRecordCallProxyDiagnostic(store: store, status: "native_user_vpn_calls_disabled")
+            return nil
+        }
+    } else {
+        // "Режим без VPN" off: nothing of this client's transport is used at all.
+        if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_bypass_enabled") {
+            aorusRecordCallProxyDiagnostic(store: store, status: "native_bypass_disabled")
+            return nil
+        }
+        // "Стабильные звонки" off: call media goes natively even while MTProto is being carried
+        // over the tunnel. The two are separate on purpose — UDP over the tunnel is what makes a
+        // call survive a filtered network, and also the part a user is most likely to want off.
+        if aorusConnectionSwitchIsOff(store: store, key: "aorusgram_connection_stable_calls_enabled") {
+            aorusRecordCallProxyDiagnostic(store: store, status: "native_stable_calls_disabled")
+            return nil
+        }
     }
     let currentPid = ProcessInfo.processInfo.processIdentifier
     let requirement = store.dictionary(forKey: aorusRealityRequirementKey)

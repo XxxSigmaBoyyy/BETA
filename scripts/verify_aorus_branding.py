@@ -3165,6 +3165,20 @@ def main() -> None:
                 # first or the chat opens inside the sheet.
                 "navigationController?.filterController(strongController, animated: true)",
                 "aorusOpenConnectionSupportChat(context: context",
+                # The КОНФИГУРАЦИИ / СЕРВЕРА block. One entry case carries every row of it, so a
+                # half-applied patch shows up as a missing case rather than as a screen that draws
+                # the header and nothing under it.
+                "case aorusUserVPNToggle",
+                "case aorusUserVPNServers",
+                "case aorusUserVPN(PresentationTheme, AorusUserVPNRow)",
+                "aorusUserVPNState: AorusUserVPNSectionState",
+                "aorusUserVPNRows(state: aorusUserVPNState",
+                "aorusUserVPNRowItem(",
+                # The "+" row is a SettingsUI-internal item, so it is built here and handed in.
+                "systemStyle: .glass, title: text, icon: .add, sectionId: self.section, editing: false",
+                # Tapping a configuration pushes its own screen; the "+" row reads the clipboard.
+                "aorusUserVPNSettingsController(context: context, configId: configId)",
+                "aorusUserVPNImportFromClipboard(context: context",
             ),
         ),
         # And the section's own implementation, which is copied rather than patched.
@@ -3177,13 +3191,57 @@ def main() -> None:
                 # connection failure to notice the preference changed.
                 "AorusConnectionPreferences.shared.bypassEnabled",
                 'AorusHybridRoute.shared.evaluate(reason: "user_bypass_toggle", force: true)',
-                # The indicator is Telegram's own spinner and its own check, so the row reads as a
-                # native one at every stage.
-                "ActivityIndicator(",
-                ".custom(spinnerColor, aorusConnectionStatusSize.width, 2.0, false)",
-                "PresentationResourcesItemList.checkIconImage(",
+                # The indicator sits in the row's leading gutter, aligned with the title rather than
+                # centred on the whole row, and its "carrying traffic" state is Telegram's own list
+                # check -- so the row reads as a native one at every stage.
+                "aorusIconAlignsWithTitle: true",
+                "PresentationResourcesItemList.secondaryCheckIconImage(theme)",
+                # Direct working means the tunnel was stood down on purpose, and the row has to say
+                # so: a cross and "приостановлен", not a check and not a spinner that never ends.
+                "case .suspended:",
+                # The other half of the two-tunnel exclusion. The user's own VPN yields to this
+                # switch because this switch is the one that was just touched.
+                "AorusUserVPNManager.shared.bypassDidTurnOn()",
                 # A signal, so the row follows the route rather than the moment it was built.
                 "|> distinctUntilChanged",
+            ),
+        ),
+        # The user's own VLESS lane: the rows of the КОНФИГУРАЦИИ / СЕРВЕРА block, which are copied
+        # rather than patched. The Proxy screen only knows there is a list of rows to draw, so
+        # everything that decides what a row *is* has to be here.
+        (
+            "submodules/AorusGramUI/Sources/Features/Network/AorusUserVPNSection.swift",
+            (
+                "aorusUserVPNSectionState()",
+                "AorusUserVPNManager.shared.setEnabled(value)",
+                # A configuration with no servers cannot be switched on, and the switch says so
+                # instead of flipping back by itself a moment later.
+                "activatedWhileDisabled",
+                # The "+" row belongs to SettingsUI, so it arrives as a closure.
+                "buildAddRow: (String) -> ListViewItem",
+                # Import is a clipboard read, an alert on failure and a pill on success -- never a
+                # silent no-op, which is what a paste that missed looks like otherwise.
+                "aorusUserVPNImportFromClipboard(",
+                "UIPasteboard.general",
+                # Selecting a server is a checkmark on the right, swiping one removes it.
+                "ItemListCheckboxItem(",
+                "|> distinctUntilChanged",
+            ),
+        ),
+        # And the per-configuration screen behind the name row.
+        (
+            "submodules/AorusGramUI/Sources/Features/Network/AorusUserVPNSettingsController.swift",
+            (
+                "public func aorusUserVPNSettingsController(",
+                # Calls are UDP: the calls switch is the reason the UDP one exists.
+                "manager.setCallsEnabled(configId: configId, value: value)",
+                "manager.setUdpEnabled(configId: configId, value: value)",
+                "manager.refreshSubscription(configId: configId)",
+                # Renaming writes through the store, never an empty string, and the screen leaves
+                # the stack the way a pushed screen does: it pops, it does not dismiss the sheet
+                # that contains it.
+                "manager.rename(configId: configId, name:",
+                "navigationController.setViewControllers(filtered, animated: true)",
             ),
         ),
     )
@@ -3200,6 +3258,7 @@ def main() -> None:
         "AorusMasksController.swift",
         "AorusDeviceSpoofController.swift",
         "AccountBackupController.swift",
+        "Features/Network/AorusUserVPNSettingsController.swift",
     ):
         source = tg / "submodules/AorusGramUI/Sources" / name
         if not source.is_file():

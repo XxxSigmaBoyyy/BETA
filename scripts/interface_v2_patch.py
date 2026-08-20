@@ -4818,6 +4818,11 @@ _PROXY_ORDER_SWIFT = '''    /// Ordering by one number per case instead of a swi
                 return 2
             case .aorusInfo:
                 return 3
+            case let .aorusUserVPN(_, row):
+                // Both new blocks sort by the row's own index, offset to sit between the saved
+                // proxies and the three rows upstream keeps at the bottom -- which is where the
+                // configurations belong: under the proxies, above "Поделиться списком".
+                return 2000000 + row.sortIndex
             case .enabled:
                 return 4
             case .serversHeader:
@@ -4841,6 +4846,70 @@ _PROXY_ORDER_SWIFT = '''    /// Ordering by one number per case instead of a swi
 '''
 
 
+def _patch_switch_item_leading_icon(tg: Path) -> None:
+    """A leading glyph that lines up with the title rather than with the two-line block.
+
+    Upstream centres a switch row's icon on the whole content block: with a status line present its
+    centre lands on the gap between title and status, which is right for a settings glyph that
+    stands for the row, and wrong for a *status* glyph that stands for the title beside it -- it
+    reads as crooked, roughly half the status line's height low.
+
+    So this is opt-in and nothing else moves: a defaulted parameter, false everywhere it is not
+    asked for, and the only branch it adds is the one it asks for. Rows without a status line are
+    untouched either way, since with `text == nil` upstream already centres on the row.
+    """
+    path = tg / "submodules/ItemListUI/Sources/Items/ItemListSwitchItem.swift"
+    text = _read(path, "ItemListSwitchItem.swift")
+    if "aorusIconAlignsWithTitle" in text:
+        print("InterfaceV2: switch item leading icon already applied")
+        return
+
+    text = _replace_once(
+        text,
+        "    let icon: UIImage?\n"
+        "    let title: String\n",
+        "    let icon: UIImage?\n"
+        "    // AorusGram: put `icon` on the title's line instead of the content block's centre.\n"
+        "    let aorusIconAlignsWithTitle: Bool\n"
+        "    let title: String\n",
+        "switch item icon alignment property",
+    )
+    text = _replace_once(
+        text,
+        "icon: UIImage? = nil, title: String,",
+        "icon: UIImage? = nil, aorusIconAlignsWithTitle: Bool = false, title: String,",
+        "switch item icon alignment parameter",
+    )
+    text = _replace_once(
+        text,
+        "        self.icon = icon\n"
+        "        self.title = title\n",
+        "        self.icon = icon\n"
+        "        self.aorusIconAlignsWithTitle = aorusIconAlignsWithTitle\n"
+        "        self.title = title\n",
+        "switch item icon alignment assignment",
+    )
+    # The title sits at `topInset + 1.0` and is `titleLayout.size.height` tall, so this is its
+    # centre less half the glyph -- clamped, because a glyph taller than the title would otherwise
+    # be asked to start above the row.
+    text = _replace_once(
+        text,
+        "                        let iconY: CGFloat\n"
+        "                        if item.text == nil {\n"
+        "                            iconY = floor((layout.contentSize.height - icon.size.height) / 2.0)\n"
+        "                        } else {\n",
+        "                        let iconY: CGFloat\n"
+        "                        if item.text == nil {\n"
+        "                            iconY = floor((layout.contentSize.height - icon.size.height) / 2.0)\n"
+        "                        } else if item.aorusIconAlignsWithTitle {\n"
+        "                            iconY = max(0.0, floor(topInset + 1.0 + (titleLayout.size.height - icon.size.height) / 2.0))\n"
+        "                        } else {\n",
+        "switch item icon alignment layout",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: switch item leading icon aligned with title")
+
+
 def _patch_proxy_connection_section(tg: Path) -> None:
     """AorusGram's own transport, on Telegram's own Proxy screen.
 
@@ -4849,10 +4918,15 @@ def _patch_proxy_connection_section(tg: Path) -> None:
     ours: it is where a user goes when a connection will not come up, and the rest of it is already
     about that. Settings gains one row above "Диагностика прокси" that opens this same screen.
 
-    The rows themselves, the state signal and the support-chat jump live in AorusGramUI, in
-    AorusConnectionSection.swift. What is added here is the four entries, their place in the order,
-    and the four closures behind them -- nothing upstream draws is changed, and with the switches
-    left alone the screen behaves exactly as it shipped.
+    Under the saved proxies come the user's own VLESS configurations -- a switch that hands this
+    client's transport to them, the configurations themselves with a "+" row that imports whatever
+    is on the clipboard, and the servers of the selected one.
+
+    The rows themselves, the state signals and the support-chat jump live in AorusGramUI, in
+    AorusConnectionSection.swift and AorusUserVPNSection.swift. What is added here is five entries
+    -- four for the connection block, one carrying every row of the two configuration blocks -- their
+    place in the order, and the closures behind them. Nothing upstream draws is changed, and with
+    the switches left alone the screen behaves exactly as it shipped.
     """
     path = tg / "submodules/SettingsUI/Sources/Data and Storage/ProxyListSettingsController.swift"
     text = _read(path, "ProxyListSettingsController.swift")
@@ -4877,7 +4951,13 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "    let aorusContext: AccountContext?\n"
         "    let aorusToggleBypass: (Bool) -> Void\n"
         "    let aorusToggleStableCalls: (Bool) -> Void\n"
-        "    let aorusOpenSupport: () -> Void\n",
+        "    let aorusOpenSupport: () -> Void\n"
+        "    // The user's own VLESS configurations. Three closures and no more: everything that is\n"
+        "    // a mutation goes straight to AorusGramUI's own free functions, and only what needs\n"
+        "    // this controller -- a screen to present on, a stack to push on -- comes through here.\n"
+        "    let aorusPresent: (ViewController) -> Void\n"
+        "    let aorusOpenUserVPNConfig: (String) -> Void\n"
+        "    let aorusAddUserVPNConfig: () -> Void\n",
         "proxy arguments fields",
     )
     text = _replace_once(
@@ -4885,7 +4965,10 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "toggleUseForCalls: @escaping (Bool) -> Void, shareProxyList: @escaping () -> Void) {\n",
         "toggleUseForCalls: @escaping (Bool) -> Void, shareProxyList: @escaping () -> Void, "
         "aorusContext: AccountContext?, aorusToggleBypass: @escaping (Bool) -> Void, "
-        "aorusToggleStableCalls: @escaping (Bool) -> Void, aorusOpenSupport: @escaping () -> Void) {\n",
+        "aorusToggleStableCalls: @escaping (Bool) -> Void, aorusOpenSupport: @escaping () -> Void, "
+        "aorusPresent: @escaping (ViewController) -> Void, "
+        "aorusOpenUserVPNConfig: @escaping (String) -> Void, "
+        "aorusAddUserVPNConfig: @escaping () -> Void) {\n",
         "proxy arguments init",
     )
     text = _replace_once(
@@ -4895,7 +4978,10 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "        self.aorusContext = aorusContext\n"
         "        self.aorusToggleBypass = aorusToggleBypass\n"
         "        self.aorusToggleStableCalls = aorusToggleStableCalls\n"
-        "        self.aorusOpenSupport = aorusOpenSupport\n",
+        "        self.aorusOpenSupport = aorusOpenSupport\n"
+        "        self.aorusPresent = aorusPresent\n"
+        "        self.aorusOpenUserVPNConfig = aorusOpenUserVPNConfig\n"
+        "        self.aorusAddUserVPNConfig = aorusAddUserVPNConfig\n",
         "proxy arguments assignments",
     )
 
@@ -4904,6 +4990,11 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "private enum ProxySettingsControllerSection: Int32 {\n    case enabled\n",
         "private enum ProxySettingsControllerSection: Int32 {\n"
         "    case aorusConnection\n"
+        "    // Three blocks, because that is what the screen shows: the switch, the configurations\n"
+        "    // with the button under them, and the servers of the selected one.\n"
+        "    case aorusUserVPNToggle\n"
+        "    case aorusUserVPNConfigs\n"
+        "    case aorusUserVPNServers\n"
         "    case enabled\n",
         "proxy section enum",
     )
@@ -4917,6 +5008,9 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "    case aorusBypass(PresentationTheme, String, String?, AorusConnectionIndicator, Bool)\n"
         "    case aorusStableCalls(PresentationTheme, String, Bool)\n"
         "    case aorusInfo(PresentationTheme, String, String)\n"
+        "    // One case for both new blocks: what the rows are, in what order and what a tap does\n"
+        "    // are decided in AorusGramUI, so a change to the VPN screen is a change to one module.\n"
+        "    case aorusUserVPN(PresentationTheme, AorusUserVPNRow)\n"
         "    case enabled(PresentationTheme, String, Bool, Bool)\n",
         "proxy entry cases",
     )
@@ -4927,6 +5021,15 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "                return ProxySettingsControllerSection.enabled.rawValue\n",
         "            case .aorusHeader, .aorusBypass, .aorusStableCalls, .aorusInfo:\n"
         "                return ProxySettingsControllerSection.aorusConnection.rawValue\n"
+        "            case let .aorusUserVPN(_, row):\n"
+        "                switch row.section {\n"
+        "                    case .toggle:\n"
+        "                        return ProxySettingsControllerSection.aorusUserVPNToggle.rawValue\n"
+        "                    case .configs:\n"
+        "                        return ProxySettingsControllerSection.aorusUserVPNConfigs.rawValue\n"
+        "                    case .servers:\n"
+        "                        return ProxySettingsControllerSection.aorusUserVPNServers.rawValue\n"
+        "                }\n"
         "            case .enabled:\n"
         "                return ProxySettingsControllerSection.enabled.rawValue\n",
         "proxy entry section",
@@ -4944,6 +5047,10 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "                return .index(22)\n"
         "            case .aorusInfo:\n"
         "                return .index(23)\n"
+        "            case let .aorusUserVPN(_, row):\n"
+        "                // The row's own index is unique across both blocks, so it is the stable id\n"
+        "                // as well as the order -- offset past every id on this screen.\n"
+        "                return .index(2000000 + row.sortIndex)\n"
         "            case .enabled:\n"
         "                return .index(0)\n",
         "proxy entry stable id",
@@ -4979,6 +5086,13 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "            case let .aorusInfo(lhsTheme, lhsText, lhsLink):\n"
         "                if case let .aorusInfo(rhsTheme, rhsText, rhsLink) = rhs, "
         "lhsTheme === rhsTheme, lhsText == rhsText, lhsLink == rhsLink {\n"
+        "                    return true\n"
+        "                } else {\n"
+        "                    return false\n"
+        "                }\n"
+        "            case let .aorusUserVPN(lhsTheme, lhsRow):\n"
+        "                if case let .aorusUserVPN(rhsTheme, rhsRow) = rhs, "
+        "lhsTheme === rhsTheme, lhsRow == rhsRow {\n"
         "                    return true\n"
         "                } else {\n"
         "                    return false\n"
@@ -5021,6 +5135,21 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "context: aorusContext, text: text, linkText: linkText, sectionId: self.section, openSupport: {\n"
         "                    arguments.aorusOpenSupport()\n"
         "                })\n"
+        "            case let .aorusUserVPN(_, row):\n"
+        "                // The \"+\" row is built here rather than in AorusGramUI because "
+        "ProxySettingsActionItem is internal to this module: the button under the configurations has\n"
+        "                // to be the same button as \"Добавить прокси\" above it, not a lookalike.\n"
+        "                return aorusUserVPNRowItem(presentationData: presentationData, "
+        "context: arguments.aorusContext, row: row, sectionId: self.section, present: { controller in\n"
+        "                    arguments.aorusPresent(controller)\n"
+        "                }, openConfig: { configId in\n"
+        "                    arguments.aorusOpenUserVPNConfig(configId)\n"
+        "                }, buildAddRow: { text in\n"
+        "                    return ProxySettingsActionItem(presentationData: presentationData, "
+        "systemStyle: .glass, title: text, icon: .add, sectionId: self.section, editing: false, action: {\n"
+        "                        arguments.aorusAddUserVPNConfig()\n"
+        "                    })\n"
+        "                })\n"
         "            case let .enabled(_, text, value, createsNew):\n",
         "proxy entry items",
     )
@@ -5029,7 +5158,8 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         text,
         "connectionStatus: ConnectionStatus) -> [ProxySettingsControllerEntry] {\n",
         "connectionStatus: ConnectionStatus, aorusContext: AccountContext?, "
-        "aorusState: AorusConnectionSectionState) -> [ProxySettingsControllerEntry] {\n",
+        "aorusState: AorusConnectionSectionState, "
+        "aorusUserVPNState: AorusUserVPNSectionState) -> [ProxySettingsControllerEntry] {\n",
         "proxy entries signature",
     )
     text = _replace_once(
@@ -5048,6 +5178,8 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "                status = l10n.connectionConnecting\n"
         "            case .connected:\n"
         "                status = l10n.connectionConnected\n"
+        "            case .suspended:\n"
+        "                status = l10n.connectionSuspended\n"
         "        }\n"
         "        entries.append(.aorusHeader(theme, l10n.connectionHeader))\n"
         "        entries.append(.aorusBypass(theme, l10n.connectionBypass, status, indicator, "
@@ -5055,6 +5187,12 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "        entries.append(.aorusStableCalls(theme, l10n.connectionStableCalls, "
         "aorusState.stableCallsEnabled))\n"
         "        entries.append(.aorusInfo(theme, l10n.connectionFooter, l10n.connectionSupportLink))\n"
+        "        // The two configuration blocks. They sort themselves under the saved proxies, so\n"
+        "        // they are appended with the rest of the AorusGram rows rather than spliced into\n"
+        "        // the middle of upstream's own list.\n"
+        "        for row in aorusUserVPNRows(state: aorusUserVPNState, languageCode: strings.baseLanguageCode) {\n"
+        "            entries.append(.aorusUserVPN(theme, row))\n"
+        "        }\n"
         "    }\n"
         "\n"
         "    entries.append(.enabled(theme, strings.ChatSettings_ConnectionType_UseProxy, "
@@ -5066,7 +5204,10 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         text,
         "    var shareProxyListImpl: (() -> Void)?\n",
         "    var shareProxyListImpl: (() -> Void)?\n"
-        "    var aorusOpenSupportImpl: (() -> Void)?\n",
+        "    var aorusOpenSupportImpl: (() -> Void)?\n"
+        "    // Upstream has no present impl on this screen -- everything it does either pushes or\n"
+        "    // dismisses -- and the import pill and its error alert need one.\n"
+        "    var aorusPresentImpl: ((ViewController) -> Void)?\n",
         "proxy support impl declaration",
     )
     text = _replace_once(
@@ -5080,6 +5221,21 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "        aorusConnectionSetStableCallsEnabled(value)\n"
         "    }, aorusOpenSupport: {\n"
         "        aorusOpenSupportImpl?()\n"
+        "    }, aorusPresent: { controller in\n"
+        "        aorusPresentImpl?(controller)\n"
+        "    }, aorusOpenUserVPNConfig: { configId in\n"
+        "        guard let context = context else {\n"
+        "            return\n"
+        "        }\n"
+        "        // Pushed the same way upstream pushes a proxy's own screen from this list.\n"
+        "        pushControllerImpl?(aorusUserVPNSettingsController(context: context, configId: configId))\n"
+        "    }, aorusAddUserVPNConfig: {\n"
+        "        guard let context = context else {\n"
+        "            return\n"
+        "        }\n"
+        "        aorusUserVPNImportFromClipboard(context: context, present: { controller in\n"
+        "            aorusPresentImpl?(controller)\n"
+        "        })\n"
         "    })\n",
         "proxy arguments construction",
     )
@@ -5090,9 +5246,12 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "statusesContext.statuses(), network.connectionStatus)\n"
         "    |> map { presentationData, state, proxySettings, statuses, connectionStatus -> "
         "(ItemListControllerState, (ItemListNodeState, Any)) in\n",
+        "    // The two AorusGram states are combined into one argument rather than added as two:\n"
+        "    // upstream's own five are already at this combineLatest's widest proven arity here.\n"
         "    let signal = combineLatest(updatedPresentationData, statePromise.get(), proxySettings.get(), "
-        "statusesContext.statuses(), network.connectionStatus, aorusConnectionSectionState())\n"
-        "    |> map { presentationData, state, proxySettings, statuses, connectionStatus, aorusState -> "
+        "statusesContext.statuses(), network.connectionStatus, "
+        "combineLatest(aorusConnectionSectionState(), aorusUserVPNSectionState()))\n"
+        "    |> map { presentationData, state, proxySettings, statuses, connectionStatus, aorusStates -> "
         "(ItemListControllerState, (ItemListNodeState, Any)) in\n",
         "proxy state signal",
     )
@@ -5101,7 +5260,8 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "statuses: statuses, connectionStatus: connectionStatus), style: .blocks, "
         "ensureVisibleItemTag: focusOnItemTag)\n",
         "statuses: statuses, connectionStatus: connectionStatus, aorusContext: context, "
-        "aorusState: aorusState), style: .blocks, ensureVisibleItemTag: focusOnItemTag)\n",
+        "aorusState: aorusStates.0, aorusUserVPNState: aorusStates.1), style: .blocks, "
+        "ensureVisibleItemTag: focusOnItemTag)\n",
         "proxy list state",
     )
 
@@ -5121,15 +5281,26 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "        aorusOpenConnectionSupportChat(context: context, navigationController: navigationController)\n"
         "    }\n"
         "    \n"
+        "    aorusPresentImpl = { [weak controller] presented in\n"
+        "        controller?.present(presented, in: .window(.root))\n"
+        "    }\n"
+        "    \n"
         "    shareProxyListImpl = { [weak controller] in\n",
         "proxy support impl",
     )
 
     path.write_text(text, encoding="utf-8")
-    # The dep is also added by patch_custom_font, which runs later; asking here as well keeps this
-    # pass standing on its own, and both write the same line so neither can double it.
-    _add_build_deps(tg / "submodules/SettingsUI/BUILD", ["//submodules/AorusGramUI"], "SettingsUI")
-    print("InterfaceV2: put the AorusGram connection block on the Proxy screen")
+    # The AorusGramUI dep is also added by patch_custom_font, which runs later; asking here as well
+    # keeps this pass standing on its own, and both write the same line so neither can double it.
+    # AorusGram itself is named in nothing this file writes, but the state it hands the screen
+    # carries a route mode out of that module, so the module has to be loadable from here rather
+    # than only reachable through AorusGramUI's own deps.
+    _add_build_deps(
+        tg / "submodules/SettingsUI/BUILD",
+        ["//submodules/AorusGramUI", "//submodules/AorusGram:AorusGram"],
+        "SettingsUI",
+    )
+    print("InterfaceV2: put the AorusGram connection and VLESS blocks on the Proxy screen")
 
 
 def _patch_build(tg: Path) -> None:
@@ -5199,5 +5370,6 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_groups_pane_glass(tg)
     _patch_recommended_pane_glass(tg)
     _patch_rating_shield(tg)
+    _patch_switch_item_leading_icon(tg)
     _patch_proxy_connection_section(tg)
     _patch_build(tg)

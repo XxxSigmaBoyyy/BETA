@@ -4762,6 +4762,8 @@ def patch_info_plist_file_sharing(tg: Path) -> None:
 # keeps Telegram on a deliberately closed loopback port until libXray is ready. This
 # is fail-closed: provisioning or core failures cannot silently reopen a direct route.
 # Without a subscription the marker is false and Telegram retains its direct path.
+# The user's own imported VLESS configuration publishes the same two markers from the same
+# process, so it needs nothing here beyond not being judged by the hybrid lane's switches.
 _AORUS_PROXY_SNIPPET = (
     "({ () -> MTSocksProxySettings? in\n"
     "                // App extensions do not own the in-process libXray core. Do not\n"
@@ -4771,12 +4773,19 @@ _AORUS_PROXY_SNIPPET = (
     "                    return MTSocksProxySettings(ip: \"127.0.0.1\", port: 38190, username: nil, password: nil, secret: nil)\n"
     "                }\n"
     "                let aorusCurrentPid = ProcessInfo.processInfo.processIdentifier\n"
+    "                // The user imported their own VLESS configuration and switched it on. That\n"
+    "                // lane owns the core instead of the hybrid one, and the switches below are\n"
+    "                // the hybrid lane's — reading them here would send MTProto around the only\n"
+    "                // inbound this client has. The mirror is written to a single predicate:\n"
+    "                // enabled AND pointed at a server, so it is never true with nothing behind it.\n"
+    "                let aorusUserVPN = aorusStore.bool(forKey: \"aorusgram_uservpn_enabled\")\n"
     "                // The user switched the built-in bypass off, so this client never\n"
     "                // redirects MTProto: it is stock Telegram on whatever proxy the user\n"
     "                // configured. The flag is mirrored out of the keychain on first access in\n"
     "                // every process, so its absence means \"not answered yet\" and keeps the\n"
     "                // fail-closed default below.\n"
-    "                if aorusStore.object(forKey: \"aorusgram_connection_bypass_enabled\") != nil,\n"
+    "                if !aorusUserVPN,\n"
+    "                   aorusStore.object(forKey: \"aorusgram_connection_bypass_enabled\") != nil,\n"
     "                   !aorusStore.bool(forKey: \"aorusgram_connection_bypass_enabled\") {\n"
     "                    return nil\n"
     "                }\n"

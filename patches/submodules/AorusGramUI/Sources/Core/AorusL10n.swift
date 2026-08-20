@@ -454,6 +454,7 @@ public struct AorusL10n {
     public var connectionStableCalls: String { t("Стабильные звонки", "Stable calls") } // AORUS-CONN
     public var connectionConnecting: String { t("соединение", "connecting") } // AORUS-CONN
     public var connectionConnected: String { t("подключено", "connected") } // AORUS-CONN
+    public var connectionSuspended: String { t("приостановлен", "suspended") } // AORUS-CONN
     public var connectionSupportLink: String { t("напишите в поддержку", "contact support") } // AORUS-CONN
     // One string with the link inside it, because that is how the sentence reads; the block finds
     // the link by searching for connectionSupportLink in it.
@@ -463,6 +464,90 @@ public struct AorusL10n {
             "Turn these on if your connection fails. If No-VPN mode is stuck at \"Connecting\", try turning it on again or contact support. It is safe. Telegram's architecture and encryption protect your data."
         )
     } // AORUS-CONN
+
+    // MARK: User VLESS configurations (КОНФИГУРАЦИИ / СЕРВЕРА on the Proxy screen)
+    public var userVPNHeader: String { t("КОНФИГУРАЦИИ", "CONFIGURATIONS") } // AORUS-VPN
+    public var userVPNUse: String { t("Использовать VPN", "Use VPN") } // AORUS-VPN
+    public var userVPNAddConfig: String { t("Добавить конфигурацию", "Add configuration") } // AORUS-VPN
+    public var userVPNServersHeader: String { t("СЕРВЕРА", "SERVERS") } // AORUS-VPN
+    public var userVPNFooter: String {
+        t(
+            "Свой сервер VLESS только для AorusGram: остальные приложения продолжают работать напрямую. Ключ или ссылку на подписку берём из буфера обмена.",
+            "Your own VLESS server, for AorusGram only: every other app keeps going direct. The key or subscription link is taken from the clipboard."
+        )
+    } // AORUS-VPN
+    public var userVPNNoConfigs: String { t("Сначала добавьте конфигурацию.", "Add a configuration first.") } // AORUS-VPN
+    public var userVPNUpdating: String { t("обновление…", "updating…") } // AORUS-VPN
+    public var userVPNProbing: String { t("проверка", "checking") } // AORUS-VPN
+    // The count is substituted after translation, for the reason spelled out at cacheIntervalValue.
+    public func userVPNServerCount(_ count: Int) -> String {
+        return t("Серверов: %@", "Servers: %@").replacingOccurrences(of: "%@", with: "\(count)")
+    } // AORUS-VPN
+    public func userVPNUpdatedAt(_ value: String) -> String {
+        return t("обновлено %@", "updated %@").replacingOccurrences(of: "%@", with: value)
+    } // AORUS-VPN
+    public func userVPNExpiresShort(_ value: String) -> String {
+        return t("до %@", "until %@").replacingOccurrences(of: "%@", with: value)
+    } // AORUS-VPN
+    public func userVPNLatency(_ milliseconds: Int) -> String {
+        return t("%@ мс", "%@ ms").replacingOccurrences(of: "%@", with: "\(milliseconds)")
+    } // AORUS-VPN
+
+    // MARK: User VLESS configurations — import
+    public var userVPNImporting: String { t("Импорт…", "Importing…") } // AORUS-VPN
+    public func userVPNImported(_ count: Int) -> String {
+        return t("Добавлено серверов: %@", "Servers added: %@").replacingOccurrences(of: "%@", with: "\(count)")
+    } // AORUS-VPN
+    public var userVPNImportFailed: String { t("Не удалось импортировать", "Import failed") } // AORUS-VPN
+    public var userVPNClipboardEmpty: String { t("В буфере обмена нет ключа VLESS.", "There is no VLESS key on the clipboard.") } // AORUS-VPN
+    public var userVPNImportUnsupported: String { t("Поддерживаются ключи vless:// и ссылки на подписку.", "vless:// keys and subscription links are supported.") } // AORUS-VPN
+    public var userVPNImportMalformed: String { t("Ключ повреждён или заполнен не полностью.", "The key is malformed or incomplete.") } // AORUS-VPN
+    public var userVPNImportInsecure: String { t("Ссылка на подписку должна начинаться с https://.", "A subscription link has to start with https://.") } // AORUS-VPN
+
+    // MARK: User VLESS configurations — the configuration screen
+    public var userVPNSettingsTitle: String { t("Конфигурация", "Configuration") } // AORUS-VPN
+    public var userVPNNameHeader: String { t("НАЗВАНИЕ", "NAME") } // AORUS-VPN
+    public var userVPNNamePlaceholder: String { t("Название", "Name") } // AORUS-VPN
+    public var userVPNConnectionHeader: String { t("ПОДКЛЮЧЕНИЕ", "CONNECTION") } // AORUS-VPN
+    public var userVPNUdp: String { t("UDP-трафик", "UDP traffic") } // AORUS-VPN
+    public var userVPNCalls: String { t("Звонки через VPN", "Calls over VPN") } // AORUS-VPN
+    public var userVPNMux: String { t("Мультиплексирование", "Multiplexing") } // AORUS-VPN
+    public var userVPNConnectionFooter: String {
+        t(
+            "Звонки идут по UDP, поэтому им нужен UDP-трафик: выключите его — и звонки пойдут напрямую, минуя сервер. Мультиплексирование складывает соединения в одно: рукопожатий меньше, задержка выше.",
+            "Calls are UDP, so they need UDP traffic: turn it off and calls go direct instead, past the server. Multiplexing folds connections into one: fewer handshakes, higher latency."
+        )
+    } // AORUS-VPN
+    public var userVPNSubscriptionHeader: String { t("ПОДПИСКА", "SUBSCRIPTION") } // AORUS-VPN
+    public var userVPNAutoUpdate: String { t("Обновлять автоматически", "Update automatically") } // AORUS-VPN
+    public var userVPNUpdateNow: String { t("Обновить сейчас", "Update now") } // AORUS-VPN
+    public var userVPNUpdated: String { t("Список серверов обновлён", "Server list updated") } // AORUS-VPN
+    public var userVPNSource: String { t("Источник", "Source") } // AORUS-VPN
+    public var userVPNSourceCopied: String { t("Ссылка скопирована", "Link copied") } // AORUS-VPN
+    public var userVPNSubscriptionFooter: String { t("Нажмите на источник, чтобы скопировать ссылку.", "Tap the source to copy the link.") } // AORUS-VPN
+    public func userVPNSubscriptionFooterUpdated(_ value: String) -> String {
+        return t("Обновлено %@. Нажмите на источник, чтобы скопировать ссылку.", "Updated %@. Tap the source to copy the link.")
+            .replacingOccurrences(of: "%@", with: value)
+    } // AORUS-VPN
+    public var userVPNSelectionHeader: String { t("ВЫБОР СЕРВЕРА", "SERVER SELECTION") } // AORUS-VPN
+    public var userVPNAutoFastest: String { t("Выбирать самый быстрый", "Pick the fastest") } // AORUS-VPN
+    public var userVPNCheckServers: String { t("Проверить серверы", "Check servers") } // AORUS-VPN
+    public var userVPNProbingAction: String { t("Проверка…", "Checking…") } // AORUS-VPN
+    public var userVPNSelectionFooter: String {
+        t(
+            "Проверка измеряет время рукопожатия до каждого сервера. Свайп по серверу удаляет его из конфигурации.",
+            "Checking measures the handshake time to each server. Swipe a server to remove it from the configuration."
+        )
+    } // AORUS-VPN
+    public var userVPNTrafficHeader: String { t("ТРАФИК", "TRAFFIC") } // AORUS-VPN
+    public var userVPNExpiresTitle: String { t("Действует до", "Valid until") } // AORUS-VPN
+    public var userVPNCopyKey: String { t("Копировать ключ", "Copy key") } // AORUS-VPN
+    public var userVPNKeyCopied: String { t("Ключ скопирован", "Key copied") } // AORUS-VPN
+    public var userVPNDeleteConfig: String { t("Удалить конфигурацию", "Delete configuration") } // AORUS-VPN
+    public func userVPNDeleteConfirm(_ name: String) -> String {
+        return t("Удалить «%@»? Серверы этой конфигурации будут удалены вместе с ней.", "Delete “%@”? The servers of this configuration go with it.")
+            .replacingOccurrences(of: "%@", with: name)
+    } // AORUS-VPN
 
     // MARK: Messages section (tap gestures + local editing)
     public var messagesHeader: String { t("СООБЩЕНИЯ", "MESSAGES") }

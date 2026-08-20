@@ -28,28 +28,42 @@ public enum AorusConnectionIndicator: Equatable {
     case none
     case connecting
     case connected
+    /// The hybrid layer measured a working direct route, so the tunnel is not needed and is not
+    /// running. Nothing was turned off — the switch stays on and the tunnel comes up by itself the
+    /// moment direct stops working, which is why this reads as paused rather than as disconnected.
+    case suspended
 }
 
 /// Everything the block draws, in one comparable value so the list can diff it.
 public struct AorusConnectionSectionState: Equatable {
     public let bypassEnabled: Bool
     public let stableCallsEnabled: Bool
-    public let routeEstablished: Bool
+    public let routeMode: AorusRouteMode
 
-    public init(bypassEnabled: Bool, stableCallsEnabled: Bool, routeEstablished: Bool) {
+    public init(bypassEnabled: Bool, stableCallsEnabled: Bool, routeMode: AorusRouteMode) {
         self.bypassEnabled = bypassEnabled
         self.stableCallsEnabled = stableCallsEnabled
-        self.routeEstablished = routeEstablished
+        self.routeMode = routeMode
     }
 
-    /// A switch that is off has no status at all: there is nothing being connected. On and not
-    /// established covers both the direct probe and the endpoint race, which is right — from the
-    /// row's point of view they are one wait, and it ends when traffic has a route.
+    /// A switch that is off has no status at all: there is nothing being connected. On, the row
+    /// reports which of the three things the hybrid layer settled on.
     public var bypassIndicator: AorusConnectionIndicator {
         guard self.bypassEnabled else {
             return .none
         }
-        return self.routeEstablished ? .connected : .connecting
+        switch self.routeMode {
+        case .tunnel:
+            return .connected
+        case .direct:
+            // Telegram reaches its datacentres unaided. Carrying it through the tunnel anyway
+            // would be a second one, so the layer stood the tunnel down on purpose.
+            return .suspended
+        case .unknown, .escalating, .unavailable:
+            // The direct probe, the endpoint race and a ladder that ran out are one wait from the
+            // row's point of view, and it ends when traffic has a route.
+            return .connecting
+        }
     }
 }
 
@@ -65,7 +79,7 @@ public func aorusConnectionSectionState() -> Signal<AorusConnectionSectionState,
             subscriber.putNext(AorusConnectionSectionState(
                 bypassEnabled: AorusConnectionPreferences.shared.bypassEnabled,
                 stableCallsEnabled: AorusConnectionPreferences.shared.stableCallsEnabled,
-                routeEstablished: AorusHybridRoute.shared.isRouteEstablished
+                routeMode: AorusHybridRoute.shared.mode
             ))
         }
         emit()
@@ -99,6 +113,13 @@ public func aorusConnectionSectionState() -> Signal<AorusConnectionSectionState,
 /// evaluation already in flight is deduped, and with the switch off the first thing an
 /// evaluation does is stand the tunnel down.
 public func aorusConnectionSetBypassEnabled(_ value: Bool) {
+    // The other half of the exclusion, before the switch itself moves: two tunnels for one client
+    // is one too many, and the user's own VPN is the one that yields to the hybrid layer because
+    // this switch is what they just touched. Turning the user's lane off first means the two are
+    // never both live, not even for the length of a notification hop.
+    if value {
+        AorusUserVPNManager.shared.bypassDidTurnOn()
+    }
     AorusConnectionPreferences.shared.setBypassEnabled(value)
     AorusHybridRoute.shared.evaluate(reason: "user_bypass_toggle", force: true)
 }
@@ -109,7 +130,17 @@ public func aorusConnectionSetStableCallsEnabled(_ value: Bool) {
     AorusConnectionPreferences.shared.setStableCallsEnabled(value)
 }
 
-/// One of the two switches, with the status beside its title and the caption under it.
+/// One of the two switches, with the status glyph in the leading gutter and the status word under
+/// the title.
+///
+/// The glyph goes in the gutter rather than beside the title because that is the only slot that can
+/// be aligned with the title itself: a badge is centred on the whole row, which with a status line
+/// under the title puts it half a line low. `aorusIconAlignsWithTitle` is AorusGram's own defaulted
+/// parameter on the upstream item, and it centres the gutter glyph on the title.
+///
+/// Every row in the block passes an icon, `.none` included — the gutter is what sets the row's text
+/// inset, so reserving it in every state is what keeps the two titles lined up with each other
+/// while the status above them comes and goes.
 public func aorusConnectionSwitchItem(
     presentationData: ItemListPresentationData,
     title: String,
@@ -117,37 +148,24 @@ public func aorusConnectionSwitchItem(
     indicator: AorusConnectionIndicator,
     value: Bool,
     sectionId: ItemListSectionId,
+    enabled: Bool = true,
+    activatedWhileDisabled: @escaping () -> Void = {},
     updated: @escaping (Bool) -> Void
 ) -> ListViewItem {
-    let theme = presentationData.theme
-    var badge: AnyComponent<Empty>?
-    switch indicator {
-    case .none:
-        badge = nil
-    case .connecting:
-        badge = AnyComponent(AorusConnectionStatusComponent(
-            indicator: indicator,
-            spinnerColor: theme.list.itemSecondaryTextColor,
-            checkImage: nil
-        ))
-    case .connected:
-        badge = AnyComponent(AorusConnectionStatusComponent(
-            indicator: indicator,
-            spinnerColor: theme.list.itemSecondaryTextColor,
-            checkImage: PresentationResourcesItemList.checkIconImage(theme)
-        ))
-    }
     return ItemListSwitchItem(
         presentationData: presentationData,
         systemStyle: .glass,
+        icon: aorusConnectionIndicatorIcon(theme: presentationData.theme, indicator: indicator),
+        aorusIconAlignsWithTitle: true,
         title: title,
         text: statusText,
         textColor: .primary,
-        titleBadgeComponent: badge,
         value: value,
+        enabled: enabled,
         sectionId: sectionId,
         style: .blocks,
-        updated: updated
+        updated: updated,
+        activatedWhileDisabled: activatedWhileDisabled
     )
 }
 
@@ -211,7 +229,7 @@ public func aorusOpenConnectionSupportChat(context: AccountContext, navigationCo
     })
 }
 
-private func aorusConnectionLinkColor(theme: PresentationTheme) -> UIColor {
+func aorusConnectionLinkColor(theme: PresentationTheme) -> UIColor {
     let accent = theme.list.itemAccentColor
     // Interface 2.0 makes the list accent the page's ink — pure white on a dark pane, pure black
     // on a pale one. Both are answered from the colour itself rather than from the flag, because
@@ -222,114 +240,65 @@ private func aorusConnectionLinkColor(theme: PresentationTheme) -> UIColor {
     return accent
 }
 
-private let aorusConnectionStatusSize = CGSize(width: 22.0, height: 22.0)
+/// Matched to `generateItemListCheckIcon`, which is 12 x 10 with a 1.98 stroke: the three states
+/// have to read as one set, and one of them *is* that icon.
+private let aorusConnectionGlyphSize = CGSize(width: 12.0, height: 12.0)
+private let aorusConnectionGlyphLineWidth: CGFloat = 1.98
 
-/// The glyph beside "Режим без VPN": Telegram's own spinner while a route is being found, its own
-/// list checkmark once one is carrying traffic.
+/// Keys into the theme's own image cache, which is a dictionary and is taken under a lock, so the
+/// async list layout can generate and read these from any queue. The values are well past anything
+/// PresentationResourceKey can hold: it counts up from zero, case by case.
+private let aorusConnectionRingIconKey: Int32 = 0x41475001
+private let aorusConnectionCrossIconKey: Int32 = 0x41475002
+
+/// An empty gutter, so that a row with no status keeps the same text inset as one that has it.
+private let aorusConnectionEmptyGlyph: UIImage? = generateImage(
+    aorusConnectionGlyphSize,
+    rotatedContext: { size, context in
+        context.clear(CGRect(origin: CGPoint(), size: size))
+    }
+)
+
+/// The glyph in the row's leading gutter: Telegram's own list checkmark once a route is carrying
+/// traffic, a ring while one is being found, a cross while the tunnel is deliberately down.
 ///
-/// ItemListSwitchItem takes its badge as an AnyComponent and lays it out next to the title, which
-/// is the only slot in a switch row that is not the switch. Nothing here is drawn by hand — the
-/// spinner is the same ActivityIndicator the proxy list uses for a server it is dialling, and the
-/// checkmark is the same image it marks the active one with.
-private final class AorusConnectionStatusComponent: Component {
-    let indicator: AorusConnectionIndicator
-    let spinnerColor: UIColor
-    let checkImage: UIImage?
-
-    init(indicator: AorusConnectionIndicator, spinnerColor: UIColor, checkImage: UIImage?) {
-        self.indicator = indicator
-        self.spinnerColor = spinnerColor
-        self.checkImage = checkImage
-    }
-
-    static func == (lhs: AorusConnectionStatusComponent, rhs: AorusConnectionStatusComponent) -> Bool {
-        return lhs.indicator == rhs.indicator
-            && lhs.spinnerColor.isEqual(rhs.spinnerColor)
-            && lhs.checkImage === rhs.checkImage
-    }
-
-    final class View: UIView {
-        private var activityIndicator: ActivityIndicator?
-        private var checkView: UIImageView?
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) is not supported")
-        }
-
-        func update(indicator: AorusConnectionIndicator, spinnerColor: UIColor, checkImage: UIImage?) -> CGSize {
-            switch indicator {
-            case .connecting:
-                if let checkView = self.checkView {
-                    self.checkView = nil
-                    checkView.removeFromSuperview()
-                }
-                let activityIndicator: ActivityIndicator
-                if let current = self.activityIndicator {
-                    activityIndicator = current
-                    activityIndicator.type = .custom(spinnerColor, aorusConnectionStatusSize.width, 2.0, false)
-                } else {
-                    activityIndicator = ActivityIndicator(
-                        type: .custom(spinnerColor, aorusConnectionStatusSize.width, 2.0, false))
-                    self.activityIndicator = activityIndicator
-                    self.addSubview(activityIndicator.view)
-                }
-                activityIndicator.frame = CGRect(origin: CGPoint(), size: aorusConnectionStatusSize)
-                return aorusConnectionStatusSize
-            case .connected:
-                if let activityIndicator = self.activityIndicator {
-                    self.activityIndicator = nil
-                    activityIndicator.view.removeFromSuperview()
-                }
-                guard let checkImage = checkImage else {
-                    self.checkView?.removeFromSuperview()
-                    self.checkView = nil
-                    return CGSize()
-                }
-                let checkView: UIImageView
-                if let current = self.checkView {
-                    checkView = current
-                } else {
-                    checkView = UIImageView()
-                    self.checkView = checkView
-                    self.addSubview(checkView)
-                }
-                checkView.image = checkImage
-                checkView.frame = CGRect(origin: CGPoint(), size: checkImage.size)
-                return checkImage.size
-            case .none:
-                if let activityIndicator = self.activityIndicator {
-                    self.activityIndicator = nil
-                    activityIndicator.view.removeFromSuperview()
-                }
-                if let checkView = self.checkView {
-                    self.checkView = nil
-                    checkView.removeFromSuperview()
-                }
-                return CGSize()
-            }
-        }
-    }
-
-    func makeView() -> View {
-        return View(frame: CGRect())
-    }
-
-    func update(
-        view: View,
-        availableSize: CGSize,
-        state: EmptyComponentState,
-        environment: Environment<Empty>,
-        transition: ComponentTransition
-    ) -> CGSize {
-        return view.update(
-            indicator: self.indicator,
-            spinnerColor: self.spinnerColor,
-            checkImage: self.checkImage
-        )
+/// All three are in the secondary text colour, the checkmark included — this is a status, not a
+/// selection, and under Interface 2.0 the list accent is the pane's own ink, which would draw the
+/// checkmark in the same white as the title beside it.
+private func aorusConnectionIndicatorIcon(
+    theme: PresentationTheme,
+    indicator: AorusConnectionIndicator
+) -> UIImage? {
+    switch indicator {
+    case .none:
+        return aorusConnectionEmptyGlyph
+    case .connecting:
+        return theme.image(aorusConnectionRingIconKey, { theme in
+            return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
+                context.setLineWidth(aorusConnectionGlyphLineWidth)
+                let inset = aorusConnectionGlyphLineWidth / 2.0
+                context.strokeEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: inset, dy: inset))
+            })
+        })
+    case .connected:
+        return PresentationResourcesItemList.secondaryCheckIconImage(theme)
+    case .suspended:
+        return theme.image(aorusConnectionCrossIconKey, { theme in
+            return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
+                context.setLineWidth(aorusConnectionGlyphLineWidth)
+                context.setLineCap(.round)
+                // Inset by the round cap's own radius, so the cross ends where the box does.
+                let inset = aorusConnectionGlyphLineWidth / 2.0 + 0.5
+                context.move(to: CGPoint(x: inset, y: inset))
+                context.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
+                context.move(to: CGPoint(x: size.width - inset, y: inset))
+                context.addLine(to: CGPoint(x: inset, y: size.height - inset))
+                context.strokePath()
+            })
+        })
     }
 }

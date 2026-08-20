@@ -2,7 +2,7 @@ import Foundation
 import Network
 
 /// Which route this process has decided to carry MTProto over.
-public enum AorusRouteMode: String {
+public enum AorusRouteMode: String, Equatable {
     /// Nothing has been measured yet in this process.
     case unknown
     /// Telegram reaches its datacentres without help, so the core stays down and whatever

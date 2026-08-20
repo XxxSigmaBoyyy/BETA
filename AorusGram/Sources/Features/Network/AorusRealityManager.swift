@@ -184,6 +184,13 @@ public final class AorusRealityManager {
     private var restartRetryGeneration: UInt64 = 0
     private var restartRetryAttempt = 0
     private var didResetDiagnosticTraceForProcess = false
+    /// The user-imported VLESS lane's own state. It shares the Xray core with the signed lane —
+    /// there is one core in this process — but nothing else, so it keeps its own port, its own
+    /// idea of what is selected, and its own retry backoff.
+    private var userLanePort: Int?
+    private var userLaneServerId: String?
+    private var userLaneRetryWorkItem: DispatchWorkItem?
+    private var userLaneRetryAttempt = 0
 
     private let coreStartTimeout: TimeInterval = 3.0
     /// Preflight budgets, split because one figure cannot do both jobs. Eight seconds spent
@@ -243,6 +250,13 @@ public final class AorusRealityManager {
     }
 
     public func ensureRunning() {
+        if userLaneOwnsCore {
+            // The watchdog is still worth running, just against the other lane: a core that died
+            // under the user's own configuration needs bringing back exactly as much as one that
+            // died under a signed profile.
+            userLaneStart(reason: "watchdog")
+            return
+        }
         publishTunnelRequirement()
         guard AorusHybridRoute.shared.allowsTunnelBringUp else {
             standDownForDirectRoute()
@@ -296,6 +310,20 @@ public final class AorusRealityManager {
         publishTunnelRequirement()
         queue.async { [weak self] in
             guard let self else { return }
+            // The user's own configuration is on the core. Bank the signed profile so switching
+            // back later does not wait for another provisioning round trip, and start nothing —
+            // the same hold as the direct-route case further down, for a different owner.
+            if self.userLaneOwnsCore {
+                if profile.isValid(for: DeviceFingerprint.deviceHash()) {
+                    self.profile = profile
+                    self.rankedEndpoints = rankedEndpoints.filter { endpoint in
+                        endpoint.isValid && profile.validEndpoints.contains(endpoint)
+                    }
+                }
+                self.recordDiagnostic(stage: "core_held_for_user_vpn")
+                self.cancelRestartRetryLocked(resetAttempt: true)
+                return
+            }
             guard self.authorizationAllowsTunnel,
                   profile.isValid(for: DeviceFingerprint.deviceHash()) else {
                 self.recordDiagnostic(stage: "profile_rejected", errorCode: "profile_validation_failed")
@@ -372,6 +400,10 @@ public final class AorusRealityManager {
     }
 
     public func licenseDidLock() {
+        // A configuration the user pasted is their own key on their own server, and owes nothing
+        // to a subscription. Standing it down here would also strand MTProto: it is pointed at
+        // our inbound, and the closed port is what it falls back to.
+        if userLaneOwnsCore { return }
         // This method is also used when provisioning fails. Reconcile against the actual
         // license state, and release Telegram either way: the requirement follows the route
         // that exists, and after this call there is none. A still-subscribed account whose
@@ -431,6 +463,9 @@ public final class AorusRealityManager {
     /// short-lived and already verified, and a network change that puts the user back behind a
     /// block should not have to wait for another provisioning round trip.
     func standDownForDirectRoute() {
+        // The hybrid decision is about the signed lane's tunnel. The user asked for theirs
+        // explicitly, so "direct works" is not a reason to take it away.
+        if userLaneOwnsCore { return }
         publishTunnelRequirement()
         queue.async { [weak self] in
             guard let self else { return }
@@ -449,8 +484,19 @@ public final class AorusRealityManager {
         publishTunnelRequirement()
     }
 
+    /// True while the user's own imported configuration is the thing carrying traffic.
+    ///
+    /// Derived from the store on every read rather than remembered in a flag. The two lanes are
+    /// started from different places — one from the bootstrap, one from a route decision that can
+    /// fire before the first screen exists — and an in-memory flag would be wrong for exactly as
+    /// long as it took to be set. This reads the same value the MTProto override and the call
+    /// transport read out of the shared defaults, so all three agree by construction.
+    private var userLaneOwnsCore: Bool {
+        return AorusUserVPNStore.shared.isActive
+    }
+
     private var mayRun: Bool {
-        guard authorizationAllowsTunnel, let profile else { return false }
+        guard !userLaneOwnsCore, authorizationAllowsTunnel, let profile else { return false }
         return profile.isValid(for: DeviceFingerprint.deviceHash())
     }
 
@@ -659,6 +705,16 @@ public final class AorusRealityManager {
 
     private func stopLocked(clearProfile: Bool) {
         if transitionInProgress { return }
+        if userLaneOwnsCore {
+            // The core belongs to the user's own configuration. Stopping it here would take the
+            // only path MTProto has with it, and the signed lane has nothing running to stop
+            // anyway. The profile is kept banked rather than cleared: it is what the connection
+            // falls back to the moment the user turns their VPN off.
+            cancelRestartRetryLocked(resetAttempt: true)
+            activePort = nil
+            activeEndpoint = nil
+            return
+        }
         cancelRestartRetryLocked(resetAttempt: true)
         transitionInProgress = true
         defer { transitionInProgress = false }
@@ -1059,6 +1115,10 @@ public final class AorusRealityManager {
     /// route decision rather than the license: being entitled to a tunnel is not the same as
     /// having one, and only a proven local inbound may redirect MTProto.
     private func publishTunnelRequirement() {
+        // While the user's own configuration is carrying traffic, the route decision has no
+        // opinion worth publishing: it knows nothing about that tunnel, so its verdict would
+        // read as "no tunnel needed" and send MTProto around the only inbound it has.
+        if userLaneOwnsCore { return }
         publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)
     }
 
@@ -1146,5 +1206,221 @@ public final class AorusRealityManager {
         diagnosticLock.lock()
         UserDefaults.standard.removeObject(forKey: Self.diagnosticTraceKey)
         diagnosticLock.unlock()
+    }
+}
+
+// MARK: - The user's own VLESS configuration
+
+/// The second lane. Same core, same loopback inbound, same published endpoint — and none of the
+/// signed lane's machinery, because none of it applies: there is no profile to validate against
+/// a device hash, no endpoint ranking to defend, and no subscription that can lock.
+///
+/// It is still app-scoped in exactly the way the signed lane is. Nothing here installs a system
+/// tunnel: the core binds a SOCKS inbound on 127.0.0.1, and the only things pointed at it are
+/// this client's own MTProto connection and its own call media. Every other app on the device,
+/// and every other part of the system, is untouched.
+extension AorusRealityManager {
+    /// Whether this process is carrying the user's own configuration right now.
+    ///
+    /// Read by the settings row that reports "подключено" against "соединение", and answered from
+    /// the two facts the transports themselves read — the lane is active, and this process has
+    /// published a live endpoint — rather than from `userLanePort`. That one lives on the serial
+    /// queue, and a synchronous getter for the interface must not have to wait behind a core
+    /// restart to return a boolean.
+    public var userLaneIsServing: Bool {
+        guard AorusUserVPNStore.shared.isActive else { return false }
+        return endpointForCurrentProcess() != nil
+    }
+
+    /// Bring the user's selected server up, or confirm the one already running.
+    func userLaneStart(reason: String) {
+        guard AorusUserVPNStore.shared.isActive else {
+            userLaneStop(reason: reason)
+            return
+        }
+        // Taken before the core is even asked to start. Between here and a proven inbound,
+        // Telegram is pointed at a port nothing is listening on, which is the whole point: a
+        // window where MTProto quietly goes direct is a window where the user believes they are
+        // on their VPN and are not.
+        let userLaneRequired = true
+        publishRequirement(required: userLaneRequired)
+        queue.async { [weak self] in
+            self?.userLaneBringUpLocked(reason: reason)
+        }
+    }
+
+    /// Tear the user's lane down and hand the connection back to whatever the switches say.
+    func userLaneStop(reason: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard self.userLanePort != nil || self.userLaneServerId != nil else {
+                self.cancelUserLaneRetryLocked(resetAttempt: true)
+                return
+            }
+            self.recordDiagnostic(stage: "user_core_stopping", detail: reason)
+            self.userLaneTearDownLocked()
+        }
+    }
+
+    private func userLaneBringUpLocked(reason: String) {
+        guard !transitionInProgress else { return }
+        guard AorusUserVPNStore.shared.isEnabled,
+              let server = AorusUserVPNStore.shared.selectedServer else {
+            userLaneTearDownLocked()
+            return
+        }
+        let settings = AorusUserVPNStore.shared.selectedConfig
+
+        // Already serving this exact server through a live inbound. A watchdog tick must not
+        // interrupt a call to prove something it can check in a few milliseconds.
+        if self.userLaneServerId == server.id,
+           let port = self.userLanePort,
+           self.isCoreRunning(),
+           self.localSocksIsReady(port: port, timeout: self.localSocksMaxProbeTimeout) {
+            self.cancelUserLaneRetryLocked(resetAttempt: true)
+            self.userLanePublishEndpointLocked(port: port)
+            return
+        }
+
+        transitionInProgress = true
+        defer { transitionInProgress = false }
+
+        recordDiagnostic(stage: "user_core_starting", detail: reason)
+        _ = invoke(method: "stopXray")
+        waitForCoreStop()
+        userLanePort = nil
+        userLaneServerId = nil
+        // Whatever the signed lane thought it was serving died with that core.
+        activePort = nil
+        activeEndpoint = nil
+
+        for port in Self.candidatePorts {
+            guard AorusUserVPNStore.shared.isActive else { break }
+            guard localPortIsAvailable(port) else { continue }
+            guard let json = AorusVlessLink.xrayConfiguration(
+                server: server,
+                localPort: port,
+                udpEnabled: settings?.udpEnabled ?? true,
+                muxEnabled: settings?.muxEnabled ?? false
+            ) else {
+                recordDiagnostic(stage: "user_config_invalid", errorCode: "config_build_failed")
+                break
+            }
+            let response = invoke(method: "runXrayFromJson", payload: ["configJSON": json])
+            guard response?.success == true else {
+                recordDiagnostic(
+                    stage: "user_core_start_failed",
+                    errorCode: response?.error ?? "core_rejected_config",
+                    localPort: port
+                )
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                continue
+            }
+            guard waitForCoreAndLocalSocks(port: port, endpointPriority: 0) else {
+                recordDiagnostic(stage: "user_local_socks_timeout", errorCode: "local_socks_unavailable", localPort: port)
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                continue
+            }
+            // The inbound answering only proves the core bound a socket. This proves the
+            // credential, the transport and the server all work end to end, before anything is
+            // told to send its traffic there.
+            let preflight = self.realityPreflight(
+                port: port,
+                endpointPriority: nil,
+                timeout: self.preflightPatientTimeout
+            )
+            guard preflight == .ready else {
+                recordDiagnostic(
+                    stage: "user_preflight_failed",
+                    errorCode: preflight.diagnosticCode,
+                    localSocksReady: preflight.localSocksReady,
+                    localPort: port
+                )
+                _ = invoke(method: "stopXray")
+                waitForCoreStop()
+                continue
+            }
+            userLanePort = port
+            userLaneServerId = server.id
+            cancelUserLaneRetryLocked(resetAttempt: true)
+            recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
+            userLanePublishEndpointLocked(port: port)
+            return
+        }
+
+        recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
+        // Released rather than left fail-closed. A key that has expired, a server that has been
+        // taken down, a paste that was subtly wrong — all of them look identical from here, and
+        // all of them would otherwise leave the client with no route at all and no way to reach
+        // the screen that fixes it. The retry below keeps trying in the background, and the row
+        // shows the failure.
+        userLaneReleaseTelegramLocked()
+        scheduleUserLaneRetryLocked()
+    }
+
+    private func userLaneTearDownLocked() {
+        cancelUserLaneRetryLocked(resetAttempt: true)
+        if userLanePort != nil || isCoreRunning() {
+            _ = invoke(method: "stopXray")
+            waitForCoreStop()
+        }
+        userLanePort = nil
+        userLaneServerId = nil
+        activePort = nil
+        activeEndpoint = nil
+        userLaneReleaseTelegramLocked()
+    }
+
+    /// Point Telegram back at whatever the rest of the client believes.
+    ///
+    /// The requirement is read from the hybrid route rather than hardcoded off: if the user has
+    /// their VPN off and the no-VPN mode on, the signed tunnel may be the thing carrying traffic
+    /// a moment from now, and publishing a flat "not required" would tear that down too.
+    private func userLaneReleaseTelegramLocked() {
+        clearEndpoint(postUpdate: false)
+        let inheritedRequirement = AorusHybridRoute.shared.tunnelIsRequired
+        publishRequirement(required: inheritedRequirement)
+    }
+
+    private func userLanePublishEndpointLocked(port: Int) {
+        guard AorusUserVPNStore.shared.isActive, (1 ... 65_535).contains(port),
+              let store = UserDefaults(suiteName: Self.suiteName) else {
+            userLaneReleaseTelegramLocked()
+            return
+        }
+        store.set([
+            "pid": Int(ProcessInfo.processInfo.processIdentifier),
+            "port": port,
+            "updatedAt": Date().timeIntervalSince1970
+        ], forKey: Self.endpointKey)
+        // Strictly after the port is on disk, and last, because publishing the requirement is
+        // what wakes the observers that go looking for it.
+        let userLaneRequired = true
+        publishRequirement(required: userLaneRequired)
+    }
+
+    private func scheduleUserLaneRetryLocked() {
+        guard AorusUserVPNStore.shared.isActive else { return }
+        userLaneRetryWorkItem?.cancel()
+        let delayIndex = min(userLaneRetryAttempt, restartRetryDelays.count - 1)
+        let delay = restartRetryDelays[delayIndex]
+        userLaneRetryAttempt += 1
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.userLaneRetryWorkItem = nil
+            self.userLaneBringUpLocked(reason: "retry")
+        }
+        userLaneRetryWorkItem = work
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelUserLaneRetryLocked(resetAttempt: Bool) {
+        userLaneRetryWorkItem?.cancel()
+        userLaneRetryWorkItem = nil
+        if resetAttempt {
+            userLaneRetryAttempt = 0
+        }
     }
 }
