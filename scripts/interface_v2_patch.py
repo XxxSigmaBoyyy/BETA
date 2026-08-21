@@ -4849,16 +4849,23 @@ _PROXY_ORDER_SWIFT = '''    /// Ordering by one number per case instead of a swi
 
 
 def _patch_switch_item_leading_icon(tg: Path) -> None:
-    """A leading glyph that lines up with the title rather than with the two-line block.
+    """A leading glyph that lines up with the title rather than with the two-line block, and turns.
 
     Upstream centres a switch row's icon on the whole content block: with a status line present its
     centre lands on the gap between title and status, which is right for a settings glyph that
     stands for the row, and wrong for a *status* glyph that stands for the title beside it -- it
     reads as crooked, roughly half the status line's height low.
 
-    So this is opt-in and nothing else moves: a defaulted parameter, false everywhere it is not
-    asked for, and the only branch it adds is the one it asks for. Rows without a status line are
-    untouched either way, since with `text == nil` upstream already centres on the row.
+    The second half is the turning. A row whose status is "connecting" needs the same indefinite
+    spinner the rest of Telegram uses, and the row already has an icon slot in exactly the right
+    place; giving that slot Telegram's own rotation is a great deal less invasive than threading an
+    `ActivityIndicator` subnode through the item's layout. The animation is upstream's to the
+    parameter: `transform.rotation.z` from 0 to 2*pi, half a second, linear, forever.
+
+    So both halves are opt-in and nothing else moves: two defaulted parameters, false everywhere
+    they are not asked for, and the only branches they add are the ones they ask for. Rows without a
+    status line are untouched either way, since with `text == nil` upstream already centres on the
+    row.
     """
     path = tg / "submodules/ItemListUI/Sources/Items/ItemListSwitchItem.swift"
     text = _read(path, "ItemListSwitchItem.swift")
@@ -4873,13 +4880,15 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "    let icon: UIImage?\n"
         "    // AorusGram: put `icon` on the title's line instead of the content block's centre.\n"
         "    let aorusIconAlignsWithTitle: Bool\n"
+        "    // AorusGram: turn `icon` the way an indefinite activity indicator turns.\n"
+        "    let aorusIconSpins: Bool\n"
         "    let title: String\n",
         "switch item icon alignment property",
     )
     text = _replace_once(
         text,
         "icon: UIImage? = nil, title: String,",
-        "icon: UIImage? = nil, aorusIconAlignsWithTitle: Bool = false, title: String,",
+        "icon: UIImage? = nil, aorusIconAlignsWithTitle: Bool = false, aorusIconSpins: Bool = false, title: String,",
         "switch item icon alignment parameter",
     )
     text = _replace_once(
@@ -4888,6 +4897,7 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "        self.title = title\n",
         "        self.icon = icon\n"
         "        self.aorusIconAlignsWithTitle = aorusIconAlignsWithTitle\n"
+        "        self.aorusIconSpins = aorusIconSpins\n"
         "        self.title = title\n",
         "switch item icon alignment assignment",
     )
@@ -4907,6 +4917,31 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "                            iconY = max(0.0, floor(topInset + 1.0 + (titleLayout.size.height - icon.size.height) / 2.0))\n"
         "                        } else {\n",
         "switch item icon alignment layout",
+    )
+    # Added after the frame is set, so the layer has its bounds before it is asked to turn about
+    # their centre. Re-adding an identical animation would restart it from zero on every layout
+    # pass, which for a row that reloads on each state signal is a visible stutter -- hence the
+    # check for one that is already running.
+    text = _replace_once(
+        text,
+        "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
+        "                    } else if strongSelf.iconNode.supernode != nil {\n",
+        "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
+        "                        if item.aorusIconSpins {\n"
+        "                            if strongSelf.iconNode.layer.animation(forKey: \"aorusIconRotation\") == nil {\n"
+        "                                let rotation = CABasicAnimation(keyPath: \"transform.rotation.z\")\n"
+        "                                rotation.fromValue = NSNumber(value: Float(0.0))\n"
+        "                                rotation.toValue = NSNumber(value: Float.pi * 2.0)\n"
+        "                                rotation.duration = 0.5\n"
+        "                                rotation.timingFunction = CAMediaTimingFunction(name: CAMediaTimingFunctionName.linear)\n"
+        "                                rotation.repeatCount = Float.infinity\n"
+        "                                strongSelf.iconNode.layer.add(rotation, forKey: \"aorusIconRotation\")\n"
+        "                            }\n"
+        "                        } else {\n"
+        "                            strongSelf.iconNode.layer.removeAnimation(forKey: \"aorusIconRotation\")\n"
+        "                        }\n"
+        "                    } else if strongSelf.iconNode.supernode != nil {\n",
+        "switch item icon rotation",
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: switch item leading icon aligned with title")

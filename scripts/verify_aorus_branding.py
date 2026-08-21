@@ -3192,10 +3192,13 @@ def main() -> None:
                 "AorusConnectionPreferences.shared.bypassEnabled",
                 'AorusHybridRoute.shared.evaluate(reason: "user_bypass_toggle", force: true)',
                 # The indicator sits in the row's leading gutter, aligned with the title rather than
-                # centred on the whole row, and its "carrying traffic" state is Telegram's own list
-                # check -- so the row reads as a native one at every stage.
+                # centred on the whole row, and while a route is being found it turns the way
+                # Telegram's own indefinite indicator does -- so the row reads as a native one at
+                # every stage. Drawn into a bitmap, not an SF Symbol: the icon ends up as a layer's
+                # contents, where a symbol's tint is lost and it renders black.
                 "aorusIconAlignsWithTitle: true",
-                "PresentationResourcesItemList.secondaryCheckIconImage(theme)",
+                "aorusIconSpins: indicator == .connecting",
+                "let cutoutAngle: CGFloat = CGFloat.pi * 30.0 / 180.0",
                 # Direct working means the tunnel was stood down on purpose, and the row has to say
                 # so: a cross and "приостановлен", not a check and not a spinner that never ends.
                 "case .suspended:",

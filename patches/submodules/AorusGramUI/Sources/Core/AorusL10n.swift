@@ -455,6 +455,10 @@ public struct AorusL10n {
     public var connectionConnecting: String { t("соединение", "connecting") } // AORUS-CONN
     public var connectionConnected: String { t("подключено", "connected") } // AORUS-CONN
     public var connectionSuspended: String { t("приостановлен", "suspended") } // AORUS-CONN
+    // Not "приостановлен": nothing stood the user's own lane down, its servers simply did not
+    // answer. The row said "соединение" for as long as the switch was on, which after a whole
+    // subscription has failed describes nothing at all.
+    public var connectionUnreachable: String { t("нет соединения", "no connection") } // AORUS-CONN
     public var connectionSupportLink: String { t("напишите в поддержку", "contact support") } // AORUS-CONN
     // One string with the link inside it, because that is how the sentence reads; the block finds
     // the link by searching for connectionSupportLink in it.

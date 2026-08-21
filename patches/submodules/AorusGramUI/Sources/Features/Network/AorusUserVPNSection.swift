@@ -29,6 +29,9 @@ public struct AorusUserVPNSectionState: Equatable {
     /// This process is carrying the user's configuration right now -- the lane is on and an
     /// endpoint has been published for it.
     public let serving: Bool
+    /// Every server the lane could dial has refused to come up. Distinct from "not serving yet":
+    /// one is a connection being made, the other is one that will not be.
+    public let unreachable: Bool
     public let configs: [AorusVlessConfig]
     public let selectedServerId: String?
     public let updatingConfigIds: Set<String>
@@ -38,6 +41,7 @@ public struct AorusUserVPNSectionState: Equatable {
     public init(
         enabled: Bool,
         serving: Bool,
+        unreachable: Bool,
         configs: [AorusVlessConfig],
         selectedServerId: String?,
         updatingConfigIds: Set<String>,
@@ -46,6 +50,7 @@ public struct AorusUserVPNSectionState: Equatable {
     ) {
         self.enabled = enabled
         self.serving = serving
+        self.unreachable = unreachable
         self.configs = configs
         self.selectedServerId = selectedServerId
         self.updatingConfigIds = updatingConfigIds
@@ -53,14 +58,17 @@ public struct AorusUserVPNSectionState: Equatable {
         self.latencies = latencies
     }
 
-    /// The glyph beside "Использовать VPN". There is no suspended state here: the hybrid layer's
-    /// direct-route decision is about *its* tunnel, and a VPN the user turned on themselves is
-    /// never stood down behind their back.
+    /// The glyph beside "Использовать VPN". A VPN the user turned on themselves is never stood down
+    /// behind their back, so the cross here is not the hybrid layer's "suspended" -- it is every
+    /// server having been tried and none of them answering.
     public var indicator: AorusConnectionIndicator {
         guard self.enabled else {
             return .none
         }
-        return self.serving ? .connected : .connecting
+        if self.serving {
+            return .connected
+        }
+        return self.unreachable ? .suspended : .connecting
     }
 
     /// Whether the switch has anything to point at. A configuration whose servers all failed to
@@ -88,6 +96,10 @@ public struct AorusUserVPNSectionState: Equatable {
 /// the tunnel rather than by anything the user did.
 public func aorusUserVPNSectionState() -> Signal<AorusUserVPNSectionState, NoError> {
     return Signal { subscriber in
+        // Measuring starts when the block does. The servers' handshakes are what "Лучший сервер"
+        // and the fastest-server choice are made of, and this screen is the only place that lists
+        // them, so nowhere else would ever ask.
+        AorusUserVPNManager.shared.measureVisibleServers()
         let emit: () -> Void = {
             subscriber.putNext(aorusUserVPNSnapshot())
         }
@@ -136,6 +148,7 @@ private func aorusUserVPNSnapshot() -> AorusUserVPNSectionState {
     return AorusUserVPNSectionState(
         enabled: store.isEnabled,
         serving: AorusRealityManager.shared.userLaneIsServing,
+        unreachable: AorusRealityManager.shared.userLaneIsUnreachable,
         configs: configs,
         selectedServerId: store.selectedServerId,
         updatingConfigIds: updating,
@@ -230,7 +243,7 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
     case .connected:
         status = l10n.connectionConnected
     case .suspended:
-        status = l10n.connectionSuspended
+        status = l10n.connectionUnreachable
     }
     rows.append(.use(
         title: l10n.userVPNUse,
@@ -428,7 +441,7 @@ func aorusUserVPNServerDetail(
     if best {
         parts.append(l10n.userVPNBestServer)
     }
-    parts.append(server.summary)
+    parts.append(server.transportSummary)
     if probing {
         parts.append(l10n.userVPNProbing)
     } else if let latency = latency, latency > 0.0 {
@@ -460,11 +473,13 @@ func aorusUserVPNByteText(_ value: Int64) -> String {
 }
 
 func aorusUserVPNDateTimeText(_ timestamp: TimeInterval) -> String {
-    return DateFormatter.localizedString(
-        from: Date(timeIntervalSince1970: timestamp),
-        dateStyle: .short,
-        timeStyle: .short
-    )
+    let date = Date(timeIntervalSince1970: timestamp)
+    // A subscription refreshed today only needs the time. With the date as well the card's second
+    // line runs past the row and truncates mid-number, which reads as a bug rather than as detail.
+    if Calendar.current.isDateInToday(date) {
+        return DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+    }
+    return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .none)
 }
 
 func aorusUserVPNDateText(_ timestamp: TimeInterval) -> String {

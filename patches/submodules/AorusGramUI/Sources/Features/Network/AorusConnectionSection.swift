@@ -157,6 +157,7 @@ public func aorusConnectionSwitchItem(
         systemStyle: .glass,
         icon: aorusConnectionIndicatorIcon(theme: presentationData.theme, indicator: indicator),
         aorusIconAlignsWithTitle: true,
+        aorusIconSpins: indicator == .connecting,
         title: title,
         text: statusText,
         textColor: .primary,
@@ -240,16 +241,20 @@ func aorusConnectionLinkColor(theme: PresentationTheme) -> UIColor {
     return accent
 }
 
-/// Matched to `generateItemListCheckIcon`, which is 12 x 10 with a 1.98 stroke: the three states
-/// have to read as one set, and one of them *is* that icon.
-private let aorusConnectionGlyphSize = CGSize(width: 12.0, height: 12.0)
-private let aorusConnectionGlyphLineWidth: CGFloat = 1.98
+/// Sized from Telegram's own indefinite activity indicator, which is 22 points across with a 2 point
+/// stroke -- one step down, which is what fits on a list row's title line. All three states share
+/// the box and the stroke so they read as one control rather than three unrelated marks, and none of
+/// them is a 12-point selection tick any more: this is the row's status, and at 12 points it was
+/// half the height of the word beside it.
+private let aorusConnectionGlyphSize = CGSize(width: 20.0, height: 20.0)
+private let aorusConnectionGlyphLineWidth: CGFloat = 2.0
 
 /// Keys into the theme's own image cache, which is a dictionary and is taken under a lock, so the
 /// async list layout can generate and read these from any queue. The values are well past anything
 /// PresentationResourceKey can hold: it counts up from zero, case by case.
-private let aorusConnectionNetworkIconKey: Int32 = 0x41475001
+private let aorusConnectionSpinnerIconKey: Int32 = 0x41475001
 private let aorusConnectionCrossIconKey: Int32 = 0x41475002
+private let aorusConnectionCheckIconKey: Int32 = 0x41475003
 
 /// An empty gutter, so that a row with no status keeps the same text inset as one that has it.
 private let aorusConnectionEmptyGlyph: UIImage? = generateImage(
@@ -260,10 +265,16 @@ private let aorusConnectionEmptyGlyph: UIImage? = generateImage(
 )
 
 /// The glyph in the row's leading gutter: Telegram's own list checkmark once a route is carrying
-/// traffic, the system network glyph while one is being found, and a cross while the tunnel is
+/// traffic, its own indefinite spinner while one is being found, and a cross while the tunnel is
 /// deliberately down.
 ///
-/// All three are in the secondary text colour, the checkmark included — this is a status, not a
+/// Every one of them is drawn here into a bitmap rather than asked of UIKit. `ItemListSwitchItem`
+/// keeps its icon in an `ASImageNode` with `isLayerBacked = true`, so the image ends up as a layer's
+/// `contents`; an SF Symbol tinted with `withTintColor(_, renderingMode: .alwaysOriginal)` is only
+/// coloured when UIKit draws it into a view, and on the layer path it arrives untinted and renders
+/// **black**. Drawn pixels have their colour in them already.
+///
+/// All three are in the secondary text colour, the checkmark included -- this is a status, not a
 /// selection, and under Interface 2.0 the list accent is the pane's own ink, which would draw the
 /// checkmark in the same white as the title beside it.
 private func aorusConnectionIndicatorIcon(
@@ -274,15 +285,48 @@ private func aorusConnectionIndicatorIcon(
     case .none:
         return aorusConnectionEmptyGlyph
     case .connecting:
-        return theme.image(aorusConnectionNetworkIconKey, { theme in
-            let configuration = UIImage.SymbolConfiguration(pointSize: 12.0, weight: .semibold)
-            return UIImage(systemName: "network", withConfiguration: configuration)?.withTintColor(
-                theme.list.itemSecondaryTextColor,
-                renderingMode: .alwaysOriginal
-            )
+        return theme.image(aorusConnectionSpinnerIconKey, { theme in
+            return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
+                context.setLineWidth(aorusConnectionGlyphLineWidth)
+                context.setLineCap(.round)
+                // Telegram's own indefinite indicator to the degree: a ring with a 30 degree bite
+                // taken out of it. The turning is the switch row's job -- see `aorusIconSpins`.
+                let cutoutAngle: CGFloat = CGFloat.pi * 30.0 / 180.0
+                context.addArc(
+                    center: CGPoint(x: size.width / 2.0, y: size.height / 2.0),
+                    radius: size.width / 2.0 - aorusConnectionGlyphLineWidth / 2.0,
+                    startAngle: 0.0,
+                    endAngle: CGFloat.pi * 2.0 - cutoutAngle,
+                    clockwise: false
+                )
+                context.strokePath()
+            })
         })
     case .connected:
-        return PresentationResourcesItemList.secondaryCheckIconImage(theme)
+        return theme.image(aorusConnectionCheckIconKey, { theme in
+            return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
+                context.setLineWidth(aorusConnectionGlyphLineWidth)
+                context.setLineCap(.round)
+                context.setLineJoin(.round)
+                // `generateItemListCheckIcon`'s own two segments, in its own 12 x 10 box, scaled up
+                // into this one and centred: the tick keeps Telegram's proportions at the larger
+                // size instead of being a different tick that merely sits in the same place.
+                let scale: CGFloat = 1.35
+                let originX = (size.width - 12.0 * scale) / 2.0
+                let originY = (size.height - 10.0 * scale) / 2.0
+                let point: (CGFloat, CGFloat) -> CGPoint = { x, y in
+                    return CGPoint(x: originX + x * scale, y: originY + y * scale)
+                }
+                context.move(to: point(0.215053763, 4.36080467))
+                context.addLine(to: point(3.31621263, 7.70466293))
+                context.addLine(to: point(9.89247312, 0.0))
+                context.strokePath()
+            })
+        })
     case .suspended:
         return theme.image(aorusConnectionCrossIconKey, { theme in
             return generateImage(aorusConnectionGlyphSize, rotatedContext: { size, context in
@@ -290,8 +334,9 @@ private func aorusConnectionIndicatorIcon(
                 context.setStrokeColor(theme.list.itemSecondaryTextColor.cgColor)
                 context.setLineWidth(aorusConnectionGlyphLineWidth)
                 context.setLineCap(.round)
-                // Inset by the round cap's own radius, so the cross ends where the box does.
-                let inset = aorusConnectionGlyphLineWidth / 2.0 + 0.5
+                // Spanning the tick's width rather than the whole box, so the three glyphs carry
+                // the same weight; the round caps end where that span does.
+                let inset = (size.width - 12.0 * 1.35) / 2.0 + aorusConnectionGlyphLineWidth / 2.0
                 context.move(to: CGPoint(x: inset, y: inset))
                 context.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
                 context.move(to: CGPoint(x: size.width - inset, y: inset))

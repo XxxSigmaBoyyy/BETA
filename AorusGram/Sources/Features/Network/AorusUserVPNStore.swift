@@ -232,7 +232,19 @@ public final class AorusUserVPNStore {
         self.update { stored in
             stored.enabled = value
             if value, Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
-                stored.selectedServerId = stored.configs.first?.servers.first?.id
+                // The lowest measured handshake across everything imported, and the first row only
+                // when nothing has ever been measured. Turning the switch on used to pin the very
+                // first server of the very first configuration, which in a twelve-server
+                // subscription is a coin toss that stays flipped: with that one down, the retry
+                // loop dials it and nothing else. Reading `latencies` here rather than through
+                // `bestMeasuredServerId` is deliberate -- `update` is already holding the lock that
+                // guards it, and NSLock is not recursive.
+                let candidates = stored.configs.flatMap { $0.servers }
+                let measured = candidates.compactMap { server -> (String, Double)? in
+                    guard let value = self.latencies[server.id], value > 0.0 else { return nil }
+                    return (server.id, value)
+                }
+                stored.selectedServerId = measured.min(by: { $0.1 < $1.1 })?.0 ?? candidates.first?.id
             }
         }
     }
@@ -427,6 +439,40 @@ public final class AorusUserVPNStore {
             return best.0
         }
         return config.servers.first?.id
+    }
+
+    /// The next server worth dialling once the selected one has refused to come up.
+    ///
+    /// Best measured first, then whatever has not been measured, and the configuration holding the
+    /// current selection before any other: a subscription is a set of routes to the same place, and
+    /// jumping to a different subscription is only reasonable once this one has nothing left. The
+    /// excluded set is the caller's record of what has already failed this round.
+    public func nextServerId(excluding excluded: Set<String>) -> String? {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        let configs = self.cached.configs
+        guard !configs.isEmpty else { return nil }
+        var ordered: [AorusVlessConfig] = []
+        if let selectedId = self.cached.selectedServerId,
+           let owning = configs.first(where: { config in config.servers.contains { $0.id == selectedId } }) {
+            ordered.append(owning)
+            ordered.append(contentsOf: configs.filter { $0.id != owning.id })
+        } else {
+            ordered = configs
+        }
+        for config in ordered {
+            let candidates = config.servers.filter { !excluded.contains($0.id) }
+            guard !candidates.isEmpty else { continue }
+            let measured = candidates.compactMap { server -> (String, Double)? in
+                guard let value = self.latencies[server.id], value > 0.0 else { return nil }
+                return (server.id, value)
+            }
+            if let best = measured.min(by: { $0.1 < $1.1 }) {
+                return best.0
+            }
+            return candidates.first?.id
+        }
+        return nil
     }
 
     // MARK: - Internals

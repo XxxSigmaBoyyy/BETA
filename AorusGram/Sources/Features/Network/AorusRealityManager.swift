@@ -194,6 +194,12 @@ public final class AorusRealityManager {
     private var userLaneMuxEnabled: Bool?
     private var userLaneRetryWorkItem: DispatchWorkItem?
     private var userLaneRetryAttempt = 0
+    /// Servers whose bring-up has failed since the last one that worked. Kept so a failover walks
+    /// through a subscription instead of returning to the first dead server on every attempt, and
+    /// emptied on success, on teardown, and once every candidate has been tried.
+    private var userLaneExhaustedServerIds = Set<String>()
+    private let userLaneStatusLock = NSLock()
+    private var userLaneUnreachable = false
 
     private let coreStartTimeout: TimeInterval = 3.0
     /// Preflight budgets, split because one figure cannot do both jobs. Eight seconds spent
@@ -1235,6 +1241,37 @@ extension AorusRealityManager {
         return endpointForCurrentProcess() != nil
     }
 
+    /// Every server the lane could dial has refused to come up since the last one that worked.
+    ///
+    /// Read by the same settings row, which without it says "соединение" for as long as the switch
+    /// is on -- and after a whole subscription has been walked through and rejected, that is a
+    /// description of nothing. Guarded by its own lock rather than living on the serial queue, for
+    /// the same reason `userLaneIsServing` is: a getter for the interface must not wait behind a
+    /// core restart.
+    public var userLaneIsUnreachable: Bool {
+        guard AorusUserVPNStore.shared.isEnabled else { return false }
+        guard !self.userLaneIsServing else { return false }
+        self.userLaneStatusLock.lock()
+        defer { self.userLaneStatusLock.unlock() }
+        return self.userLaneUnreachable
+    }
+
+    private func setUserLaneUnreachable(_ value: Bool) {
+        self.userLaneStatusLock.lock()
+        let changed = self.userLaneUnreachable != value
+        self.userLaneUnreachable = value
+        self.userLaneStatusLock.unlock()
+        guard changed else { return }
+        // The row follows notifications rather than polling, so a status nothing announces is a
+        // status it never draws.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: AorusUserVPNManager.didChangeActivityNotification,
+                object: nil
+            )
+        }
+    }
+
     /// Bring the user's selected server up, or confirm the one already running.
     func userLaneStart(reason: String) {
         guard AorusUserVPNStore.shared.isActive else {
@@ -1279,6 +1316,11 @@ extension AorusRealityManager {
         let settings = AorusUserVPNStore.shared.selectedConfig
         let udpEnabled = settings?.udpEnabled ?? true
         let muxEnabled = settings?.muxEnabled ?? false
+        // Anything other than this lane's own retry is a connection being attempted again, so the
+        // last round's verdict stops being the answer the interface reports.
+        if reason != "retry" && reason != "failover" {
+            setUserLaneUnreachable(false)
+        }
 
         // Already serving this exact server through a live inbound. A watchdog tick must not
         // interrupt a call to prove something it can check in a few milliseconds.
@@ -1362,6 +1404,8 @@ extension AorusRealityManager {
             userLaneServer = server
             userLaneUdpEnabled = udpEnabled
             userLaneMuxEnabled = muxEnabled
+            userLaneExhaustedServerIds.removeAll()
+            setUserLaneUnreachable(false)
             cancelUserLaneRetryLocked(resetAttempt: true)
             recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
             userLanePublishEndpointLocked(port: port)
@@ -1369,6 +1413,29 @@ extension AorusRealityManager {
         }
 
         recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
+        // A dead server must not make a dead client. A subscription carries a dozen servers
+        // precisely because some of them are down, and a backoff on a fixed selection retries the
+        // one that just failed and nothing else -- forever, which is a switch that is on and a
+        // connection that never arrives. So the failure is remembered and the next candidate is
+        // dialled at once, lowest measured handshake first. The stored selection moves with it:
+        // a list ticking a server the client is not on is worse than a list ticking nothing.
+        userLaneExhaustedServerIds.insert(server.id)
+        if AorusUserVPNStore.shared.isActive,
+           let next = AorusUserVPNStore.shared.nextServerId(excluding: userLaneExhaustedServerIds) {
+            recordDiagnostic(stage: "user_failover", detail: "after_\(userLaneExhaustedServerIds.count)")
+            AorusUserVPNStore.shared.selectServer(id: next)
+            // Queued rather than called: `transitionInProgress` is cleared by this frame's `defer`,
+            // and the next attempt has to find it clear to do anything at all.
+            queue.async { [weak self] in
+                self?.userLaneBringUpLocked(reason: "failover")
+            }
+            return
+        }
+        // Everything in reach has been tried. The round starts over on the next retry instead of
+        // staying dark for good: a server unreachable from the network the user was on a minute ago
+        // is not a server that is gone.
+        userLaneExhaustedServerIds.removeAll()
+        setUserLaneUnreachable(true)
         // An explicitly enabled VPN must not fail open through the direct route. Its settings
         // screen remains local and usable while retries continue in the background.
         userLaneBlockTelegramLocked()
@@ -1377,6 +1444,8 @@ extension AorusRealityManager {
 
     private func userLaneTearDownLocked() {
         cancelUserLaneRetryLocked(resetAttempt: true)
+        userLaneExhaustedServerIds.removeAll()
+        setUserLaneUnreachable(false)
         if userLanePort != nil || isCoreRunning() {
             _ = invoke(method: "stopXray")
             waitForCoreStop()

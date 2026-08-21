@@ -77,6 +77,17 @@ public struct AorusVlessServer: Codable, Equatable {
         parts.append("\(self.address):\(self.port)")
         return parts.joined(separator: " · ")
     }
+
+    /// The same line without the address, for a row that also has to fit a measured handshake and a
+    /// "best server" label on one line of a list. The address is what a hostname of any length
+    /// truncates away, and of the three it is the one the row's own title already stands for.
+    public var transportSummary: String {
+        var parts = self.summary.components(separatedBy: " · ")
+        if !parts.isEmpty {
+            parts.removeLast()
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 /// What a pasted blob turned out to be.

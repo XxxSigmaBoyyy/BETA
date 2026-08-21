@@ -25,10 +25,14 @@ public final class AorusUserVPNManager {
     private let requestTimeout: TimeInterval = 20.0
     /// A TCP handshake that has not completed by now is not a server anyone wants to be on.
     private let latencyTimeout: TimeInterval = 3.0
+    /// How often the connection screen's own sweep may run. Long enough that opening the screen
+    /// twice is one sweep, short enough that a list left open catches a server coming back.
+    private let visibleSweepInterval: TimeInterval = 30.0
 
     private let lock = NSLock()
     private var configsBeingUpdated = Set<String>()
     private var serversBeingProbed = Set<String>()
+    private var lastVisibleSweepAt: TimeInterval = 0.0
 
     private init() {}
 
@@ -79,6 +83,10 @@ public final class AorusUserVPNManager {
         }
         AorusRealityManager.shared.userLaneStart(reason: "user_enabled")
         self.refreshStaleSubscriptions()
+        // Measure straight away, so the list shows real numbers rather than nothing, and so a
+        // configuration set to choose for itself gets to. No failover from here: the lane is not
+        // carrying traffic yet because it has had no time to, not because it cannot.
+        self.measureVisibleServers(allowFailover: false)
     }
 
     /// The other half of the exclusion: the hybrid layer coming on turns the user's VPN off.
@@ -220,6 +228,40 @@ public final class AorusUserVPNManager {
         self.lock.lock()
         defer { self.lock.unlock() }
         return self.serversBeingProbed.contains(serverId)
+    }
+
+    /// Measure the servers the connection screen is showing, and act on the result.
+    ///
+    /// Nothing else on that screen would ever ask for a measurement, and measurements are what
+    /// "Лучший сервер" and the fastest-server choice are made of: without this the label could not
+    /// appear and the choice had nothing to choose from, which is exactly how it looked.
+    ///
+    /// The winner is selected in two cases. One is a configuration set to choose for itself. The
+    /// other is a lane that is switched on and *not* carrying traffic -- a pinned server that cannot
+    /// be reached is not a preference worth staying offline for, while a pinned server that works is
+    /// left exactly where the user put it.
+    ///
+    /// - Parameter allowFailover: pass false where "not carrying traffic" only means the core has
+    ///   not finished coming up yet, as it does in the moment the switch is turned on.
+    public func measureVisibleServers(allowFailover: Bool = true) {
+        guard let config = AorusUserVPNStore.shared.selectedConfig ?? AorusUserVPNStore.shared.configs.first else {
+            return
+        }
+        // A sweep is one TCP handshake per server and a screen can be pushed and popped as fast as a
+        // finger moves, so it is rate-limited rather than tied to the appearance itself.
+        let now = Date().timeIntervalSince1970
+        self.lock.lock()
+        let due = now - self.lastVisibleSweepAt >= self.visibleSweepInterval
+        if due {
+            self.lastVisibleSweepAt = now
+        }
+        self.lock.unlock()
+        guard due else { return }
+
+        let stranded = allowFailover
+            && AorusUserVPNStore.shared.isEnabled
+            && !AorusRealityManager.shared.userLaneIsServing
+        self.probeAllServers(configId: config.id, selectFastest: config.autoSelectFastest || stranded)
     }
 
     /// Measure every server of a configuration, and optionally move onto the best one.
