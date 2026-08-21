@@ -28,6 +28,10 @@ public final class AorusUserVPNManager {
     /// How often the connection screen's own sweep may run. Long enough that opening the screen
     /// twice is one sweep, short enough that a list left open catches a server coming back.
     private let visibleSweepInterval: TimeInterval = 30.0
+    /// How much faster a server has to be before an automatic choice moves onto it, as a share of
+    /// the selected server's own handshake. Two nodes in one datacentre differ by jitter alone from
+    /// sweep to sweep, and with the lane up every move is a core restart.
+    private let reselectMargin: Double = 0.25
 
     private let lock = NSLock()
     private var configsBeingUpdated = Set<String>()
@@ -84,9 +88,8 @@ public final class AorusUserVPNManager {
         AorusRealityManager.shared.userLaneStart(reason: "user_enabled")
         self.refreshStaleSubscriptions()
         // Measure straight away, so the list shows real numbers rather than nothing, and so a
-        // configuration set to choose for itself gets to. No failover from here: the lane is not
-        // carrying traffic yet because it has had no time to, not because it cannot.
-        self.measureVisibleServers(allowFailover: false)
+        // configuration set to choose for itself gets to.
+        self.measureVisibleServers()
     }
 
     /// The other half of the exclusion: the hybrid layer coming on turns the user's VPN off.
@@ -230,20 +233,17 @@ public final class AorusUserVPNManager {
         return self.serversBeingProbed.contains(serverId)
     }
 
-    /// Measure the servers the connection screen is showing, and act on the result.
+    /// Measure the servers the connection screen is showing.
     ///
     /// Nothing else on that screen would ever ask for a measurement, and measurements are what
     /// "Лучший сервер" and the fastest-server choice are made of: without this the label could not
     /// appear and the choice had nothing to choose from, which is exactly how it looked.
     ///
-    /// The winner is selected in two cases. One is a configuration set to choose for itself. The
-    /// other is a lane that is switched on and *not* carrying traffic -- a pinned server that cannot
-    /// be reached is not a preference worth staying offline for, while a pinned server that works is
-    /// left exactly where the user put it.
-    ///
-    /// - Parameter allowFailover: pass false where "not carrying traffic" only means the core has
-    ///   not finished coming up yet, as it does in the moment the switch is turned on.
-    public func measureVisibleServers(allowFailover: Bool = true) {
+    /// The winner is selected only for a configuration set to choose for itself. A lane that is on
+    /// and not yet carrying traffic is *not* a reason to move the selection: bringing a server up
+    /// already walks past the ones that will not answer, and moving the tick as well is how the
+    /// chosen server appeared to change on its own with auto-select switched off.
+    public func measureVisibleServers() {
         guard let config = AorusUserVPNStore.shared.selectedConfig ?? AorusUserVPNStore.shared.configs.first else {
             return
         }
@@ -258,10 +258,7 @@ public final class AorusUserVPNManager {
         self.lock.unlock()
         guard due else { return }
 
-        let stranded = allowFailover
-            && AorusUserVPNStore.shared.isEnabled
-            && !AorusRealityManager.shared.userLaneIsServing
-        self.probeAllServers(configId: config.id, selectFastest: config.autoSelectFastest || stranded)
+        self.probeAllServers(configId: config.id, selectFastest: config.autoSelectFastest)
     }
 
     /// Measure every server of a configuration, and optionally move onto the best one.
@@ -310,6 +307,13 @@ public final class AorusUserVPNManager {
             self.postActivity()
             guard selectFastest else { return }
             guard let best = AorusUserVPNStore.shared.fastestServerId(configId: configId) else { return }
+            // Only when the winner is meaningfully better than what is selected. Handshake times to
+            // two servers in the same datacentre differ by a few milliseconds of jitter from one
+            // sweep to the next, so a bare minimum reselects on noise -- and with the lane running,
+            // every reselection is a core restart, which is a connection that never settles.
+            guard AorusUserVPNStore.shared.selectionIsWorthMoving(to: best, margin: self.reselectMargin) else {
+                return
+            }
             self.selectServer(id: best)
         }
     }

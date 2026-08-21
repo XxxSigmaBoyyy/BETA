@@ -194,10 +194,11 @@ public final class AorusRealityManager {
     private var userLaneMuxEnabled: Bool?
     private var userLaneRetryWorkItem: DispatchWorkItem?
     private var userLaneRetryAttempt = 0
-    /// Servers whose bring-up has failed since the last one that worked. Kept so a failover walks
-    /// through a subscription instead of returning to the first dead server on every attempt, and
-    /// emptied on success, on teardown, and once every candidate has been tried.
-    private var userLaneExhaustedServerIds = Set<String>()
+    /// How many servers one bring-up may try before it gives up and waits for the backoff. Three,
+    /// because a round has to fit inside the time a user will hold a settings screen open: the first
+    /// candidate carries the patient preflight budget and the two after it the sweep budget, and the
+    /// next round starts over from the top rather than continuing down a list that has gone stale.
+    private let userLaneCandidatesPerRound = 3
     private let userLaneStatusLock = NSLock()
     private var userLaneUnreachable = false
 
@@ -509,6 +510,19 @@ public final class AorusRealityManager {
         return profile.isValid(for: DeviceFingerprint.deviceHash())
     }
 
+    /// Whether the lane that asked for this core still wants it up.
+    ///
+    /// `mayRun` answers that for the signed lane only, and by design it answers `false` the moment
+    /// the user's own configuration owns the core. Two helpers below are shared by both lanes and
+    /// were reading it anyway, which made the user's lane unable to come up at all: the poll in
+    /// `waitForCoreAndLocalSocks` ran a single pass and reported a timeout milliseconds after the
+    /// core was asked to start, and `realityPreflight` returned "local connect failed" without
+    /// probing anything. A switch that was on and a connection that never arrived, on every server
+    /// in the subscription, for reasons that had nothing to do with the servers.
+    private var coreWorkIsWanted: Bool {
+        return userLaneOwnsCore || mayRun
+    }
+
     private func restartLocked() {
         guard !transitionInProgress else { return }
         guard mayRun, let profile else {
@@ -769,7 +783,7 @@ public final class AorusRealityManager {
                 probeTimeout = min(localSocksMaxProbeTimeout, probeTimeout * 2.0)
             }
             Thread.sleep(forTimeInterval: coreStartPollInterval)
-        } while Date() < deadline && mayRun
+        } while Date() < deadline && coreWorkIsWanted
         if observedRunningCore {
             recordDiagnostic(
                 stage: "local_socks_failed",
@@ -823,7 +837,7 @@ public final class AorusRealityManager {
             endpointPriority: endpointPriority,
             localPort: port
         )
-        guard mayRun else { return .localConnectFailed }
+        guard coreWorkIsWanted else { return .localConnectFailed }
         let results = AorusParallelProbeResults()
         let resultReady = DispatchSemaphore(value: 0)
         for (index, target) in Self.telegramPreflightTargets.enumerated() {
@@ -846,7 +860,7 @@ public final class AorusRealityManager {
         let deadline = DispatchTime.now() + timeout + 0.5
         for _ in Self.telegramPreflightTargets {
             if resultReady.wait(timeout: deadline) == .timedOut { break }
-            if results.snapshot().values.contains(.ready), mayRun {
+            if results.snapshot().values.contains(.ready), coreWorkIsWanted {
                 recordDiagnostic(
                     stage: "reality_preflight_ready",
                     localSocksReady: true,
@@ -857,7 +871,7 @@ public final class AorusRealityManager {
             }
         }
 
-        guard mayRun else { return .localConnectFailed }
+        guard coreWorkIsWanted else { return .localConnectFailed }
         let ordered = Self.telegramPreflightTargets.indices.compactMap { results.snapshot()[$0] }
         if let localFailure = ordered.first(where: { !$0.localSocksReady }) {
             return localFailure
@@ -1278,6 +1292,15 @@ extension AorusRealityManager {
             userLaneStop(reason: reason)
             return
         }
+        // A connection the user just asked for is not last round's verdict, and the row must stop
+        // saying "нет соединения" the moment they ask -- synchronously, here, rather than when the
+        // queue gets round to the bring-up, because the store change they made has already woken the
+        // interface. The lane's own retry and the watchdog are excluded: neither is the user asking
+        // for anything, and clearing on those would flip the row back to "соединение" on a timer
+        // while nothing is connecting.
+        if reason != "retry" && reason != "watchdog" {
+            setUserLaneUnreachable(false)
+        }
         // Taken before the core is even asked to start. Between here and a proven inbound,
         // Telegram is pointed at a port nothing is listening on, which is the whole point: a
         // window where MTProto quietly goes direct is a window where the user believes they are
@@ -1318,7 +1341,7 @@ extension AorusRealityManager {
         let muxEnabled = settings?.muxEnabled ?? false
         // Anything other than this lane's own retry is a connection being attempted again, so the
         // last round's verdict stops being the answer the interface reports.
-        if reason != "retry" && reason != "failover" {
+        if reason != "retry" {
             setUserLaneUnreachable(false)
         }
 
@@ -1351,17 +1374,59 @@ extension AorusRealityManager {
         activePort = nil
         activeEndpoint = nil
 
-        for port in Self.candidatePorts {
+        // A dead server must not make a dead client: a subscription carries a dozen servers
+        // precisely because some of them are down, and a backoff on a fixed selection retries the
+        // one that just failed and nothing else. So the round walks a few candidates, the chosen
+        // one first and the rest by measured handshake, and stops at the first that comes up.
+        var candidates = AorusUserVPNStore.shared.bringUpCandidates(limit: userLaneCandidatesPerRound)
+        if candidates.isEmpty {
+            candidates = [AorusVlessCandidate(server: server, udpEnabled: udpEnabled, muxEnabled: muxEnabled)]
+        }
+        for (index, candidate) in candidates.enumerated() {
             guard AorusUserVPNStore.shared.isActive else { break }
+            if index > 0 {
+                recordDiagnostic(stage: "user_failover", detail: "candidate_\(index)")
+            }
+            guard userLaneStartServerLocked(candidate: candidate, patient: index == 0) else {
+                continue
+            }
+            // The stored selection follows the lane only once the lane is actually up. Moving it on
+            // every failed attempt is what made the ticked server change several times a second
+            // while nothing connected, and a choice the user made by hand is not ours to overwrite
+            // with one that failed as well.
+            if candidate.server.id != server.id {
+                AorusUserVPNStore.shared.selectServer(id: candidate.server.id)
+            }
+            return
+        }
+
+        recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
+        setUserLaneUnreachable(true)
+        // An explicitly enabled VPN must not fail open through the direct route. Its settings
+        // screen remains local and usable while retries continue in the background.
+        userLaneBlockTelegramLocked()
+        scheduleUserLaneRetryLocked()
+    }
+
+    /// One candidate server, on the first loopback port that will take it.
+    ///
+    /// Returns true once Telegram has been pointed at an inbound that has been proven end to end.
+    /// `patient` is the first candidate of a round: it gets the full preflight budget because it is
+    /// the server the user chose, and the ones after it get the sweep budget so that walking a
+    /// subscription costs seconds rather than minutes.
+    private func userLaneStartServerLocked(candidate: AorusVlessCandidate, patient: Bool) -> Bool {
+        let server = candidate.server
+        for port in Self.candidatePorts {
+            guard AorusUserVPNStore.shared.isActive else { return false }
             guard localPortIsAvailable(port) else { continue }
             guard let json = AorusVlessLink.xrayConfiguration(
                 server: server,
                 localPort: port,
-                udpEnabled: udpEnabled,
-                muxEnabled: muxEnabled
+                udpEnabled: candidate.udpEnabled,
+                muxEnabled: candidate.muxEnabled
             ) else {
                 recordDiagnostic(stage: "user_config_invalid", errorCode: "config_build_failed")
-                break
+                return false
             }
             let response = invoke(method: "runXrayFromJson", payload: ["configJSON": json])
             guard response?.success == true else {
@@ -1386,7 +1451,7 @@ extension AorusRealityManager {
             let preflight = self.realityPreflight(
                 port: port,
                 endpointPriority: nil,
-                timeout: self.preflightPatientTimeout
+                timeout: patient ? self.preflightPatientTimeout : self.preflightFastTimeout
             )
             guard preflight == .ready else {
                 recordDiagnostic(
@@ -1402,49 +1467,19 @@ extension AorusRealityManager {
             userLanePort = port
             userLaneServerId = server.id
             userLaneServer = server
-            userLaneUdpEnabled = udpEnabled
-            userLaneMuxEnabled = muxEnabled
-            userLaneExhaustedServerIds.removeAll()
+            userLaneUdpEnabled = candidate.udpEnabled
+            userLaneMuxEnabled = candidate.muxEnabled
             setUserLaneUnreachable(false)
             cancelUserLaneRetryLocked(resetAttempt: true)
             recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
             userLanePublishEndpointLocked(port: port)
-            return
+            return true
         }
-
-        recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
-        // A dead server must not make a dead client. A subscription carries a dozen servers
-        // precisely because some of them are down, and a backoff on a fixed selection retries the
-        // one that just failed and nothing else -- forever, which is a switch that is on and a
-        // connection that never arrives. So the failure is remembered and the next candidate is
-        // dialled at once, lowest measured handshake first. The stored selection moves with it:
-        // a list ticking a server the client is not on is worse than a list ticking nothing.
-        userLaneExhaustedServerIds.insert(server.id)
-        if AorusUserVPNStore.shared.isActive,
-           let next = AorusUserVPNStore.shared.nextServerId(excluding: userLaneExhaustedServerIds) {
-            recordDiagnostic(stage: "user_failover", detail: "after_\(userLaneExhaustedServerIds.count)")
-            AorusUserVPNStore.shared.selectServer(id: next)
-            // Queued rather than called: `transitionInProgress` is cleared by this frame's `defer`,
-            // and the next attempt has to find it clear to do anything at all.
-            queue.async { [weak self] in
-                self?.userLaneBringUpLocked(reason: "failover")
-            }
-            return
-        }
-        // Everything in reach has been tried. The round starts over on the next retry instead of
-        // staying dark for good: a server unreachable from the network the user was on a minute ago
-        // is not a server that is gone.
-        userLaneExhaustedServerIds.removeAll()
-        setUserLaneUnreachable(true)
-        // An explicitly enabled VPN must not fail open through the direct route. Its settings
-        // screen remains local and usable while retries continue in the background.
-        userLaneBlockTelegramLocked()
-        scheduleUserLaneRetryLocked()
+        return false
     }
 
     private func userLaneTearDownLocked() {
         cancelUserLaneRetryLocked(resetAttempt: true)
-        userLaneExhaustedServerIds.removeAll()
         setUserLaneUnreachable(false)
         if userLanePort != nil || isCoreRunning() {
             _ = invoke(method: "stopXray")

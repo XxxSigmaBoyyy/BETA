@@ -4922,6 +4922,12 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
     # their centre. Re-adding an identical animation would restart it from zero on every layout
     # pass, which for a row that reloads on each state signal is a visible stutter -- hence the
     # check for one that is already running.
+    #
+    # The transform is reset before either branch. A layer keeps the transform an interrupted
+    # rotation left it at, so a row that stops spinning while its glyph happens to be at 200
+    # degrees keeps that 200 degrees for as long as the node lives -- and since the node is reused
+    # when the same row changes state, that is how a *cross* ended up tilted and, when the row
+    # spun again later, how it appeared to be the thing rotating.
     text = _replace_once(
         text,
         "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
@@ -4929,6 +4935,7 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
         "                        if item.aorusIconSpins {\n"
         "                            if strongSelf.iconNode.layer.animation(forKey: \"aorusIconRotation\") == nil {\n"
+        "                                strongSelf.iconNode.layer.transform = CATransform3DIdentity\n"
         "                                let rotation = CABasicAnimation(keyPath: \"transform.rotation.z\")\n"
         "                                rotation.fromValue = NSNumber(value: Float(0.0))\n"
         "                                rotation.toValue = NSNumber(value: Float.pi * 2.0)\n"
@@ -4937,8 +4944,9 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "                                rotation.repeatCount = Float.infinity\n"
         "                                strongSelf.iconNode.layer.add(rotation, forKey: \"aorusIconRotation\")\n"
         "                            }\n"
-        "                        } else {\n"
+        "                        } else if strongSelf.iconNode.layer.animation(forKey: \"aorusIconRotation\") != nil {\n"
         "                            strongSelf.iconNode.layer.removeAnimation(forKey: \"aorusIconRotation\")\n"
+        "                            strongSelf.iconNode.layer.transform = CATransform3DIdentity\n"
         "                        }\n"
         "                    } else if strongSelf.iconNode.supernode != nil {\n",
         "switch item icon rotation",

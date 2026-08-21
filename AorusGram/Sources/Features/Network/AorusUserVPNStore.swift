@@ -90,6 +90,22 @@ public struct AorusVlessConfig: Codable, Equatable {
     }
 }
 
+/// One server a bring-up round may try, with the transport switches of the configuration it came
+/// from. Carried together because a round can cross from one configuration to another, and dialling
+/// a server with another card's UDP or mux setting is a connection that either fails or silently
+/// behaves as the user did not ask.
+public struct AorusVlessCandidate: Equatable {
+    public let server: AorusVlessServer
+    public let udpEnabled: Bool
+    public let muxEnabled: Bool
+
+    public init(server: AorusVlessServer, udpEnabled: Bool, muxEnabled: Bool) {
+        self.server = server
+        self.udpEnabled = udpEnabled
+        self.muxEnabled = muxEnabled
+    }
+}
+
 /// The user's own VLESS configurations, their selected server, and whether the lane is on.
 ///
 /// Stored in `UserDefaults`, deliberately, and not in the keychain that
@@ -441,38 +457,76 @@ public final class AorusUserVPNStore {
         return config.servers.first?.id
     }
 
-    /// The next server worth dialling once the selected one has refused to come up.
+    /// Whether an automatic choice should move the selection onto `candidate`.
     ///
-    /// Best measured first, then whatever has not been measured, and the configuration holding the
-    /// current selection before any other: a subscription is a set of routes to the same place, and
-    /// jumping to a different subscription is only reasonable once this one has nothing left. The
-    /// excluded set is the caller's record of what has already failed this round.
-    public func nextServerId(excluding excluded: Set<String>) -> String? {
+    /// True when nothing is selected, when the selection no longer exists, when it has no usable
+    /// measurement, or when the candidate is faster by more than `margin` of the selection's own
+    /// handshake. False for the selection itself, and false for a difference inside the margin: two
+    /// servers in one datacentre trade places on jitter between sweeps, and with the lane running,
+    /// every move restarts the core.
+    public func selectionIsWorthMoving(to candidate: String, margin: Double) -> Bool {
         self.lock.lock()
         defer { self.lock.unlock() }
+        guard let selectedId = self.cached.selectedServerId else { return true }
+        guard selectedId != candidate else { return false }
+        guard Self.server(id: selectedId, in: self.cached.configs) != nil else { return true }
+        guard let current = self.latencies[selectedId], current > 0.0 else { return true }
+        guard let proposed = self.latencies[candidate], proposed > 0.0 else { return false }
+        return proposed < current * (1.0 - margin)
+    }
+
+    /// The servers one bring-up round should try, in the order it should try them.
+    ///
+    /// The selection first, always: it is either what the user picked by hand or what the last
+    /// successful connection settled on, and a round that starts anywhere else is a round that can
+    /// move the tick off a working server. After it come the rest of its own configuration, lowest
+    /// measured handshake first and unmeasured last, because a subscription is a set of routes to
+    /// the same place; other configurations follow only once this one is exhausted.
+    ///
+    /// Each candidate carries the transport switches of the configuration it belongs to, so a
+    /// failover across cards cannot dial one server with another card's UDP or mux setting.
+    public func bringUpCandidates(limit: Int) -> [AorusVlessCandidate] {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        guard limit > 0 else { return [] }
         let configs = self.cached.configs
-        guard !configs.isEmpty else { return nil }
+        guard !configs.isEmpty else { return [] }
+        let selectedId = self.cached.selectedServerId
         var ordered: [AorusVlessConfig] = []
-        if let selectedId = self.cached.selectedServerId,
+        if let selectedId,
            let owning = configs.first(where: { config in config.servers.contains { $0.id == selectedId } }) {
             ordered.append(owning)
             ordered.append(contentsOf: configs.filter { $0.id != owning.id })
         } else {
             ordered = configs
         }
+
+        var result: [AorusVlessCandidate] = []
+        var seen = Set<String>()
         for config in ordered {
-            let candidates = config.servers.filter { !excluded.contains($0.id) }
-            guard !candidates.isEmpty else { continue }
-            let measured = candidates.compactMap { server -> (String, Double)? in
-                guard let value = self.latencies[server.id], value > 0.0 else { return nil }
-                return (server.id, value)
+            // Sorted by measured handshake, unmeasured after everything measured. `Double.infinity`
+            // rather than a large constant so no real measurement can ever sort past it.
+            let sorted = config.servers.sorted { first, second in
+                let firstValue = self.latencies[first.id].flatMap { $0 > 0.0 ? $0 : nil } ?? .infinity
+                let secondValue = self.latencies[second.id].flatMap { $0 > 0.0 ? $0 : nil } ?? .infinity
+                return firstValue < secondValue
             }
-            if let best = measured.min(by: { $0.1 < $1.1 }) {
-                return best.0
+            for server in sorted {
+                guard !seen.contains(server.id) else { continue }
+                seen.insert(server.id)
+                let candidate = AorusVlessCandidate(
+                    server: server,
+                    udpEnabled: config.udpEnabled,
+                    muxEnabled: config.muxEnabled
+                )
+                if server.id == selectedId {
+                    result.insert(candidate, at: 0)
+                } else {
+                    result.append(candidate)
+                }
             }
-            return candidates.first?.id
         }
-        return nil
+        return Array(result.prefix(limit))
     }
 
     // MARK: - Internals
