@@ -314,26 +314,29 @@ public final class AorusUserVPNManager {
     }
 
     private static func connectionIdentity(_ server: AorusVlessServer) -> String {
-        return [
-            server.address.lowercased(),
-            String(server.port),
-            server.userId.lowercased(),
-            server.flow,
-            server.network,
-            server.security,
-            server.serverName ?? "",
-            server.fingerprint ?? "",
-            server.publicKey ?? "",
-            server.shortId ?? "",
-            server.spiderX ?? "",
-            server.alpn.joined(separator: ","),
-            server.path ?? "",
-            server.host ?? "",
-            server.serviceName ?? "",
-            server.headerType ?? "",
-            server.mode ?? "",
-            server.allowInsecure ? "1" : "0"
-        ].joined(separator: "|")
+        // Appended one field at a time rather than written as one eighteen-element literal: the
+        // literal made the compiler infer the element type from `??`, a ternary and method calls
+        // all at once, which it refuses to finish ("unable to type-check in reasonable time").
+        var fields: [String] = []
+        fields.append(server.address.lowercased())
+        fields.append(String(server.port))
+        fields.append(server.userId.lowercased())
+        fields.append(server.flow)
+        fields.append(server.network)
+        fields.append(server.security)
+        fields.append(server.serverName ?? "")
+        fields.append(server.fingerprint ?? "")
+        fields.append(server.publicKey ?? "")
+        fields.append(server.shortId ?? "")
+        fields.append(server.spiderX ?? "")
+        fields.append(server.alpn.joined(separator: ","))
+        fields.append(server.path ?? "")
+        fields.append(server.host ?? "")
+        fields.append(server.serviceName ?? "")
+        fields.append(server.headerType ?? "")
+        fields.append(server.mode ?? "")
+        fields.append(server.allowInsecure ? "1" : "0")
+        return fields.joined(separator: "|")
     }
 
     private func containsSubscription(_ value: String) -> Bool {

@@ -291,26 +291,31 @@ public enum AorusVlessLink {
         // Every value that changes the wire handshake belongs to the identity. REALITY
         // subscriptions often publish several credentials on the same host and UUID; omitting
         // pbk/sid/SNI here can collapse them into one row and leave a stale core running.
-        let canonical = [
-            address,
-            String(port),
-            userId,
-            flow,
-            network,
-            security,
-            serverName ?? "",
-            fingerprint,
-            publicKey ?? "",
-            query["sid"] ?? "",
-            query["spx"] ?? "",
-            alpn.joined(separator: ","),
-            path ?? "",
-            normalizedHostname(hostHeader) ?? "",
-            query["servicename"] ?? "",
-            (query["headertype"] ?? "").lowercased(),
-            (query["mode"] ?? "").lowercased(),
-            allowInsecure ? "1" : "0"
-        ].joined(separator: "|")
+        //
+        // The fields are appended one at a time on purpose. As a single eighteen-element literal
+        // mixing `??`, a ternary and method calls, the element type has to be inferred from all of
+        // them at once and the compiler gives up: "unable to type-check this expression in
+        // reasonable time". Against `append`'s known `String` the same expressions check instantly.
+        var canonicalFields: [String] = []
+        canonicalFields.append(address)
+        canonicalFields.append(String(port))
+        canonicalFields.append(userId)
+        canonicalFields.append(flow)
+        canonicalFields.append(network)
+        canonicalFields.append(security)
+        canonicalFields.append(serverName ?? "")
+        canonicalFields.append(fingerprint)
+        canonicalFields.append(publicKey ?? "")
+        canonicalFields.append(query["sid"] ?? "")
+        canonicalFields.append(query["spx"] ?? "")
+        canonicalFields.append(alpn.joined(separator: ","))
+        canonicalFields.append(path ?? "")
+        canonicalFields.append(normalizedHostname(hostHeader) ?? "")
+        canonicalFields.append(query["servicename"] ?? "")
+        canonicalFields.append((query["headertype"] ?? "").lowercased())
+        canonicalFields.append((query["mode"] ?? "").lowercased())
+        canonicalFields.append(allowInsecure ? "1" : "0")
+        let canonical = canonicalFields.joined(separator: "|")
         let digest = SHA256.hash(data: Data(canonical.utf8))
             .prefix(10)
             .map { String(format: "%02x", $0) }
