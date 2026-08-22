@@ -1447,8 +1447,26 @@ extension AorusRealityManager {
         }
     }
 
-    private func userLaneBringUpLocked(reason: String) {
-        guard !transitionInProgress else { return }
+    private func userLaneBringUpLocked(reason: String, requeues: Int = 0) {
+        // Re-entered from inside a transition -- the signed lane's own restart, or a stop, reaching
+        // this through a teardown. Returning here is how a request could be dropped: the user had
+        // asked for a server, the round that would have dialled it went nowhere, and the connection
+        // then waited for the next thing to happen to it (a watchdog tick, or a restart of the
+        // client) instead of coming up now. So it goes back on the queue instead of being thrown
+        // away.
+        //
+        // The queue is serial, so the block below cannot run until whatever holds the flag has let
+        // it go, and one turn is normally all it takes; the count is a bound on the pathological
+        // case rather than an expected path, and the store is consulted each time so a lane the
+        // user has since turned off stops being retried.
+        if transitionInProgress {
+            guard requeues < 20, AorusUserVPNStore.shared.isActive else { return }
+            recordDiagnostic(stage: "user_core_requeued", detail: reason)
+            queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.userLaneBringUpLocked(reason: reason, requeues: requeues + 1)
+            }
+            return
+        }
         // This round now owns the current generation: everything below is being done for the request
         // that queued it, and a later request will move the number on and cut the round short.
         beginUserLaneRound()

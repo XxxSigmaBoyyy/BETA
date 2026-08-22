@@ -3165,7 +3165,7 @@ def main() -> None:
                 # first or the chat opens inside the sheet.
                 "navigationController?.filterController(strongController, animated: true)",
                 "aorusOpenConnectionSupportChat(context: context",
-                # The КОНФИГУРАЦИИ / СЕРВЕРА block. One entry case carries every row of it, so a
+                # The КОНФИГУРАЦИИ block. One entry case carries every row of it, so a
                 # half-applied patch shows up as a missing case rather than as a screen that draws
                 # the header and nothing under it.
                 "case aorusUserVPNToggle",
@@ -3209,7 +3209,7 @@ def main() -> None:
                 "|> distinctUntilChanged",
             ),
         ),
-        # The user's own VLESS lane: the rows of the КОНФИГУРАЦИИ / СЕРВЕРА block, which are copied
+        # The user's own VLESS lane: the rows of the КОНФИГУРАЦИИ blocks, which are copied
         # rather than patched. The Proxy screen only knows there is a list of rows to draw, so
         # everything that decides what a row *is* has to be here.
         (

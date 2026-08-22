@@ -90,16 +90,6 @@ public struct AorusUserVPNSectionState: Equatable {
         return self.configs.contains { !$0.servers.isEmpty }
     }
 
-    /// Whose servers the СЕРВЕРА block lists: the configuration currently selected, or the first
-    /// one when nothing is. Every configuration's own servers are also listed inside its settings
-    /// screen, so nothing becomes unreachable with two of them imported.
-    public var serverListConfig: AorusVlessConfig? {
-        if let id = self.selectedServerId,
-           let config = self.configs.first(where: { config in config.servers.contains { $0.id == id } }) {
-            return config
-        }
-        return self.configs.first
-    }
 }
 
 /// The state, re-emitted whenever a configuration, the selection, a refresh or a probe changes.
@@ -177,15 +167,18 @@ private func aorusUserVPNSnapshot() -> AorusUserVPNSectionState {
 
 // MARK: - Rows
 
-/// Which of the three rounded blocks a row belongs to. Blocks are what a section is on an
-/// ItemList screen, and the switch, the configurations and the servers are three of them.
-public enum AorusUserVPNRowSection {
+/// Which rounded block a row belongs to. Blocks are what a section is on an ItemList screen, and
+/// with several subscriptions imported there is one per configuration rather than one list of cards
+/// followed by one list of servers: a card, its traffic and its own servers read as one thing.
+public enum AorusUserVPNRowSection: Equatable {
     case toggle
-    case configs
-    case servers
+    /// One configuration, by its position in the list.
+    case config(Int)
+    /// "Добавить конфигурацию", and the caption under everything.
+    case footer
 }
 
-/// One row of the two blocks.
+/// One row of the block.
 ///
 /// The patch on the Proxy screen carries this in a single entry case, which is why the payloads
 /// are values and not closures: the list diffs entries for equality, and a closure would make
@@ -204,25 +197,38 @@ public enum AorusUserVPNRow: Equatable {
     /// the same row as "Добавить прокси" above it rather than a lookalike.
     case add(String)
     case info(String)
-    /// "СЕРВЕРА".
-    case serversHeader(String)
-    case server(index: Int, configId: String, server: AorusVlessServer, selected: Bool, best: Bool, latency: Double?, probing: Bool, connecting: Bool)
+    /// A server of the configuration at `configIndex`, in that configuration's own block.
+    case server(
+        configIndex: Int,
+        index: Int,
+        configId: String,
+        server: AorusVlessServer,
+        selected: Bool,
+        best: Bool,
+        latency: Double?,
+        probing: Bool,
+        connecting: Bool
+    )
 
     public var section: AorusUserVPNRowSection {
         switch self {
         case .header, .use:
             return .toggle
-        case .config, .traffic, .add, .info:
-            return .configs
-        case .serversHeader, .server:
-            return .servers
+        case let .config(index, _, _):
+            return .config(index)
+        case let .traffic(index, _, _):
+            return .config(index)
+        case let .server(configIndex, _, _, _, _, _, _, _, _):
+            return .config(configIndex)
+        case .add, .info:
+            return .footer
         }
     }
 
     /// Both the order of the rows and, offset by the block's own base, their stable ids -- so this
-    /// has to be unique per row and not merely ordered. Two numbers per configuration keep a card
-    /// and its traffic bar together however many configurations there are, and the servers start
-    /// well past any list of cards.
+    /// has to be unique per row and not merely ordered. Each configuration gets a thousand numbers:
+    /// its card, its traffic bar and then its servers, which keeps a block's rows together and their
+    /// ids stable while a subscription's server list changes under them.
     public var sortIndex: Int {
         switch self {
         case .header:
@@ -230,18 +236,24 @@ public enum AorusUserVPNRow: Equatable {
         case .use:
             return 1
         case let .config(index, _, _):
-            return 100 + index * 2
+            return Self.configBase(index)
         case let .traffic(index, _, _):
-            return 101 + index * 2
+            return Self.configBase(index) + 1
+        case let .server(configIndex, index, _, _, _, _, _, _, _):
+            // Clamped, because two rows with one id is a list that draws one of them: a
+            // subscription with a thousand servers loses the order of its tail rather than a row.
+            return Self.configBase(configIndex) + 2 + min(index, 900)
         case .add:
-            return 5000
+            return 2_000_000
         case .info:
-            return 5001
-        case .serversHeader:
-            return 5002
-        case let .server(index, _, _, _, _, _, _, _):
-            return 6000 + index
+            return 2_000_001
         }
+    }
+
+    private static func configBase(_ index: Int) -> Int {
+        // Clamped for the same reason a server's index is: `.add` sits at 2_000_000, and an id that
+        // reaches it would be two rows claiming to be one.
+        return 1_000 + min(index, 1_900) * 1_000
     }
 }
 
@@ -271,21 +283,21 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
         available: state.canEnable
     ))
 
+    // A configuration and its servers, then the next configuration and its servers. Listing every
+    // card first and only the selected card's servers afterwards is what put two lists of the same
+    // thing next to each other, and it also hid the servers of every configuration but one.
     for (index, config) in state.configs.enumerated() {
         rows.append(.config(index: index, config: config, updating: state.updatingConfigIds.contains(config.id)))
         if let used = config.trafficUsed {
             rows.append(.traffic(index: index, used: used, total: config.trafficTotal))
         }
-    }
-    rows.append(.add(l10n.userVPNAddConfig))
-    rows.append(.info(l10n.userVPNFooter))
-
-    if let config = state.serverListConfig, !config.servers.isEmpty {
         let bestServerId = aorusUserVPNBestMeasuredServerId(config: config, latencies: state.latencies)
-        rows.append(.serversHeader(l10n.userVPNServersHeader))
-        for (index, server) in config.servers.enumerated() {
+        for (serverIndex, server) in config.servers.enumerated() {
+            // The selection is one server across every configuration, so the checkmark can only
+            // ever be on one row however many lists are on the screen.
             rows.append(.server(
-                index: index,
+                configIndex: index,
+                index: serverIndex,
                 configId: config.id,
                 server: server,
                 selected: state.selectedServerId == server.id,
@@ -296,6 +308,8 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
             ))
         }
     }
+    rows.append(.add(l10n.userVPNAddConfig))
+    rows.append(.info(l10n.userVPNFooter))
     return rows
 }
 
@@ -316,8 +330,6 @@ public func aorusUserVPNRowItem(
     let l10n = AorusL10n(presentationData.strings.baseLanguageCode)
     switch row {
     case let .header(text):
-        return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: sectionId)
-    case let .serversHeader(text):
         return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: sectionId)
     case let .use(title, status, indicator, value, available):
         return aorusConnectionSwitchItem(
@@ -369,7 +381,7 @@ public func aorusUserVPNRowItem(
         return buildAddRow(text)
     case let .info(text):
         return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: sectionId)
-    case let .server(_, configId, server, selected, best, latency, probing, connecting):
+    case let .server(_, _, configId, server, selected, best, latency, probing, connecting):
         // The checkmark is the selection, which is what the user asked the tap to leave behind, and
         // the inset to the left of it is where the measured time goes.
         return ItemListCheckboxItem(

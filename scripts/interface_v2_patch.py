@@ -4821,7 +4821,7 @@ _PROXY_ORDER_SWIFT = '''    /// Ordering by one number per case instead of a swi
             case .aorusInfo:
                 return 3
             case let .aorusUserVPN(_, row):
-                // Both new blocks sort by the row's own index, offset to sit between the saved
+                // Every new block sorts by the row's own index, offset to sit between the saved
                 // proxies and the three rows upstream keeps at the bottom -- which is where the
                 // configurations belong: under the proxies, above "Поделиться списком".
                 return 2000000 + row.sortIndex
@@ -4918,41 +4918,90 @@ def _patch_switch_item_leading_icon(tg: Path) -> None:
         "                        } else {\n",
         "switch item icon alignment layout",
     )
-    # Added after the frame is set, so the layer has its bounds before it is asked to turn about
-    # their centre. Re-adding an identical animation would restart it from zero on every layout
-    # pass, which for a row that reloads on each state signal is a visible stutter -- hence the
-    # check for one that is already running.
-    #
-    # The transform is reset before either branch. A layer keeps the transform an interrupted
-    # rotation left it at, so a row that stops spinning while its glyph happens to be at 200
-    # degrees keeps that 200 degrees for as long as the node lives -- and since the node is reused
-    # when the same row changes state, that is how a *cross* ended up tilted and, when the row
-    # spun again later, how it appeared to be the thing rotating.
+    # The glyph and the rotation are set together, by one method, from the item the node holds --
+    # see the comment on it. Upstream's `updateIcon` diff is left in place: it still decides whether
+    # the *image assignment* happens on this pass, and the reconcile below corrects it either way.
     text = _replace_once(
         text,
         "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
-        "                    } else if strongSelf.iconNode.supernode != nil {\n",
+        "                    } else if strongSelf.iconNode.supernode != nil {\n"
+        "                        strongSelf.iconNode.image = nil\n"
+        "                        strongSelf.iconNode.removeFromSupernode()\n",
         "                        iconTransition.updateFrame(node: strongSelf.iconNode, frame: CGRect(origin: CGPoint(x: params.leftInset + floor((leftInset - params.leftInset - icon.size.width) / 2.0), y: iconY), size: icon.size))\n"
-        "                        if item.aorusIconSpins {\n"
-        "                            if strongSelf.iconNode.layer.animation(forKey: \"aorusIconRotation\") == nil {\n"
-        "                                strongSelf.iconNode.layer.transform = CATransform3DIdentity\n"
-        "                                let rotation = CABasicAnimation(keyPath: \"transform.rotation.z\")\n"
-        "                                rotation.fromValue = NSNumber(value: Float(0.0))\n"
-        "                                rotation.toValue = NSNumber(value: Float.pi * 2.0)\n"
-        "                                rotation.duration = 0.5\n"
-        "                                rotation.timingFunction = CAMediaTimingFunction(name: CAMediaTimingFunctionName.linear)\n"
-        "                                rotation.repeatCount = Float.infinity\n"
-        "                                strongSelf.iconNode.layer.add(rotation, forKey: \"aorusIconRotation\")\n"
-        "                            }\n"
-        "                        } else if strongSelf.iconNode.layer.animation(forKey: \"aorusIconRotation\") != nil {\n"
-        "                            strongSelf.iconNode.layer.removeAnimation(forKey: \"aorusIconRotation\")\n"
-        "                            strongSelf.iconNode.layer.transform = CATransform3DIdentity\n"
-        "                        }\n"
-        "                    } else if strongSelf.iconNode.supernode != nil {\n",
+        "                        strongSelf.aorusReconcileIcon()\n"
+        "                    } else if strongSelf.iconNode.supernode != nil {\n"
+        "                        strongSelf.iconNode.image = nil\n"
+        "                        strongSelf.iconNode.removeFromSupernode()\n"
+        "                        strongSelf.aorusReconcileIcon()\n",
         "switch item icon rotation",
+    )
+    text = _replace_once(
+        text,
+        "        (self.switchNode.view as? UISwitch)?.addTarget(self, action: #selector(self.switchValueChanged(_:)), for: .valueChanged)\n"
+        "        self.switchGestureNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:))))\n"
+        "    }\n",
+        "        (self.switchNode.view as? UISwitch)?.addTarget(self, action: #selector(self.switchValueChanged(_:)), for: .valueChanged)\n"
+        "        self.switchGestureNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:))))\n"
+        "    }\n"
+        + _SWITCH_ITEM_ICON_SWIFT,
+        "switch item icon reconcile",
     )
     path.write_text(text, encoding="utf-8")
     print("InterfaceV2: switch item leading icon aligned with title")
+
+
+_SWITCH_ITEM_ICON_SWIFT = '''
+    /// The leading glyph and its rotation, decided together from the item this node is holding.
+    ///
+    /// They used to be decided apart, and that is how a *checkmark* came to spin. Upstream assigns
+    /// the image only when it differs from the previous item's (`updateIcon`), while the rotation was
+    /// added from the item of the pass that was running -- two different comparisons for one glyph.
+    /// A pass that skipped the assignment but added the animation left the rotation turning whatever
+    /// image happened to be on the node, and a row that is reloaded on every state signal gets a
+    /// great many passes. Reading both from `self.item`, and the image from the node itself, means
+    /// they cannot disagree: the animation runs only while the glyph under it is the spinner.
+    ///
+    /// It also runs when the node re-enters the hierarchy, because Core Animation drops a layer's
+    /// animations while it is out of one -- a spinner that was turning when the user opened a
+    /// configuration came back from it standing still. Telegram's own ActivityIndicator restarts
+    /// itself on the same hook, for the same reason.
+    ///
+    /// The transform is reset on the way out because a layer keeps whatever an interrupted rotation
+    /// left it at: without this, a glyph that stopped at 200 degrees stays crooked for as long as
+    /// the node lives.
+    private func aorusReconcileIcon() {
+        var spins = false
+        if let item = self.item, let icon = item.icon {
+            if self.iconNode.image !== icon {
+                self.iconNode.image = icon
+            }
+            spins = item.aorusIconSpins
+        }
+        if spins {
+            // Re-adding an identical animation would restart it from zero on every layout pass,
+            // which on a row that reloads this often is a visible stutter.
+            if self.iconNode.layer.animation(forKey: "aorusIconRotation") == nil {
+                self.iconNode.layer.transform = CATransform3DIdentity
+                let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+                rotation.fromValue = NSNumber(value: Float(0.0))
+                rotation.toValue = NSNumber(value: Float.pi * 2.0)
+                rotation.duration = 0.5
+                rotation.timingFunction = CAMediaTimingFunction(name: CAMediaTimingFunctionName.linear)
+                rotation.repeatCount = Float.infinity
+                self.iconNode.layer.add(rotation, forKey: "aorusIconRotation")
+            }
+        } else {
+            self.iconNode.layer.removeAnimation(forKey: "aorusIconRotation")
+            self.iconNode.layer.transform = CATransform3DIdentity
+        }
+    }
+
+    override public func willEnterHierarchy() {
+        super.willEnterHierarchy()
+
+        self.aorusReconcileIcon()
+    }
+'''
 
 
 def _patch_proxy_connection_section(tg: Path) -> None:
@@ -4965,11 +5014,11 @@ def _patch_proxy_connection_section(tg: Path) -> None:
 
     Under the saved proxies come the user's own VLESS configurations -- a switch that hands this
     client's transport to them, the configurations themselves with a "+" row that imports whatever
-    is on the clipboard, and the servers of the selected one.
+    is on the clipboard, each with its own servers under it.
 
     The rows themselves, the state signals and the support-chat jump live in AorusGramUI, in
     AorusConnectionSection.swift and AorusUserVPNSection.swift. What is added here is five entries
-    -- four for the connection block, one carrying every row of the two configuration blocks -- their
+    -- four for the connection block, one carrying every row of the configuration blocks -- their
     place in the order, and the closures behind them. Nothing upstream draws is changed, and with
     the switches left alone the screen behaves exactly as it shipped.
     """
@@ -5035,8 +5084,9 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "private enum ProxySettingsControllerSection: Int32 {\n    case enabled\n",
         "private enum ProxySettingsControllerSection: Int32 {\n"
         "    case aorusConnection\n"
-        "    // Three blocks, because that is what the screen shows: the switch, the configurations\n"
-        "    // with the button under them, and the servers of the selected one.\n"
+        "    // The switch, then a block per configuration -- its card, its traffic and its own\n"
+        "    // servers -- and the button and caption under all of them. Two of the three names are\n"
+        "    // bases the per-configuration and footer ids are offset from, not single sections.\n"
         "    case aorusUserVPNToggle\n"
         "    case aorusUserVPNConfigs\n"
         "    case aorusUserVPNServers\n"
@@ -5070,10 +5120,16 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "                switch row.section {\n"
         "                    case .toggle:\n"
         "                        return ProxySettingsControllerSection.aorusUserVPNToggle.rawValue\n"
-        "                    case .configs:\n"
-        "                        return ProxySettingsControllerSection.aorusUserVPNConfigs.rawValue\n"
-        "                    case .servers:\n"
-        "                        return ProxySettingsControllerSection.aorusUserVPNServers.rawValue\n"
+        "                    case let .config(index):\n"
+        "                        // One block per configuration: a card, its traffic and its own\n"
+        "                        // servers read as one thing, and two lists of the same kind of row\n"
+        "                        // never end up next to each other. Offset past every section id on\n"
+        "                        // this screen, and clamped so a pathological number of imports\n"
+        "                        // merges the tail of the list into one block instead of colliding\n"
+        "                        // with the caption below it.\n"
+        "                        return ProxySettingsControllerSection.aorusUserVPNConfigs.rawValue + 1000 + Int32(min(index, 1900))\n"
+        "                    case .footer:\n"
+        "                        return ProxySettingsControllerSection.aorusUserVPNServers.rawValue + 5000\n"
         "                }\n"
         "            case .enabled:\n"
         "                return ProxySettingsControllerSection.enabled.rawValue\n",
@@ -5232,7 +5288,7 @@ def _patch_proxy_connection_section(tg: Path) -> None:
         "        entries.append(.aorusStableCalls(theme, l10n.connectionStableCalls, "
         "aorusState.stableCallsEnabled))\n"
         "        entries.append(.aorusInfo(theme, l10n.connectionFooter, l10n.connectionSupportLink))\n"
-        "        // The two configuration blocks. They sort themselves under the saved proxies, so\n"
+        "        // The configuration blocks. They sort themselves under the saved proxies, so\n"
         "        // they are appended with the rest of the AorusGram rows rather than spliced into\n"
         "        // the middle of upstream's own list.\n"
         "        for row in aorusUserVPNRows(state: aorusUserVPNState, languageCode: strings.baseLanguageCode) {\n"
