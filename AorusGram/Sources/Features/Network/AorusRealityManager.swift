@@ -201,6 +201,19 @@ public final class AorusRealityManager {
     private let userLaneCandidatesPerRound = 3
     private let userLaneStatusLock = NSLock()
     private var userLaneUnreachable = false
+    /// The server the lane is actually carrying traffic through, readable without going through the
+    /// serial queue. The interface needs it to tell "this row is the one running" from "this row is
+    /// the one ticked", which are not the same thing while a bring-up is in flight.
+    private var userLaneServingServerId: String?
+    /// Bumped every time the user asks for something new — a different server, the switch, a
+    /// setting that rebuilds the core. A round already walking candidates on the serial queue
+    /// compares its own number against this one and drops out rather than spending the rest of its
+    /// preflight budget on a selection the user has already moved off. Without this, a tap on
+    /// another server waited out up to three candidates × their port scans × their preflight
+    /// budgets — tens of seconds — before the queue even reached the new round.
+    private var userLaneGeneration = 0
+    /// The generation the round currently on the queue started with.
+    private var userLaneRoundGeneration = 0
 
     private let coreStartTimeout: TimeInterval = 3.0
     /// Preflight budgets, split because one figure cannot do both jobs. Eight seconds spent
@@ -520,7 +533,35 @@ public final class AorusRealityManager {
     /// probing anything. A switch that was on and a connection that never arrived, on every server
     /// in the subscription, for reasons that had nothing to do with the servers.
     private var coreWorkIsWanted: Bool {
-        return userLaneOwnsCore || mayRun
+        if userLaneOwnsCore {
+            // A round the user has already moved on from is not work anybody wants finished. This is
+            // where an interrupted bring-up actually stops: the poll loop and the preflight probes
+            // are the only slow things on the queue, and both ask here between passes.
+            return !userLaneRoundIsStale
+        }
+        return mayRun
+    }
+
+    /// Whether the bring-up round on the queue has been superseded by a newer request.
+    private var userLaneRoundIsStale: Bool {
+        self.userLaneStatusLock.lock()
+        defer { self.userLaneStatusLock.unlock() }
+        return self.userLaneRoundGeneration != self.userLaneGeneration
+    }
+
+    /// Mark everything currently in flight as superseded. Called for anything the user did; not for
+    /// the lane's own retry or the watchdog, neither of which is a new request.
+    private func bumpUserLaneGeneration() {
+        self.userLaneStatusLock.lock()
+        self.userLaneGeneration += 1
+        self.userLaneStatusLock.unlock()
+    }
+
+    /// Claim the current generation for the round about to run on the serial queue.
+    private func beginUserLaneRound() {
+        self.userLaneStatusLock.lock()
+        self.userLaneRoundGeneration = self.userLaneGeneration
+        self.userLaneStatusLock.unlock()
     }
 
     private func restartLocked() {
@@ -1255,6 +1296,23 @@ extension AorusRealityManager {
         return endpointForCurrentProcess() != nil
     }
 
+    /// The server the lane is carrying traffic through right now, or nil when it is not carrying
+    /// any. Not the same thing as the ticked row: between a tap and a proven inbound, the selection
+    /// is the new server and this is still the old one — which is exactly the difference a re-tap
+    /// has to be able to tell.
+    public var userLaneServingServer: String? {
+        guard self.userLaneIsServing else { return nil }
+        self.userLaneStatusLock.lock()
+        defer { self.userLaneStatusLock.unlock() }
+        return self.userLaneServingServerId
+    }
+
+    private func setUserLaneServingServerId(_ value: String?) {
+        self.userLaneStatusLock.lock()
+        self.userLaneServingServerId = value
+        self.userLaneStatusLock.unlock()
+    }
+
     /// Every server the lane could dial has refused to come up since the last one that worked.
     ///
     /// Read by the same settings row, which without it says "соединение" for as long as the switch
@@ -1300,6 +1358,9 @@ extension AorusRealityManager {
         // while nothing is connecting.
         if reason != "retry" && reason != "watchdog" {
             setUserLaneUnreachable(false)
+            // And whatever is on the queue right now is answering the previous question. Bumped here
+            // rather than inside the bring-up, so a round already running sees it immediately.
+            bumpUserLaneGeneration()
         }
         // Taken before the core is even asked to start. Between here and a proven inbound,
         // Telegram is pointed at a port nothing is listening on, which is the whole point: a
@@ -1316,6 +1377,7 @@ extension AorusRealityManager {
     func userLaneStop(reason: String) {
         queue.async { [weak self] in
             guard let self else { return }
+            self.beginUserLaneRound()
             guard self.userLanePort != nil || self.userLaneServerId != nil else {
                 self.cancelUserLaneRetryLocked(resetAttempt: true)
                 self.userLaneServer = nil
@@ -1331,6 +1393,9 @@ extension AorusRealityManager {
 
     private func userLaneBringUpLocked(reason: String) {
         guard !transitionInProgress else { return }
+        // This round now owns the current generation: everything below is being done for the request
+        // that queued it, and a later request will move the number on and cut the round short.
+        beginUserLaneRound()
         guard AorusUserVPNStore.shared.isEnabled,
               let server = AorusUserVPNStore.shared.selectedServer else {
             userLaneTearDownLocked()
@@ -1370,6 +1435,7 @@ extension AorusRealityManager {
         userLaneServer = nil
         userLaneUdpEnabled = nil
         userLaneMuxEnabled = nil
+        setUserLaneServingServerId(nil)
         // Whatever the signed lane thought it was serving died with that core.
         activePort = nil
         activeEndpoint = nil
@@ -1384,6 +1450,12 @@ extension AorusRealityManager {
         }
         for (index, candidate) in candidates.enumerated() {
             guard AorusUserVPNStore.shared.isActive else { break }
+            // The user picked a different server while this round was working. The round that their
+            // tap queued is sitting right behind this one, so there is nothing to do but stop.
+            guard !userLaneRoundIsStale else {
+                recordDiagnostic(stage: "user_round_superseded", detail: reason)
+                return
+            }
             if index > 0 {
                 recordDiagnostic(stage: "user_failover", detail: "candidate_\(index)")
             }
@@ -1400,6 +1472,12 @@ extension AorusRealityManager {
             return
         }
 
+        // A superseded round must not leave a verdict behind: "нет соединения" from a walk the user
+        // interrupted, or a backoff timer competing with the round they actually asked for.
+        guard !userLaneRoundIsStale else {
+            recordDiagnostic(stage: "user_round_superseded", detail: reason)
+            return
+        }
         recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
         setUserLaneUnreachable(true)
         // An explicitly enabled VPN must not fail open through the direct route. Its settings
@@ -1418,6 +1496,10 @@ extension AorusRealityManager {
         let server = candidate.server
         for port in Self.candidatePorts {
             guard AorusUserVPNStore.shared.isActive else { return false }
+            // Checked per port as well as per candidate: the port scan below is itself a walk with a
+            // core start and a preflight in it, and a tap on another server should not have to wait
+            // for the end of one.
+            guard !userLaneRoundIsStale else { return false }
             guard localPortIsAvailable(port) else { continue }
             guard let json = AorusVlessLink.xrayConfiguration(
                 server: server,
@@ -1469,6 +1551,7 @@ extension AorusRealityManager {
             userLaneServer = server
             userLaneUdpEnabled = candidate.udpEnabled
             userLaneMuxEnabled = candidate.muxEnabled
+            setUserLaneServingServerId(server.id)
             setUserLaneUnreachable(false)
             cancelUserLaneRetryLocked(resetAttempt: true)
             recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
@@ -1490,6 +1573,7 @@ extension AorusRealityManager {
         userLaneServer = nil
         userLaneUdpEnabled = nil
         userLaneMuxEnabled = nil
+        setUserLaneServingServerId(nil)
         activePort = nil
         activeEndpoint = nil
         userLaneReleaseTelegramLocked()

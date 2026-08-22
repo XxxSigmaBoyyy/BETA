@@ -100,6 +100,10 @@ public func aorusUserVPNSectionState() -> Signal<AorusUserVPNSectionState, NoErr
         // and the fastest-server choice are made of, and this screen is the only place that lists
         // them, so nowhere else would ever ask.
         AorusUserVPNManager.shared.measureVisibleServers()
+        // And every subscription that is allowed to update itself and has gone stale is refetched,
+        // so the traffic and expiry on the cards are the panel's own numbers when the screen opens
+        // rather than whatever they were when the user last pressed "Обновить" by hand.
+        AorusUserVPNManager.shared.refreshStaleSubscriptions()
         let emit: () -> Void = {
             subscriber.putNext(aorusUserVPNSnapshot())
         }
@@ -426,7 +430,7 @@ func aorusUserVPNConfigDetail(config: AorusVlessConfig, updating: Bool, l10n: Ao
     if let expires = config.expiresAt, expires > 0.0 {
         parts.append(l10n.userVPNExpiresShort(aorusUserVPNDateText(expires)))
     }
-    return parts.joined(separator: " · ")
+    return parts.joined(separator: " | ")
 }
 
 /// The server row's second line: what the key actually is, and the last measured handshake.
@@ -447,7 +451,7 @@ func aorusUserVPNServerDetail(
     } else if let latency = latency, latency > 0.0 {
         parts.append(l10n.userVPNLatency(Int(latency.rounded())))
     }
-    return parts.joined(separator: " · ")
+    return parts.joined(separator: " | ")
 }
 
 func aorusUserVPNBestMeasuredServerId(

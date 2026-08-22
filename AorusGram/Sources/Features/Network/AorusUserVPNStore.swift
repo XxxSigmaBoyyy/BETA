@@ -252,17 +252,37 @@ public final class AorusUserVPNStore {
                 // when nothing has ever been measured. Turning the switch on used to pin the very
                 // first server of the very first configuration, which in a twelve-server
                 // subscription is a coin toss that stays flipped: with that one down, the retry
-                // loop dials it and nothing else. Reading `latencies` here rather than through
-                // `bestMeasuredServerId` is deliberate -- `update` is already holding the lock that
-                // guards it, and NSLock is not recursive.
-                let candidates = stored.configs.flatMap { $0.servers }
-                let measured = candidates.compactMap { server -> (String, Double)? in
-                    guard let value = self.latencies[server.id], value > 0.0 else { return nil }
-                    return (server.id, value)
-                }
-                stored.selectedServerId = measured.min(by: { $0.1 < $1.1 })?.0 ?? candidates.first?.id
+                // loop dials it and nothing else.
+                stored.selectedServerId = self.fallbackServerId(stored, preferring: nil)
             }
         }
+    }
+
+    /// A server to fall back on when the selected one has gone: the lowest measured handshake, and
+    /// the first row that exists when nothing has been measured yet.
+    ///
+    /// `preferring` names the configuration to look at first — the one just imported, or the one
+    /// just refreshed — so a fallback lands in the list the user was working with rather than in
+    /// whichever card happens to sort first. Every configuration is still searched: the old code
+    /// only ever read `configs.first`, so with several imported, a first card whose server list was
+    /// empty produced nil and switched the whole lane off while other cards had servers to dial.
+    ///
+    /// Called from inside `update`, which already holds the lock, so `latencies` is read directly:
+    /// `NSLock` is not recursive.
+    private func fallbackServerId(_ stored: Stored, preferring configId: String?) -> String? {
+        var ordered: [AorusVlessServer] = []
+        if let configId, let config = stored.configs.first(where: { $0.id == configId }) {
+            ordered.append(contentsOf: config.servers)
+        }
+        for config in stored.configs where config.id != configId {
+            ordered.append(contentsOf: config.servers)
+        }
+        guard !ordered.isEmpty else { return nil }
+        let measured = ordered.compactMap { server -> (String, Double)? in
+            guard let value = self.latencies[server.id], value > 0.0 else { return nil }
+            return (server.id, value)
+        }
+        return measured.min(by: { $0.1 < $1.1 })?.0 ?? ordered.first?.id
     }
 
     public func selectServer(id: String?) {
@@ -315,9 +335,10 @@ public final class AorusUserVPNStore {
                 stored.configs.append(config)
                 resultId = config.id
             }
-            // Importing while the lane is on should connect, not wait for a second tap.
+            // Importing while the lane is on should connect, not wait for a second tap — and it
+            // should connect through what was just imported rather than through the oldest card.
             if stored.enabled, Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
-                stored.selectedServerId = stored.configs.first?.servers.first?.id
+                stored.selectedServerId = self.fallbackServerId(stored, preferring: resultId)
             }
         }
         return resultId
@@ -343,7 +364,7 @@ public final class AorusUserVPNStore {
             if let value = trafficTotal { stored.configs[index].trafficTotal = value }
             if let value = expiresAt { stored.configs[index].expiresAt = value }
             if Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
-                stored.selectedServerId = servers.first?.id
+                stored.selectedServerId = self.fallbackServerId(stored, preferring: configId)
             }
         }
     }
@@ -373,9 +394,10 @@ public final class AorusUserVPNStore {
         self.update { stored in
             stored.configs.removeAll { $0.id == id }
             if Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
-                stored.selectedServerId = stored.configs.first?.servers.first?.id
-                // Nothing left to dial: the switch goes off with the last configuration rather
-                // than staying on and doing nothing.
+                stored.selectedServerId = self.fallbackServerId(stored, preferring: nil)
+                // Nothing left to dial anywhere: the switch goes off with the last configuration
+                // rather than staying on and doing nothing. Every other card is searched first, so
+                // deleting one of several no longer turns the lane off.
                 if stored.selectedServerId == nil {
                     stored.enabled = false
                 }
@@ -388,7 +410,7 @@ public final class AorusUserVPNStore {
             guard let index = stored.configs.firstIndex(where: { $0.id == configId }) else { return }
             stored.configs[index].servers.removeAll { $0.id == serverId }
             if Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
-                stored.selectedServerId = stored.configs.first?.servers.first?.id
+                stored.selectedServerId = self.fallbackServerId(stored, preferring: configId)
                 if stored.selectedServerId == nil {
                     stored.enabled = false
                 }

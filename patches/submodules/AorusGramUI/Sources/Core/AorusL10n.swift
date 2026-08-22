@@ -476,8 +476,8 @@ public struct AorusL10n {
     public var userVPNServersHeader: String { t("СЕРВЕРА", "SERVERS") } // AORUS-VPN
     public var userVPNFooter: String {
         t(
-            "Добавьте ключ VLESS или ссылку на подписку из буфера обмена. Параметры подключения доступны внутри конфигурации.",
-            "Add a VLESS key or subscription link from the clipboard. Connection options are available inside the configuration."
+            "Добавьте ключ VLESS, VMess, Trojan, Shadowsocks или ссылку на подписку из буфера обмена. Параметры подключения доступны внутри конфигурации.",
+            "Add a VLESS, VMess, Trojan or Shadowsocks key or a subscription link from the clipboard. Connection options are available inside the configuration."
         )
     } // AORUS-VPN
     public var userVPNNoConfigs: String { t("Сначала добавьте конфигурацию.", "Add a configuration first.") } // AORUS-VPN
@@ -503,8 +503,8 @@ public struct AorusL10n {
         return t("Добавлено серверов: %@", "Servers added: %@").replacingOccurrences(of: "%@", with: "\(count)")
     } // AORUS-VPN
     public var userVPNImportFailed: String { t("Не удалось импортировать", "Import failed") } // AORUS-VPN
-    public var userVPNClipboardEmpty: String { t("В буфере обмена нет ключа VLESS.", "There is no VLESS key on the clipboard.") } // AORUS-VPN
-    public var userVPNImportUnsupported: String { t("Поддерживаются ключи vless:// и ссылки на подписку.", "vless:// keys and subscription links are supported.") } // AORUS-VPN
+    public var userVPNClipboardEmpty: String { t("В буфере обмена нет ключа.", "There is no key on the clipboard.") } // AORUS-VPN
+    public var userVPNImportUnsupported: String { t("Поддерживаются ключи VLESS, VMess, Trojan, Shadowsocks и ссылки на подписку.", "VLESS, VMess, Trojan and Shadowsocks keys and subscription links are supported.") } // AORUS-VPN
     public var userVPNImportMalformed: String { t("Ключ повреждён или заполнен не полностью.", "The key is malformed or incomplete.") } // AORUS-VPN
     public var userVPNImportInsecure: String { t("Ссылка на подписку должна начинаться с https://.", "A subscription link has to start with https://.") } // AORUS-VPN
     public var userVPNImportDuplicate: String { t("Эта конфигурация уже добавлена.", "This configuration has already been added.") } // AORUS-VPN

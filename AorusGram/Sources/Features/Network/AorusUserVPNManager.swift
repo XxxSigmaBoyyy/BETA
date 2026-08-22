@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 /// Everything the user's own VLESS configurations do at runtime: import, refresh, measure,
 /// select, and bring the core up or down.
@@ -19,9 +20,13 @@ public final class AorusUserVPNManager {
         case failed(AorusVlessImportError)
     }
 
-    /// A subscription is only refetched when it is older than this. Panels rate-limit, and a
-    /// list of servers that changed an hour ago is not worth a request on every screen open.
-    private let subscriptionStaleInterval: TimeInterval = 6.0 * 60.0 * 60.0
+    /// A subscription is only refetched when it is older than this. Short enough that the traffic
+    /// counter on the card is the panel's own number rather than yesterday's, long enough that a
+    /// screen opened ten times in a row is still one request.
+    private let subscriptionStaleInterval: TimeInterval = 15.0 * 60.0
+    /// How often the background tick goes looking for a stale subscription. The tick itself costs
+    /// nothing when everything is fresh — it is a comparison per card.
+    private let autoUpdateTickInterval: TimeInterval = 5.0 * 60.0
     private let requestTimeout: TimeInterval = 20.0
     /// A TCP handshake that has not completed by now is not a server anyone wants to be on.
     private let latencyTimeout: TimeInterval = 3.0
@@ -37,6 +42,10 @@ public final class AorusUserVPNManager {
     private var configsBeingUpdated = Set<String>()
     private var serversBeingProbed = Set<String>()
     private var lastVisibleSweepAt: TimeInterval = 0.0
+    /// The tick that makes "Обновлять автоматически" mean something while the app is open.
+    private let autoUpdateQueue = DispatchQueue(label: "aorusgram.uservpn.autoupdate", qos: .utility)
+    private var autoUpdateTimer: DispatchSourceTimer?
+    private var foregroundObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -48,9 +57,47 @@ public final class AorusUserVPNManager {
     /// in-process Xray core, and whichever runs second has to find the first one's ownership
     /// already published rather than discover it after tearing it down.
     public func startIfEnabled() {
+        // Auto-update is deliberately outside the guard below. A card whose traffic counter is a
+        // day out of date is wrong whether or not the lane happens to be carrying traffic right
+        // now, and the switch says "Обновлять автоматически", not "обновлять пока подключено".
+        self.startAutoUpdate()
+        self.refreshStaleSubscriptions()
         guard AorusUserVPNStore.shared.isActive else { return }
         AorusRealityManager.shared.userLaneStart(reason: "app_start")
-        self.refreshStaleSubscriptions()
+    }
+
+    /// The periodic tick, plus a refresh every time the app comes back to the foreground.
+    ///
+    /// Both are needed: the timer does not fire while the app is suspended, so a client left in the
+    /// background overnight would otherwise show yesterday's numbers until it happened to tick, and
+    /// a client left open in the foreground would never refresh without the timer.
+    private func startAutoUpdate() {
+        self.lock.lock()
+        let alreadyStarted = self.autoUpdateTimer != nil
+        self.lock.unlock()
+        guard !alreadyStarted else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: self.autoUpdateQueue)
+        timer.schedule(
+            deadline: .now() + self.autoUpdateTickInterval,
+            repeating: self.autoUpdateTickInterval,
+            leeway: .seconds(30)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.refreshStaleSubscriptions()
+        }
+        let observer = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshStaleSubscriptions()
+        }
+        self.lock.lock()
+        self.autoUpdateTimer = timer
+        self.foregroundObserver = observer
+        self.lock.unlock()
+        timer.resume()
     }
 
     // MARK: - The switch
@@ -104,10 +151,25 @@ public final class AorusUserVPNManager {
 
     // MARK: - Selection
 
+    /// Move onto a server, and connect through it now rather than at the next opportunity.
+    ///
+    /// The store is written first and the bring-up asked for second, so the lane reads the new
+    /// selection rather than being told which server to use — there is one source of truth for what
+    /// is selected. A round already in flight is cut short by `userLaneStart`, which is what makes
+    /// the switch immediate instead of "after the previous walk finishes".
+    ///
+    /// A tap on the row that is already ticked is not ignored either. When the lane is not carrying
+    /// traffic through that exact server, the row is the only thing on the screen the user can press
+    /// to try again, so it starts a bring-up; when it is already serving it, there is nothing to do.
     public func selectServer(id: String) {
-        guard AorusUserVPNStore.shared.selectedServerId != id else { return }
-        AorusUserVPNStore.shared.selectServer(id: id)
+        let alreadySelected = AorusUserVPNStore.shared.selectedServerId == id
+        if !alreadySelected {
+            AorusUserVPNStore.shared.selectServer(id: id)
+        }
         guard AorusUserVPNStore.shared.isActive else { return }
+        if alreadySelected, AorusRealityManager.shared.userLaneServingServer == id {
+            return
+        }
         AorusRealityManager.shared.userLaneStart(reason: "server_selected")
     }
 
@@ -136,31 +198,77 @@ public final class AorusUserVPNManager {
                 )
                 self.restartIfServing(configId: id)
                 self.deliver(.added(configId: id, servers: servers.count), to: completion)
-            case let .subscription(url):
-                guard !self.containsSubscription(url) else {
+            case let .subscriptions(urls):
+                let fresh = urls.filter { !self.containsSubscription($0) }
+                guard !fresh.isEmpty else {
                     self.deliver(.failed(.duplicate), to: completion)
                     return
                 }
-                self.fetchSubscription(url: url) { [weak self] result in
-                    guard let self else { return }
-                    switch result {
-                    case let .failure(error):
-                        self.deliver(.failed(error), to: completion)
-                    case let .success(payload):
-                        let name = payload.title ?? Self.subscriptionName(for: url)
-                        let id = AorusUserVPNStore.shared.addConfig(
-                            name: name,
-                            subscriptionUrl: url,
-                            servers: payload.servers,
-                            trafficUsed: payload.trafficUsed,
-                            trafficTotal: payload.trafficTotal,
-                            expiresAt: payload.expiresAt
-                        )
-                        self.restartIfServing(configId: id)
-                        self.deliver(.added(configId: id, servers: payload.servers.count), to: completion)
-                    }
-                }
+                self.importSubscriptions(
+                    fresh,
+                    index: 0,
+                    addedConfigId: nil,
+                    addedServers: 0,
+                    firstError: nil,
+                    completion: completion
+                )
             }
+        }
+    }
+
+    /// Fetch a list of subscription URLs one after another, adding a card for each.
+    ///
+    /// Sequential rather than concurrent, because the order the cards appear in should be the order
+    /// they were written in, and because a paste out of a channel can carry a dozen links and this
+    /// is not a reason to open a dozen connections at once. A failure is only reported when nothing
+    /// at all could be added: one dead link among four is not a failed import.
+    private func importSubscriptions(
+        _ urls: [String],
+        index: Int,
+        addedConfigId: String?,
+        addedServers: Int,
+        firstError: AorusVlessImportError?,
+        completion: @escaping (ImportResult) -> Void
+    ) {
+        guard index < urls.count else {
+            if let addedConfigId {
+                self.deliver(.added(configId: addedConfigId, servers: addedServers), to: completion)
+            } else {
+                self.deliver(.failed(firstError ?? .malformed), to: completion)
+            }
+            return
+        }
+        let url = urls[index]
+        self.fetchSubscription(url: url) { [weak self] result in
+            guard let self else { return }
+            var configId = addedConfigId
+            var servers = addedServers
+            var error = firstError
+            switch result {
+            case let .failure(fetchError):
+                error = error ?? fetchError
+            case let .success(payload):
+                let name = payload.title ?? Self.subscriptionName(for: url)
+                let id = AorusUserVPNStore.shared.addConfig(
+                    name: name,
+                    subscriptionUrl: url,
+                    servers: payload.servers,
+                    trafficUsed: payload.trafficUsed,
+                    trafficTotal: payload.trafficTotal,
+                    expiresAt: payload.expiresAt
+                )
+                self.restartIfServing(configId: id)
+                configId = configId ?? id
+                servers += payload.servers.count
+            }
+            self.importSubscriptions(
+                urls,
+                index: index + 1,
+                addedConfigId: configId,
+                addedServers: servers,
+                firstError: error,
+                completion: completion
+            )
         }
     }
 
@@ -239,14 +347,19 @@ public final class AorusUserVPNManager {
     /// "Лучший сервер" and the fastest-server choice are made of: without this the label could not
     /// appear and the choice had nothing to choose from, which is exactly how it looked.
     ///
-    /// The winner is selected only for a configuration set to choose for itself. A lane that is on
-    /// and not yet carrying traffic is *not* a reason to move the selection: bringing a server up
-    /// already walks past the ones that will not answer, and moving the tick as well is how the
-    /// chosen server appeared to change on its own with auto-select switched off.
+    /// Every configuration is swept, not just the selected one. With two subscriptions imported, the
+    /// cards that were not selected had no numbers at all — no "Лучший сервер", nothing to order the
+    /// list by, and nothing for a cross-configuration failover to prefer.
+    ///
+    /// The winner is selected only for a configuration set to choose for itself, and only when the
+    /// user is already on that configuration. A card choosing for itself must not pull the selection
+    /// out of another card that the user picked by hand. A lane that is on and not yet carrying
+    /// traffic is *not* a reason to move the selection either: bringing a server up already walks
+    /// past the ones that will not answer, and moving the tick as well is how the chosen server
+    /// appeared to change on its own with auto-select switched off.
     public func measureVisibleServers() {
-        guard let config = AorusUserVPNStore.shared.selectedConfig ?? AorusUserVPNStore.shared.configs.first else {
-            return
-        }
+        let configs = AorusUserVPNStore.shared.configs
+        guard !configs.isEmpty else { return }
         // A sweep is one TCP handshake per server and a screen can be pushed and popped as fast as a
         // finger moves, so it is rate-limited rather than tied to the appearance itself.
         let now = Date().timeIntervalSince1970
@@ -258,7 +371,14 @@ public final class AorusUserVPNManager {
         self.lock.unlock()
         guard due else { return }
 
-        self.probeAllServers(configId: config.id, selectFastest: config.autoSelectFastest)
+        let selected = AorusUserVPNStore.shared.selectedServerId
+        for config in configs where !config.servers.isEmpty {
+            let ownsSelection = selected == nil || config.servers.contains { $0.id == selected }
+            self.probeAllServers(
+                configId: config.id,
+                selectFastest: config.autoSelectFastest && ownsSelection
+            )
+        }
     }
 
     /// Measure every server of a configuration, and optionally move onto the best one.
@@ -340,6 +460,10 @@ public final class AorusUserVPNManager {
 
     public func setAutoUpdate(configId: String, value: Bool) {
         AorusUserVPNStore.shared.setAutoUpdate(configId: configId, value: value)
+        // Turning it on is itself a request for an update: the user turned it on because what the
+        // card is showing is out of date.
+        guard value else { return }
+        self.refreshSubscription(configId: configId, completion: nil)
     }
 
     public func setAutoSelectFastest(configId: String, value: Bool) {
@@ -364,9 +488,11 @@ public final class AorusUserVPNManager {
         // literal made the compiler infer the element type from `??`, a ternary and method calls
         // all at once, which it refuses to finish ("unable to type-check in reasonable time").
         var fields: [String] = []
+        fields.append(server.proto)
         fields.append(server.address.lowercased())
         fields.append(String(server.port))
-        fields.append(server.userId.lowercased())
+        fields.append(server.credential)
+        fields.append(server.encryption)
         fields.append(server.flow)
         fields.append(server.network)
         fields.append(server.security)
@@ -472,8 +598,9 @@ public final class AorusUserVPNManager {
 
     private static func configName(for servers: [AorusVlessServer]) -> String {
         // Deliberately not localised: the name is stored, shown, and renameable by the user, so
-        // it has to read the same after they switch the interface language.
-        guard let first = servers.first else { return "VLESS" }
+        // it has to read the same after they switch the interface language. The fallbacks name the
+        // protocol that was imported rather than saying "VLESS" over a VMess or Trojan card.
+        guard let first = servers.first else { return "Proxy" }
         if servers.count == 1 {
             return first.name
         }
@@ -482,7 +609,7 @@ public final class AorusUserVPNManager {
 
     private static func subscriptionName(for url: String) -> String {
         guard let host = URL(string: url)?.host, !host.isEmpty else {
-            return "VLESS"
+            return "Subscription"
         }
         return host
     }
@@ -530,7 +657,7 @@ public final class AorusUserVPNManager {
             switch AorusVlessLink.parse(text) {
             case let .success(.servers(parsed)):
                 servers = parsed
-            case .success(.subscription):
+            case .success(.subscriptions):
                 // A subscription that answers with another URL is not followed: one redirect
                 // level of indirection is all a paste is allowed to buy.
                 completion(.failure(.unsupported))
