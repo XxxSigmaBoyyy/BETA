@@ -624,6 +624,61 @@ public final class AorusUserVPNManager {
         let expiresAt: TimeInterval?
     }
 
+    /// One way of asking a panel for a subscription.
+    ///
+    /// A panel decides which notation to answer in from the user agent alone — nothing the request
+    /// can say chooses it — so asking is the only way to find out what a given panel will serve.
+    private struct SubscriptionProfile {
+        let userAgent: String
+        let accept: String
+    }
+
+    /// The clients this fetch presents itself as, in the order it tries them.
+    ///
+    /// Measured against a live Remnawave panel: `v2rayN` is answered with the base64 list of links,
+    /// `Happ` with an array of Xray configurations, `SFI` with a sing-box configuration and `Clash`
+    /// with YAML. All four are read by the parser, so the ladder exists for the panels that answer
+    /// only some of these — a template that has no branch for one client answers it with a stub or
+    /// with nothing, and the next profile is what turns that into a working import.
+    ///
+    /// The list is walked only until a body yields servers, so the common case is one request.
+    private static let subscriptionProfiles: [SubscriptionProfile] = [
+        SubscriptionProfile(userAgent: "v2rayN/6.45", accept: "text/plain, */*"),
+        SubscriptionProfile(userAgent: "Happ/2.20.0", accept: "application/json, text/plain, */*"),
+        SubscriptionProfile(userAgent: "SFI/1.10.0", accept: "application/json, text/plain, */*"),
+        SubscriptionProfile(userAgent: "Clash/2.0", accept: "text/yaml, text/plain, */*")
+    ]
+
+    /// The device identity a panel with hardware-id enforcement demands.
+    ///
+    /// With `x-hwid-active` on, a panel answers a request that carries no device headers with a
+    /// single unusable placeholder link — the "Приложение не поддерживается" node — for *every*
+    /// client, which is exactly what an import of such a link looked like from the inside: one key
+    /// pointing at 0.0.0.0:1, correctly refused, and no way for the user to tell why.
+    ///
+    /// The identifier is stable across reinstalls, because a panel counts devices and a value that
+    /// changed on every launch would burn through the account's device limit. It is derived from the
+    /// install id under its own domain separator rather than reusing the licence device hash, so a
+    /// subscription host cannot correlate the two.
+    private static func subscriptionHardwareId() -> String {
+        var input = Data("aorus-uservpn-hwid".utf8)
+        input.append(0x1f)
+        input.append(Data(DeviceFingerprint.keychainInstallId().utf8))
+        return String(LicenseCrypto.sha256Hex(input).prefix(32))
+    }
+
+    /// The hardware string, `iPhone15,3`, which is what other clients report here.
+    private static func deviceModelIdentifier() -> String {
+        var info = utsname()
+        uname(&info)
+        let identifier = withUnsafePointer(to: &info.machine) { pointer -> String in
+            return pointer.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) { text in
+                return String(cString: text)
+            }
+        }
+        return identifier.isEmpty ? "iPhone" : identifier
+    }
+
     private func fetchSubscription(
         url: String,
         completion: @escaping (Result<SubscriptionPayload, AorusVlessImportError>) -> Void
@@ -632,51 +687,116 @@ public final class AorusUserVPNManager {
             completion(.failure(.insecureSubscription))
             return
         }
+        self.fetchSubscription(requestUrl: requestUrl, profileIndex: 0, firstError: nil, completion: completion)
+    }
+
+    private func fetchSubscription(
+        requestUrl: URL,
+        profileIndex: Int,
+        firstError: AorusVlessImportError?,
+        completion: @escaping (Result<SubscriptionPayload, AorusVlessImportError>) -> Void
+    ) {
+        guard profileIndex < Self.subscriptionProfiles.count else {
+            completion(.failure(firstError ?? .malformed))
+            return
+        }
+        let profile = Self.subscriptionProfiles[profileIndex]
         var request = URLRequest(url: requestUrl)
         request.timeoutInterval = self.requestTimeout
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        // Panels branch on the user agent to decide which format to answer with; an unknown one
-        // gets the base64 list, which is exactly what is parsed below.
-        request.setValue("AorusGram", forHTTPHeaderField: "User-Agent")
+        request.setValue(profile.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(profile.accept, forHTTPHeaderField: "Accept")
+        request.setValue(Self.subscriptionHardwareId(), forHTTPHeaderField: "x-hwid")
+        request.setValue("iOS", forHTTPHeaderField: "x-device-os")
+        request.setValue(UIDevice.current.systemVersion, forHTTPHeaderField: "x-ver-os")
+        request.setValue(Self.deviceModelIdentifier(), forHTTPHeaderField: "x-device-model")
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = self.requestTimeout
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
         let session = URLSession(configuration: configuration)
-        let task = session.dataTask(with: request) { data, response, _ in
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
             session.finishTasksAndInvalidate()
-            guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode),
-                  let data, !data.isEmpty, data.count <= 4_000_000,
-                  let text = String(data: data, encoding: .utf8) else {
-                completion(.failure(.malformed))
+            guard let http = response as? HTTPURLResponse, error == nil else {
+                // Nothing answered. Asking again as a different client would only spend another
+                // timeout on the same unreachable host.
+                completion(.failure(firstError ?? .malformed))
                 return
             }
-            var servers: [AorusVlessServer] = []
-            switch AorusVlessLink.parse(text) {
-            case let .success(.servers(parsed)):
-                servers = parsed
-            case .success(.subscriptions):
-                // A subscription that answers with another URL is not followed: one redirect
-                // level of indirection is all a paste is allowed to buy.
-                completion(.failure(.unsupported))
-                return
-            case let .failure(error):
-                completion(.failure(error))
-                return
+            switch Self.subscriptionPayload(data: data, response: http) {
+            case let .success(payload):
+                completion(.success(payload))
+            case let .failure(failure):
+                guard failure != .deviceLimit else {
+                    // The account is out of device slots. Every client profile is answered with the
+                    // same placeholder list, so there is nothing to gain from asking again.
+                    completion(.failure(failure))
+                    return
+                }
+                guard let self else {
+                    completion(.failure(firstError ?? failure))
+                    return
+                }
+                // The host is up and answered something this notation could not be read out of, so
+                // the next client profile is worth a request.
+                self.fetchSubscription(
+                    requestUrl: requestUrl,
+                    profileIndex: profileIndex + 1,
+                    firstError: firstError ?? failure,
+                    completion: completion
+                )
             }
-            let info = Self.parseSubscriptionUserInfo(http.value(forHTTPHeaderField: "Subscription-Userinfo"))
-            let title = Self.decodeProfileTitle(http.value(forHTTPHeaderField: "Profile-Title"))
-            completion(.success(SubscriptionPayload(
-                servers: servers,
-                title: title,
-                trafficUsed: info.used,
-                trafficTotal: info.total,
-                expiresAt: info.expire
-            )))
         }
         task.resume()
+    }
+
+    /// One subscription response as servers plus the counters the card shows.
+    private static func subscriptionPayload(
+        data: Data?,
+        response: HTTPURLResponse
+    ) -> Result<SubscriptionPayload, AorusVlessImportError> {
+        guard (200 ..< 300).contains(response.statusCode),
+              let data, !data.isEmpty, data.count <= 4_000_000,
+              let text = String(data: data, encoding: .utf8) else {
+            return .failure(.malformed)
+        }
+        // A panel that has run out of device slots answers every client with a list of placeholder
+        // nodes that cannot connect, and says so only in this header. Without reading it the import
+        // would fail as "damaged key" and the user would have no way to learn what is actually
+        // wrong with their account.
+        //
+        // Read as the *reason* a response carried nothing usable rather than as a refusal of its
+        // own: a panel configured to keep serving while over the limit sends the header next to a
+        // real server list, and refusing that would break a subscription that works.
+        let limitField = (response.value(forHTTPHeaderField: "x-hwid-max-devices-reached") ?? "")
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        let limitReached = limitField == "true" || limitField == "1"
+        var servers: [AorusVlessServer] = []
+        switch AorusVlessLink.parse(text) {
+        case let .success(.servers(parsed)):
+            servers = parsed
+        case .success(.subscriptions):
+            // A subscription that answers with another URL is not followed: one redirect
+            // level of indirection is all a paste is allowed to buy.
+            return .failure(limitReached ? .deviceLimit : .unsupported)
+        case let .failure(error):
+            return .failure(limitReached ? .deviceLimit : error)
+        }
+        guard !servers.isEmpty else {
+            return .failure(limitReached ? .deviceLimit : .malformed)
+        }
+        let info = parseSubscriptionUserInfo(response.value(forHTTPHeaderField: "Subscription-Userinfo"))
+        let title = decodeProfileTitle(response.value(forHTTPHeaderField: "Profile-Title"))
+        return .success(SubscriptionPayload(
+            servers: servers,
+            title: title,
+            trafficUsed: info.used,
+            trafficTotal: info.total,
+            expiresAt: info.expire
+        ))
     }
 
     /// `upload=…; download=…; total=…; expire=…`, the de facto header every panel sends.

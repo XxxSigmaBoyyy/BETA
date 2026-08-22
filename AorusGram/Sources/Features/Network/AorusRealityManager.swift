@@ -201,6 +201,23 @@ public final class AorusRealityManager {
     private let userLaneCandidatesPerRound = 3
     private let userLaneStatusLock = NSLock()
     private var userLaneUnreachable = false
+    /// A bring-up the user asked for is in flight. Set the moment they ask and cleared when the lane
+    /// is either carrying traffic or out of servers.
+    ///
+    /// This cannot be derived from the other two. While a switch to another server is being brought
+    /// up, the previous endpoint is still published — deliberately, so traffic is not dropped on the
+    /// floor mid-switch — so "serving" is still true and the row went on saying "подключено" through
+    /// the whole switch. The user asked for the opposite: picking another server, in this
+    /// configuration or another one, should look exactly like turning the switch off and on again.
+    private var userLaneConnecting = false
+    /// When that bring-up started, so a spinner cannot outlive the round that owns it. A crash inside
+    /// the round, a core that never answers, a process suspended mid-preflight: none of those clear
+    /// the flag, and a row spinning forever is worse than one that is briefly wrong.
+    private var userLaneConnectingSince: TimeInterval = 0
+    /// How long a bring-up is allowed to be shown as one. Comfortably longer than a full round —
+    /// three candidates, each with a port scan and a preflight budget — and short enough that a
+    /// wedged round stops claiming the row.
+    private let userLaneConnectingMaxDuration: TimeInterval = 45.0
     /// The server the lane is actually carrying traffic through, readable without going through the
     /// serial queue. The interface needs it to tell "this row is the one running" from "this row is
     /// the one ticked", which are not the same thing while a bring-up is in flight.
@@ -1344,6 +1361,40 @@ extension AorusRealityManager {
         }
     }
 
+    /// The lane is bringing a server up right now.
+    ///
+    /// Takes precedence over "serving" in the interface: during a switch both are true for a while,
+    /// and the one the user asked to see is this one.
+    public var userLaneIsConnecting: Bool {
+        guard AorusUserVPNStore.shared.isActive else { return false }
+        self.userLaneStatusLock.lock()
+        defer { self.userLaneStatusLock.unlock() }
+        guard self.userLaneConnecting else { return false }
+        guard Date().timeIntervalSince1970 - self.userLaneConnectingSince <= self.userLaneConnectingMaxDuration else {
+            return false
+        }
+        return true
+    }
+
+    private func setUserLaneConnecting(_ value: Bool) {
+        self.userLaneStatusLock.lock()
+        let changed = self.userLaneConnecting != value
+        self.userLaneConnecting = value
+        if value {
+            // Refreshed on every set, not only on the first: a second tap is a new round and gets
+            // its own window rather than inheriting the remains of the previous one's.
+            self.userLaneConnectingSince = Date().timeIntervalSince1970
+        }
+        self.userLaneStatusLock.unlock()
+        guard changed else { return }
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: AorusUserVPNManager.didChangeActivityNotification,
+                object: nil
+            )
+        }
+    }
+
     /// Bring the user's selected server up, or confirm the one already running.
     func userLaneStart(reason: String) {
         guard AorusUserVPNStore.shared.isActive else {
@@ -1358,6 +1409,10 @@ extension AorusRealityManager {
         // while nothing is connecting.
         if reason != "retry" && reason != "watchdog" {
             setUserLaneUnreachable(false)
+            // And the row starts saying "соединение" here, synchronously, for the same reason. A tap
+            // on another server has to look like a connection being made even though the previous
+            // endpoint is still up and still carrying traffic while it is made.
+            setUserLaneConnecting(true)
             // And whatever is on the queue right now is answering the previous question. Bumped here
             // rather than inside the bring-up, so a round already running sees it immediately.
             bumpUserLaneGeneration()
@@ -1380,6 +1435,7 @@ extension AorusRealityManager {
             self.beginUserLaneRound()
             guard self.userLanePort != nil || self.userLaneServerId != nil else {
                 self.cancelUserLaneRetryLocked(resetAttempt: true)
+                self.setUserLaneConnecting(false)
                 self.userLaneServer = nil
                 self.userLaneUdpEnabled = nil
                 self.userLaneMuxEnabled = nil
@@ -1420,6 +1476,7 @@ extension AorusRealityManager {
            self.isCoreRunning(),
            self.localSocksIsReady(port: port, timeout: self.localSocksMaxProbeTimeout) {
             self.cancelUserLaneRetryLocked(resetAttempt: true)
+            self.setUserLaneConnecting(false)
             self.userLanePublishEndpointLocked(port: port)
             return
         }
@@ -1480,6 +1537,9 @@ extension AorusRealityManager {
         }
         recordDiagnostic(stage: "user_core_unavailable", errorCode: "user_endpoint_unreachable")
         setUserLaneUnreachable(true)
+        // The walk is over and nothing came up, so the row stops claiming a connection is being made
+        // and says what actually happened.
+        setUserLaneConnecting(false)
         // An explicitly enabled VPN must not fail open through the direct route. Its settings
         // screen remains local and usable while retries continue in the background.
         userLaneBlockTelegramLocked()
@@ -1553,6 +1613,9 @@ extension AorusRealityManager {
             userLaneMuxEnabled = candidate.muxEnabled
             setUserLaneServingServerId(server.id)
             setUserLaneUnreachable(false)
+            // Proven end to end and about to be published: this is the one moment the row is
+            // entitled to say "подключено".
+            setUserLaneConnecting(false)
             cancelUserLaneRetryLocked(resetAttempt: true)
             recordDiagnostic(stage: "user_core_ready", localSocksReady: true, localPort: port)
             userLanePublishEndpointLocked(port: port)
@@ -1564,6 +1627,7 @@ extension AorusRealityManager {
     private func userLaneTearDownLocked() {
         cancelUserLaneRetryLocked(resetAttempt: true)
         setUserLaneUnreachable(false)
+        setUserLaneConnecting(false)
         if userLanePort != nil || isCoreRunning() {
             _ = invoke(method: "stopXray")
             waitForCoreStop()

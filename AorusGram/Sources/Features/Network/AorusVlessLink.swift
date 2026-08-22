@@ -272,6 +272,10 @@ public enum AorusVlessImportError: Error, Equatable {
     /// The exact key set or subscription is already present. Existing subscriptions have their
     /// own refresh action, so importing them again must not create an indistinguishable card.
     case duplicate
+    /// The panel answered, and what it answered is "this account has no device slot left". It sends
+    /// a list of unusable placeholder nodes in that case, which is indistinguishable from a damaged
+    /// response unless the header that says so is read.
+    case deviceLimit
 }
 
 /// Everything that turns text into servers, and servers into Xray configurations.
@@ -337,6 +341,12 @@ public enum AorusVlessLink {
             // decode is tried before giving up rather than as a special case the user has to
             // know about.
             body = decoded
+        }
+        // A panel answers in whatever notation the client that asked is known to read, and it picks
+        // that from the user agent rather than from anything the request can say. So a body may be
+        // a configuration document instead of a list of links, and it describes the same servers.
+        if let parsed = parseConfigurationBody(body) {
+            return parsed.isEmpty ? .failure(.unsupported) : .success(.servers(parsed))
         }
 
         var servers: [AorusVlessServer] = []
@@ -601,7 +611,7 @@ public enum AorusVlessLink {
             userInfo = decoded
         }
         guard let separator = userInfo.firstIndex(of: ":") else { return nil }
-        let method = String(userInfo[..<separator]).lowercased()
+        let method = shadowsocksMethod(String(userInfo[..<separator]))
         let password = String(userInfo[userInfo.index(after: separator)...])
         guard supportedShadowsocksMethods.contains(method), !password.isEmpty,
               password.count <= 256 else {
@@ -701,6 +711,23 @@ public enum AorusVlessLink {
     private static func vmessCipher(_ value: String?) -> String {
         let cipher = (value ?? "").lowercased()
         return supportedVmessCiphers.contains(cipher) ? cipher : "auto"
+    }
+
+    /// A Shadowsocks method in the spelling Xray's configuration expects.
+    ///
+    /// Clash, sing-box and the SIP002 links panels write all spell the ChaCha methods with "ietf" in
+    /// them, and that spelling is the same cipher. Folding it here is the difference between an
+    /// import that works and a key silently refused as an unknown method.
+    private static func shadowsocksMethod(_ value: String) -> String {
+        let method = value.lowercased().trimmingCharacters(in: .whitespaces)
+        switch method {
+        case "chacha20-ietf-poly1305":
+            return "chacha20-poly1305"
+        case "xchacha20-ietf-poly1305":
+            return "xchacha20-poly1305"
+        default:
+            return method
+        }
     }
 
     /// Everything a key of any protocol has in common: the transport, the TLS or REALITY layer,
@@ -834,6 +861,591 @@ public enum AorusVlessLink {
             allowInsecure: allowInsecure,
             link: link
         )
+    }
+
+    // MARK: - Configuration documents
+
+    /// One outbound out of a document, with the name the document gave it.
+    private struct DocumentOutbound {
+        let fields: [String: Any]
+        let name: String?
+    }
+
+    /// The servers in a configuration document, or nil when the body is not one.
+    ///
+    /// Three notations, all of which a user ends up with through no fault of their own: an Xray
+    /// configuration, a list of them (which is how a panel writes one configuration per server), a
+    /// sing-box configuration, and Clash's YAML. A client that reads only the base64 link list is
+    /// one panel template away from importing nothing at all.
+    ///
+    /// Every entry is turned back into a link and parsed as one rather than mapped onto the struct
+    /// field by field. That leaves a single validation path — the host, port, transport, security
+    /// and identity checks in `makeServer` — and leaves the row with a link the user can copy out
+    /// and paste into another client.
+    static func parseConfigurationBody(_ body: String) -> [AorusVlessServer]? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 4_000_000, let first = trimmed.first else {
+            return nil
+        }
+        if first == "{" || first == "[" {
+            guard let data = trimmed.data(using: .utf8),
+                  let root = try? JSONSerialization.jsonObject(with: data, options: []) else {
+                return nil
+            }
+            let outbounds = documentOutbounds(root, name: nil, depth: 0)
+            return serversFromLinks(outbounds.compactMap { outboundUri($0) })
+        }
+        if trimmed.hasPrefix("proxies:") || trimmed.contains("\nproxies:") {
+            return serversFromLinks(clashProxyUris(trimmed))
+        }
+        return nil
+    }
+
+    private static func serversFromLinks(_ links: [String]) -> [AorusVlessServer] {
+        var servers: [AorusVlessServer] = []
+        var seen = Set<String>()
+        for link in links {
+            guard let server = parseKey(link), !seen.contains(server.id) else { continue }
+            seen.insert(server.id)
+            servers.append(server)
+        }
+        return servers
+    }
+
+    /// Every outbound in a JSON document, however deeply the document nests them.
+    ///
+    /// A panel that answers in the Xray dialect sends an array of whole configurations, each with
+    /// one usable outbound in it and the server's name in `remarks`; sing-box sends one document
+    /// whose outbounds carry their own names in `tag`. Both are walked by the same recursion, and
+    /// the depth limit is what keeps a hostile body from turning into an unbounded walk.
+    private static func documentOutbounds(_ root: Any, name: String?, depth: Int) -> [DocumentOutbound] {
+        guard depth < 6 else { return [] }
+        if let array = root as? [Any] {
+            var result: [DocumentOutbound] = []
+            for element in array {
+                result.append(contentsOf: documentOutbounds(element, name: name, depth: depth + 1))
+            }
+            return result
+        }
+        guard let object = root as? [String: Any] else { return [] }
+        var result: [DocumentOutbound] = []
+        let documentName = jsonString(object["remarks"]) ?? jsonString(object["name"]) ?? name
+        if let nested = object["outbounds"] {
+            result.append(contentsOf: documentOutbounds(nested, name: documentName, depth: depth + 1))
+        }
+        if object["protocol"] != nil || object["type"] != nil {
+            result.append(DocumentOutbound(fields: object, name: documentName))
+        }
+        return result
+    }
+
+    /// The link one outbound describes, or nil when it describes something that is not a server:
+    /// `freedom`, `blackhole`, `dns`, a selector, or a protocol the core has no outbound for.
+    private static func outboundUri(_ entry: DocumentOutbound) -> String? {
+        let fields = entry.fields
+        if let proto = jsonString(fields["type"])?.lowercased(), fields["server"] != nil {
+            return singboxOutboundUri(fields, proto: proto, name: entry.name)
+        }
+        if let proto = jsonString(fields["protocol"])?.lowercased() {
+            return xrayOutboundUri(fields, proto: proto, name: entry.name)
+        }
+        return nil
+    }
+
+    /// The Xray dialect: the address lives under `settings`, the transport under `streamSettings`.
+    private static func xrayOutboundUri(
+        _ fields: [String: Any],
+        proto: String,
+        name: String?
+    ) -> String? {
+        let settings = fields["settings"] as? [String: Any] ?? [:]
+        let stream = fields["streamSettings"] as? [String: Any] ?? [:]
+        var query = xrayStreamQuery(stream)
+        // `tag` is a routing name -- "proxy", "direct" -- so it is only a fallback for the name the
+        // configuration itself carries.
+        let remark = name ?? jsonString(fields["tag"])
+        switch proto {
+        case "vless", "vmess":
+            guard let vnext = (settings["vnext"] as? [[String: Any]])?.first,
+                  let host = jsonString(vnext["address"]),
+                  let port = jsonString(vnext["port"]),
+                  let user = (vnext["users"] as? [[String: Any]])?.first,
+                  let credential = jsonString(user["id"]) else {
+                return nil
+            }
+            if proto == "vmess" {
+                query["encryption"] = vmessCipher(jsonString(user["security"]))
+                return buildUri(scheme: "vmess", userInfo: credential, host: host, port: port, query: query, remark: remark)
+            }
+            if let flow = jsonString(user["flow"]) {
+                query["flow"] = flow
+            }
+            return buildUri(scheme: "vless", userInfo: credential, host: host, port: port, query: query, remark: remark)
+        case "trojan", "shadowsocks":
+            guard let server = (settings["servers"] as? [[String: Any]])?.first,
+                  let host = jsonString(server["address"]),
+                  let port = jsonString(server["port"]),
+                  let password = jsonString(server["password"]) else {
+                return nil
+            }
+            if proto == "trojan" {
+                return buildUri(scheme: "trojan", userInfo: password, host: host, port: port, query: query, remark: remark)
+            }
+            guard let method = jsonString(server["method"])?.lowercased() else { return nil }
+            return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        default:
+            return nil
+        }
+    }
+
+    /// `streamSettings` as the query a link writes the same facts in.
+    private static func xrayStreamQuery(_ stream: [String: Any]) -> [String: String] {
+        var query: [String: String] = [:]
+        var network = (jsonString(stream["network"]) ?? "tcp").lowercased()
+        if network == "h2" {
+            network = "http"
+        }
+        query["type"] = network
+        query["security"] = (jsonString(stream["security"]) ?? "none").lowercased()
+        if let tls = stream["tlsSettings"] as? [String: Any] {
+            if let value = jsonString(tls["serverName"]) { query["sni"] = value }
+            if let value = jsonString(tls["fingerprint"]) { query["fp"] = value }
+            if let list = tls["alpn"] as? [Any] {
+                query["alpn"] = list.compactMap { jsonString($0) }.joined(separator: ",")
+            }
+            if let value = tls["allowInsecure"] as? Bool, value { query["allowInsecure"] = "1" }
+        }
+        if let reality = stream["realitySettings"] as? [String: Any] {
+            if let value = jsonString(reality["serverName"]) { query["sni"] = value }
+            if let value = jsonString(reality["fingerprint"]) { query["fp"] = value }
+            if let value = jsonString(reality["publicKey"]) { query["pbk"] = value }
+            if let value = jsonString(reality["shortId"]) { query["sid"] = value }
+            if let value = jsonString(reality["spiderX"]) { query["spx"] = value }
+        }
+        for (key, value) in xrayTransportQuery(stream, network: network) {
+            query[key] = value
+        }
+        return query
+    }
+
+    private static func xrayTransportQuery(_ stream: [String: Any], network: String) -> [String: String] {
+        var query: [String: String] = [:]
+        switch network {
+        case "ws", "httpupgrade", "xhttp":
+            let key = network == "ws" ? "wsSettings" : (network == "httpupgrade" ? "httpupgradeSettings" : "xhttpSettings")
+            guard let settings = stream[key] as? [String: Any] else { return query }
+            if let value = jsonString(settings["path"]) { query["path"] = value }
+            if let value = jsonString(settings["host"]) { query["host"] = value }
+            if let value = jsonString(settings["mode"]) { query["mode"] = value }
+            if let headers = settings["headers"] as? [String: Any] {
+                if let host = jsonString(headers["Host"]) ?? jsonString(headers["host"]) {
+                    query["host"] = host
+                }
+            }
+        case "grpc":
+            guard let settings = stream["grpcSettings"] as? [String: Any] else { return query }
+            if let value = jsonString(settings["serviceName"]) { query["serviceName"] = value }
+            if let multi = settings["multiMode"] as? Bool, multi { query["mode"] = "multi" }
+        case "http":
+            guard let settings = stream["httpSettings"] as? [String: Any] else { return query }
+            if let value = jsonString(settings["path"]) { query["path"] = value }
+            if let hosts = settings["host"] as? [Any] {
+                if let first = hosts.compactMap({ jsonString($0) }).first { query["host"] = first }
+            } else if let value = jsonString(settings["host"]) {
+                query["host"] = value
+            }
+        default:
+            guard let settings = stream["tcpSettings"] as? [String: Any],
+                  let header = settings["header"] as? [String: Any],
+                  (jsonString(header["type"]) ?? "").lowercased() == "http" else {
+                return query
+            }
+            query["headerType"] = "http"
+            guard let request = header["request"] as? [String: Any] else { return query }
+            if let paths = request["path"] as? [Any] {
+                if let first = paths.compactMap({ jsonString($0) }).first { query["path"] = first }
+            }
+            if let headers = request["headers"] as? [String: Any], let hosts = headers["Host"] as? [Any] {
+                if let first = hosts.compactMap({ jsonString($0) }).first { query["host"] = first }
+            }
+        }
+        return query
+    }
+
+    /// The sing-box dialect: flat address fields, TLS in one object, transport in another.
+    private static func singboxOutboundUri(
+        _ fields: [String: Any],
+        proto: String,
+        name: String?
+    ) -> String? {
+        guard let host = jsonString(fields["server"]),
+              let port = jsonString(fields["server_port"]) else {
+            return nil
+        }
+        let remark = jsonString(fields["tag"]) ?? name
+        var query = singboxStreamQuery(fields)
+        switch proto {
+        case "vless", "vmess":
+            guard let credential = jsonString(fields["uuid"]) else { return nil }
+            if proto == "vmess" {
+                query["encryption"] = vmessCipher(jsonString(fields["security"]))
+                return buildUri(scheme: "vmess", userInfo: credential, host: host, port: port, query: query, remark: remark)
+            }
+            if let flow = jsonString(fields["flow"]) {
+                query["flow"] = flow
+            }
+            return buildUri(scheme: "vless", userInfo: credential, host: host, port: port, query: query, remark: remark)
+        case "trojan":
+            guard let password = jsonString(fields["password"]) else { return nil }
+            return buildUri(scheme: "trojan", userInfo: password, host: host, port: port, query: query, remark: remark)
+        case "shadowsocks":
+            guard let password = jsonString(fields["password"]),
+                  let method = jsonString(fields["method"])?.lowercased() else {
+                return nil
+            }
+            return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        default:
+            return nil
+        }
+    }
+
+    private static func singboxStreamQuery(_ fields: [String: Any]) -> [String: String] {
+        var query: [String: String] = [:]
+        var network = "tcp"
+        if let transport = fields["transport"] as? [String: Any] {
+            let type = (jsonString(transport["type"]) ?? "").lowercased()
+            if !type.isEmpty {
+                network = type
+            }
+            if let value = jsonString(transport["path"]) { query["path"] = value }
+            if let value = jsonString(transport["host"]) { query["host"] = value }
+            if let hosts = transport["host"] as? [Any] {
+                if let first = hosts.compactMap({ jsonString($0) }).first { query["host"] = first }
+            }
+            if let value = jsonString(transport["service_name"]) { query["serviceName"] = value }
+            if let headers = transport["headers"] as? [String: Any] {
+                if let host = jsonString(headers["Host"]) ?? jsonString(headers["host"]) {
+                    query["host"] = host
+                }
+                if let hosts = (headers["Host"] as? [Any]) ?? (headers["host"] as? [Any]) {
+                    if let first = hosts.compactMap({ jsonString($0) }).first { query["host"] = first }
+                }
+            }
+        }
+        query["type"] = network
+        var security = "none"
+        if let tls = fields["tls"] as? [String: Any], (tls["enabled"] as? Bool) ?? false {
+            security = "tls"
+            if let value = jsonString(tls["server_name"]) { query["sni"] = value }
+            if let list = tls["alpn"] as? [Any] {
+                query["alpn"] = list.compactMap { jsonString($0) }.joined(separator: ",")
+            }
+            if let value = tls["insecure"] as? Bool, value { query["allowInsecure"] = "1" }
+            if let utls = tls["utls"] as? [String: Any], let value = jsonString(utls["fingerprint"]) {
+                query["fp"] = value
+            }
+            if let reality = tls["reality"] as? [String: Any], (reality["enabled"] as? Bool) ?? false {
+                security = "reality"
+                if let value = jsonString(reality["public_key"]) { query["pbk"] = value }
+                if let value = jsonString(reality["short_id"]) { query["sid"] = value }
+            }
+        }
+        query["security"] = security
+        return query
+    }
+
+    /// The links a Clash document's `proxies:` list describes.
+    ///
+    /// Only that one list is read, and only the keys a server needs. This is not a YAML parser and
+    /// is not meant to become one: `rules:`, `proxy-groups:` and the rest of the document describe
+    /// routing this client does not take from a subscription.
+    private static func clashProxyUris(_ text: String) -> [String] {
+        return clashProxyBlocks(text).compactMap { clashProxyUri($0) }
+    }
+
+    /// Each `proxies:` entry flattened to lowercase dotted keys — `ws-opts.headers.host` — with list
+    /// values joined by commas, which is the notation a link writes them in anyway.
+    private static func clashProxyBlocks(_ text: String) -> [[String: String]] {
+        var blocks: [[String: String]] = []
+        var current: [String: String] = [:]
+        var open = false
+        var inProxies = false
+        var proxiesIndent = -1
+        var entryIndent = -1
+        var path: [(indent: Int, key: String)] = []
+        var lastKey: String?
+
+        func flush() {
+            if open, !current.isEmpty {
+                blocks.append(current)
+            }
+            current = [:]
+            open = false
+            path = []
+            lastKey = nil
+        }
+
+        func assign(indent: Int, line: String) {
+            guard let colon = line.firstIndex(of: ":") else { return }
+            let key = line[line.startIndex ..< colon].trimmingCharacters(in: .whitespaces).lowercased()
+            guard !key.isEmpty else { return }
+            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            while let last = path.last, last.indent >= indent {
+                path.removeLast()
+            }
+            let prefix = path.map { $0.key }.joined(separator: ".")
+            let full = prefix.isEmpty ? key : prefix + "." + key
+            if value.isEmpty {
+                // A key with nothing after it opens either a nested mapping or a list; both are
+                // resolved by the lines that follow.
+                path.append((indent, key))
+                lastKey = full
+                return
+            }
+            if value.hasPrefix("{") {
+                for (nested, nestedValue) in clashFlowPairs(value) {
+                    current[full + "." + nested] = nestedValue
+                }
+                return
+            }
+            if value.hasPrefix("[") {
+                current[full] = clashInlineList(value)
+                return
+            }
+            current[full] = clashScalar(value)
+            lastKey = full
+        }
+
+        for rawLine in text.components(separatedBy: "\n") {
+            let expanded = rawLine.replacingOccurrences(of: "\t", with: "  ")
+            let trimmed = expanded.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+            let indent = expanded.prefix(while: { $0 == " " }).count
+            if !inProxies {
+                if trimmed == "proxies:" {
+                    inProxies = true
+                    proxiesIndent = indent
+                }
+                continue
+            }
+            if !trimmed.hasPrefix("-"), indent <= proxiesIndent {
+                // The next top-level section has started, so the proxy list is over.
+                break
+            }
+            if trimmed.hasPrefix("-"), entryIndent < 0 || indent <= entryIndent {
+                flush()
+                entryIndent = indent
+                open = true
+                let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+                if rest.hasPrefix("{") {
+                    for (key, value) in clashFlowPairs(rest) {
+                        current[key] = value
+                    }
+                    continue
+                }
+                if !rest.isEmpty {
+                    assign(indent: entryIndent + 2, line: rest)
+                }
+                continue
+            }
+            guard open else { continue }
+            if trimmed.hasPrefix("-") {
+                guard let key = lastKey else { continue }
+                let item = clashScalar(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces))
+                if let existing = current[key], !existing.isEmpty {
+                    current[key] = existing + "," + item
+                } else {
+                    current[key] = item
+                }
+                continue
+            }
+            assign(indent: indent, line: trimmed)
+        }
+        flush()
+        return blocks
+    }
+
+    private static func clashInlineList(_ value: String) -> String {
+        var inner = value.dropFirst()
+        if inner.hasSuffix("]") {
+            inner = inner.dropLast()
+        }
+        return inner.split(separator: ",").map { clashScalar(String($0)) }.joined(separator: ",")
+    }
+
+    /// A flow mapping — `{name: a, ws-opts: {path: /b}}` — flattened the same way.
+    private static func clashFlowPairs(_ text: String) -> [String: String] {
+        var result: [String: String] = [:]
+        var body = text.trimmingCharacters(in: .whitespaces)
+        guard body.hasPrefix("{") else { return result }
+        body = String(body.dropFirst())
+        if body.hasSuffix("}") {
+            body = String(body.dropLast())
+        }
+        var parts: [String] = []
+        var depth = 0
+        var buffer = ""
+        for character in body {
+            if character == "{" || character == "[" {
+                depth += 1
+            }
+            if character == "}" || character == "]" {
+                depth -= 1
+            }
+            if character == ",", depth == 0 {
+                parts.append(buffer)
+                buffer = ""
+                continue
+            }
+            buffer.append(character)
+        }
+        if !buffer.trimmingCharacters(in: .whitespaces).isEmpty {
+            parts.append(buffer)
+        }
+        for part in parts {
+            guard let colon = part.firstIndex(of: ":") else { continue }
+            let key = part[part.startIndex ..< colon].trimmingCharacters(in: .whitespaces).lowercased()
+            guard !key.isEmpty else { continue }
+            let value = String(part[part.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if value.hasPrefix("{") {
+                for (nested, nestedValue) in clashFlowPairs(value) {
+                    result[key + "." + nested] = nestedValue
+                }
+            } else if value.hasPrefix("[") {
+                result[key] = clashInlineList(value)
+            } else {
+                result[key] = clashScalar(value)
+            }
+        }
+        return result
+    }
+
+    private static func clashScalar(_ value: String) -> String {
+        var text = value.trimmingCharacters(in: .whitespaces)
+        if text.count >= 2, let first = text.first, let last = text.last, first == last, first == "\"" || first == "'" {
+            text = String(text.dropFirst().dropLast())
+        }
+        return text
+    }
+
+    private static func clashProxyUri(_ block: [String: String]) -> String? {
+        guard let proto = block["type"]?.lowercased(),
+              let host = block["server"],
+              let port = block["port"] else {
+            return nil
+        }
+        let remark = block["name"]
+        var network = (block["network"] ?? "tcp").lowercased()
+        if network == "h2" {
+            network = "http"
+        }
+        var query: [String: String] = ["type": network]
+        // Clash spells trojan's TLS nowhere because trojan is always over TLS.
+        var security = (block["tls"] == "true" || proto == "trojan") ? "tls" : "none"
+        if let value = block["servername"] ?? block["sni"] { query["sni"] = value }
+        if let value = block["client-fingerprint"] ?? block["fingerprint"] { query["fp"] = value }
+        if let value = block["alpn"] { query["alpn"] = value }
+        if block["skip-cert-verify"] == "true" { query["allowInsecure"] = "1" }
+        if let value = block["reality-opts.public-key"] {
+            security = "reality"
+            query["pbk"] = value
+            if let shortId = block["reality-opts.short-id"] { query["sid"] = shortId }
+        }
+        query["security"] = security
+        switch network {
+        case "ws", "httpupgrade":
+            let prefix = network == "ws" ? "ws-opts" : "httpupgrade-opts"
+            if let value = block["\(prefix).path"] { query["path"] = value }
+            if let value = block["\(prefix).headers.host"] ?? block["\(prefix).host"] { query["host"] = value }
+        case "grpc":
+            if let value = block["grpc-opts.grpc-service-name"] { query["serviceName"] = value }
+        case "http":
+            if let value = block["h2-opts.path"] { query["path"] = value }
+            if let value = block["h2-opts.host"] {
+                query["host"] = value.split(separator: ",").first.map(String.init) ?? value
+            }
+        default:
+            break
+        }
+        switch proto {
+        case "vless":
+            guard let uuid = block["uuid"] else { return nil }
+            if let flow = block["flow"] { query["flow"] = flow }
+            return buildUri(scheme: "vless", userInfo: uuid, host: host, port: port, query: query, remark: remark)
+        case "vmess":
+            guard let uuid = block["uuid"] else { return nil }
+            query["encryption"] = vmessCipher(block["cipher"])
+            return buildUri(scheme: "vmess", userInfo: uuid, host: host, port: port, query: query, remark: remark)
+        case "trojan":
+            guard let password = block["password"] else { return nil }
+            return buildUri(scheme: "trojan", userInfo: password, host: host, port: port, query: query, remark: remark)
+        case "ss", "shadowsocks":
+            guard let password = block["password"], let method = block["cipher"]?.lowercased() else { return nil }
+            return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        default:
+            return nil
+        }
+    }
+
+    /// Percent-encoding for a link this parser builds. Everything outside the unreserved set is
+    /// escaped, so a password with an "@" or a path with a "?" in it cannot move the boundaries the
+    /// parser on the other side splits on.
+    private static let uriValueAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
+
+    private static func uriEncoded(_ value: String) -> String {
+        return value.addingPercentEncoding(withAllowedCharacters: uriValueAllowed) ?? value
+    }
+
+    private static func buildUri(
+        scheme: String,
+        userInfo: String,
+        host: String,
+        port: String,
+        query: [String: String],
+        remark: String?
+    ) -> String? {
+        guard let number = Int(port), (1 ... 65_535).contains(number) else { return nil }
+        guard !userInfo.isEmpty, userInfo.count <= 256 else { return nil }
+        var text = "\(scheme)://\(uriEncoded(userInfo))@\(bracketedHost(host)):\(number)"
+        let pairs = query.keys.sorted().compactMap { key -> String? in
+            guard let value = query[key], !value.isEmpty else { return nil }
+            return "\(key)=\(uriEncoded(value))"
+        }
+        if !pairs.isEmpty {
+            text += "?" + pairs.joined(separator: "&")
+        }
+        if let remark, !remark.isEmpty {
+            text += "#" + uriEncoded(String(remark.prefix(64)))
+        }
+        return text
+    }
+
+    /// SIP002, which carries the method and the password as one base64 userinfo section.
+    private static func buildShadowsocksUri(
+        method: String,
+        password: String,
+        host: String,
+        port: String,
+        remark: String?
+    ) -> String? {
+        guard let number = Int(port), (1 ... 65_535).contains(number) else { return nil }
+        guard !password.isEmpty, password.count <= 256 else { return nil }
+        let userInfo = Data("\(method):\(password)".utf8).base64EncodedString()
+        var text = "ss://\(userInfo)@\(bracketedHost(host)):\(number)"
+        if let remark, !remark.isEmpty {
+            text += "#" + uriEncoded(String(remark.prefix(64)))
+        }
+        return text
+    }
+
+    /// An IPv6 literal has to be bracketed before a port can be appended to it.
+    private static func bracketedHost(_ host: String) -> String {
+        guard host.contains(":"), !host.hasPrefix("[") else { return host }
+        return "[\(host)]"
     }
 
     /// The Xray configuration for one user server on one loopback port.

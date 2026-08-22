@@ -32,6 +32,10 @@ public struct AorusUserVPNSectionState: Equatable {
     /// Every server the lane could dial has refused to come up. Distinct from "not serving yet":
     /// one is a connection being made, the other is one that will not be.
     public let unreachable: Bool
+    /// A bring-up the user asked for is in flight — the switch was turned on, or another server was
+    /// picked. True at the same time as `serving` for the length of a switch, because the endpoint
+    /// already up keeps carrying traffic until the new one is proven.
+    public let connecting: Bool
     public let configs: [AorusVlessConfig]
     public let selectedServerId: String?
     public let updatingConfigIds: Set<String>
@@ -42,6 +46,7 @@ public struct AorusUserVPNSectionState: Equatable {
         enabled: Bool,
         serving: Bool,
         unreachable: Bool,
+        connecting: Bool = false,
         configs: [AorusVlessConfig],
         selectedServerId: String?,
         updatingConfigIds: Set<String>,
@@ -51,6 +56,7 @@ public struct AorusUserVPNSectionState: Equatable {
         self.enabled = enabled
         self.serving = serving
         self.unreachable = unreachable
+        self.connecting = connecting
         self.configs = configs
         self.selectedServerId = selectedServerId
         self.updatingConfigIds = updatingConfigIds
@@ -61,9 +67,16 @@ public struct AorusUserVPNSectionState: Equatable {
     /// The glyph beside "Использовать VPN". A VPN the user turned on themselves is never stood down
     /// behind their back, so the cross here is not the hybrid layer's "suspended" -- it is every
     /// server having been tried and none of them answering.
+    ///
+    /// A bring-up in flight outranks the endpoint that is still published: picking another server
+    /// looks like a connection being made, which is what it is, rather than like nothing having
+    /// happened because the old server is still carrying traffic in the meantime.
     public var indicator: AorusConnectionIndicator {
         guard self.enabled else {
             return .none
+        }
+        if self.connecting {
+            return .connecting
         }
         if self.serving {
             return .connected
@@ -153,6 +166,7 @@ private func aorusUserVPNSnapshot() -> AorusUserVPNSectionState {
         enabled: store.isEnabled,
         serving: AorusRealityManager.shared.userLaneIsServing,
         unreachable: AorusRealityManager.shared.userLaneIsUnreachable,
+        connecting: AorusRealityManager.shared.userLaneIsConnecting,
         configs: configs,
         selectedServerId: store.selectedServerId,
         updatingConfigIds: updating,
@@ -192,7 +206,7 @@ public enum AorusUserVPNRow: Equatable {
     case info(String)
     /// "СЕРВЕРА".
     case serversHeader(String)
-    case server(index: Int, configId: String, server: AorusVlessServer, selected: Bool, best: Bool, latency: Double?, probing: Bool)
+    case server(index: Int, configId: String, server: AorusVlessServer, selected: Bool, best: Bool, latency: Double?, probing: Bool, connecting: Bool)
 
     public var section: AorusUserVPNRowSection {
         switch self {
@@ -225,7 +239,7 @@ public enum AorusUserVPNRow: Equatable {
             return 5001
         case .serversHeader:
             return 5002
-        case let .server(index, _, _, _, _, _, _):
+        case let .server(index, _, _, _, _, _, _, _):
             return 6000 + index
         }
     }
@@ -277,7 +291,8 @@ public func aorusUserVPNRows(state: AorusUserVPNSectionState, languageCode: Stri
                 selected: state.selectedServerId == server.id,
                 best: bestServerId == server.id,
                 latency: state.latencies[server.id],
-                probing: state.probingServerIds.contains(server.id)
+                probing: state.probingServerIds.contains(server.id),
+                connecting: state.connecting && state.selectedServerId == server.id
             ))
         }
     }
@@ -354,14 +369,21 @@ public func aorusUserVPNRowItem(
         return buildAddRow(text)
     case let .info(text):
         return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: sectionId)
-    case let .server(_, configId, server, selected, best, latency, probing):
+    case let .server(_, configId, server, selected, best, latency, probing, connecting):
         // The checkmark is the selection, which is what the user asked the tap to leave behind, and
         // the inset to the left of it is where the measured time goes.
         return ItemListCheckboxItem(
             presentationData: presentationData,
             systemStyle: .glass,
             title: server.name,
-            subtitle: aorusUserVPNServerDetail(server: server, best: best, latency: latency, probing: probing, l10n: l10n),
+            subtitle: aorusUserVPNServerDetail(
+                server: server,
+                best: best,
+                latency: latency,
+                probing: probing,
+                connecting: connecting,
+                l10n: l10n
+            ),
             style: .left,
             checked: selected,
             zeroSeparatorInsets: false,
@@ -439,6 +461,7 @@ func aorusUserVPNServerDetail(
     best: Bool,
     latency: Double?,
     probing: Bool,
+    connecting: Bool = false,
     l10n: AorusL10n
 ) -> String {
     var parts: [String] = []
@@ -446,7 +469,11 @@ func aorusUserVPNServerDetail(
         parts.append(l10n.userVPNBestServer)
     }
     parts.append(server.transportSummary)
-    if probing {
+    if connecting {
+        // The row the user just picked says so on the row itself. Waiting until they navigate back
+        // to the Proxy screen to see anything happen is what made a switch look like nothing.
+        parts.append(l10n.connectionConnecting)
+    } else if probing {
         parts.append(l10n.userVPNProbing)
     } else if let latency = latency, latency > 0.0 {
         parts.append(l10n.userVPNLatency(Int(latency.rounded())))
@@ -506,6 +533,8 @@ func aorusUserVPNImportErrorText(_ error: AorusVlessImportError, _ l10n: AorusL1
         return l10n.userVPNImportInsecure
     case .duplicate:
         return l10n.userVPNImportDuplicate
+    case .deviceLimit:
+        return l10n.userVPNImportDeviceLimit
     }
 }
 

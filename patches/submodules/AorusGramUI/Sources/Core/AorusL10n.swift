@@ -508,6 +508,7 @@ public struct AorusL10n {
     public var userVPNImportMalformed: String { t("Ключ повреждён или заполнен не полностью.", "The key is malformed or incomplete.") } // AORUS-VPN
     public var userVPNImportInsecure: String { t("Ссылка на подписку должна начинаться с https://.", "A subscription link has to start with https://.") } // AORUS-VPN
     public var userVPNImportDuplicate: String { t("Эта конфигурация уже добавлена.", "This configuration has already been added.") } // AORUS-VPN
+    public var userVPNImportDeviceLimit: String { t("Панель подписки сообщает, что лимит устройств исчерпан. Освободите одно устройство или расширьте лимит у поставщика.", "The subscription panel reports that the device limit is used up. Free up a device or raise the limit with your provider.") } // AORUS-VPN
     public var userVPNBestServer: String { t("Лучший сервер", "Best server") } // AORUS-VPN
 
     // MARK: User VLESS configurations — the configuration screen

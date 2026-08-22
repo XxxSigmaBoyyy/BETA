@@ -377,6 +377,7 @@ private func aorusUserVPNSettingsEntries(
                     best: bestServerId == server.id,
                     latency: section.latencies[server.id],
                     probing: section.probingServerIds.contains(server.id),
+                    connecting: section.connecting && section.selectedServerId == server.id,
                     l10n: l10n
                 ),
                 section.selectedServerId == server.id
