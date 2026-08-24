@@ -2724,7 +2724,17 @@ def main() -> None:
                 # came out as a flat rectangle with no glass behind it.
                 "private final class Entry",
                 "entry.source === theme",
-                "itemBlocksBackgroundColor.isEqual(AorusGlassPane.blockMarker)",
+                "AorusGlassPane.isBlockMarker(theme.list.itemBlocksBackgroundColor)",
+                # Two markers, not one: the sentinel carries the page's own ink at 1/255 of an alpha
+                # rather than a hue of its own. A marker with a hue is invisible only while nothing
+                # touches it, and upstream derives a new colour from the card colour in eighty-odd
+                # places -- most of them keep the hue and raise the alpha, which is how a magenta
+                # marker became a solid rectangle over an administrator's default-granted rights.
+                "blockMarkerLight",
+                "func isBlockMarker",
+                # …and the wash itself, restated so a disabled row dims without going opaque over
+                # the material it is meant to be sitting on.
+                "func rowWash",
                 # The inset a block takes when it has to read as a card rather than a band. Shared,
                 # because the editing header's rows are laid out from it and so is the pane behind
                 # them: the two disagreeing by a point shows as glass sticking out past the text.
@@ -2982,7 +2992,7 @@ def main() -> None:
             (
                 "aorusUpdateListGlass",
                 "aorusGlassPanes",
-                "AorusGlassPane.blockMarker",
+                "AorusGlassPane.isBlockMarker(color)",
                 "import GlassBackgroundComponent",
             ),
         ),
@@ -3274,12 +3284,67 @@ def main() -> None:
     # cannot be turned into glass without rewriting it, so under Interface 2.0 the factory has to
     # pick the list -- and with the switch off it has to keep picking the port.
     backup_controller = tg / "submodules/AorusGramUI/Sources/AccountBackupController.swift"
+    backup_text = backup_controller.read_text(encoding="utf-8") if backup_controller.is_file() else ""
     if backup_controller.is_file():
-        backup_text = backup_controller.read_text(encoding="utf-8")
         if "!AorusInterfaceV2.isEnabled" not in backup_text:
             err.append("InterfaceV2: the backup screen still opens its opaque SwiftUI port")
         if "accountBackupControllerLegacy" not in backup_text:
             err.append("InterfaceV2: the backup screen has no glass list to fall back to")
+        if ".header(theme)" not in backup_text:
+            err.append("InterfaceV2: the backup screen has no illustration header")
+
+    backup_header = tg / "submodules/AorusGramUI/Sources/AorusBackupHeaderItem.swift"
+    if not backup_header.is_file():
+        err.append("InterfaceV2: AorusBackupHeaderItem.swift is missing")
+    else:
+        backup_header_text = backup_header.read_text(encoding="utf-8")
+        # The .tgs has to actually be in the bundle: a missing one costs no build error and no
+        # crash, it just leaves a blank 128pt gap where the illustration should be.
+        for animation in re.findall(r'animationName: "([^"]+)"', backup_text):
+            if not (tg / "Telegram" / "Telegram-iOS" / "Resources" / f"{animation}.tgs").is_file():
+                err.append(f"InterfaceV2: backup header animation {animation}.tgs is not bundled")
+        for marker in ("AnimatedStickerNodeSource", "still(.start)", "play(firstFrame: false"):
+            if marker not in backup_header_text:
+                err.append(f"InterfaceV2: backup header is missing {marker}")
+
+    # A row that cannot be tapped is dimmed by painting the card's own colour over it at a raised
+    # alpha. Under glass the card is the marker, and `withAlphaComponent` keeps a hue and replaces
+    # only its alpha, so that expression paints a slab of the marker over the material: magenta
+    # once, which is the pink rectangle that appeared over an administrator's default-granted
+    # rights, and ink now, which is the right colour and still too much of it. Every such site has
+    # to go through AorusGlassPane.rowWash, and the scan below is the part that matters, since an
+    # upstream bump adding a tenth site would otherwise bring the slab back with nothing to catch it.
+    row_wash_sites = (
+        ("submodules/ItemListUI/Sources/Items/ItemListSwitchItem.swift", "itemBackgroundColor.withAlphaComponent(0.6)"),
+        ("submodules/ItemListUI/Sources/Items/ItemListExpandableSwitchItem.swift", "itemBackgroundColor.withAlphaComponent(0.6)"),
+        ("submodules/PeerInfoUI/Sources/ItemListReactionItem.swift", "itemBackgroundColor.withAlphaComponent(0.6)"),
+        ("submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.5)"),
+        ("submodules/ItemListStickerPackItem/Sources/ItemListStickerPackItem.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.5)"),
+        ("submodules/PeerInfoUI/Sources/PeerAutoremoveTimeoutItem.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.4)"),
+        ("submodules/SettingsUI/Sources/Text Size/TextSizeSelectionItem.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.4)"),
+        ("submodules/SettingsUI/Sources/Themes/ThemeSettingsFontSizeItem.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.4)"),
+        ("submodules/ListMessageItem/Sources/ListMessageFileItemNode.swift", "itemBlocksBackgroundColor.withAlphaComponent(0.6)"),
+    )
+    for relative_path, stale in row_wash_sites:
+        target = tg / relative_path
+        if not target.is_file():
+            err.append(f"InterfaceV2: {relative_path} is missing")
+            continue
+        target_text = target.read_text(encoding="utf-8")
+        if "AorusGlassPane.rowWash" not in target_text:
+            err.append(f"InterfaceV2: {relative_path} still washes a disabled row with the card colour")
+        if stale in target_text:
+            err.append(f"InterfaceV2: {relative_path} still contains {stale}")
+
+    overlay_wash = re.compile(
+        r"(?:\w*[Dd]isabledOverlayNode|\w*[Rr]estrictionNode)\??\.backgroundColor\s*=\s*[^\n]*"
+        r"(?:itemBlocksBackgroundColor|itemModalBlocksBackgroundColor|itemBackgroundColor)\s*\.\s*withAlphaComponent"
+    )
+    for swift_file in sorted((tg / "submodules").rglob("*.swift")):
+        match = overlay_wash.search(swift_file.read_text(encoding="utf-8", errors="replace"))
+        if match:
+            relative_path = swift_file.relative_to(tg)
+            err.append(f"InterfaceV2: {relative_path} washes a disabled row with the card colour: {match.group(0).strip()}")
 
     # The transparency slider in the profile's Personal Colors section is a Component rather than a
     # row, and the section it sits in already draws one pane for all of its items, so this one has

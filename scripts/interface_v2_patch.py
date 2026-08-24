@@ -98,7 +98,50 @@ public enum AorusGlassPane {
         return UserDefaults.standard.bool(forKey: aorusInterfaceV2Key)
     }
 
-    public static let blockMarker = UIColor(red: 1.0, green: 0.0, blue: 1.0, alpha: 1.0 / 255.0)
+    /// The two forms the marker takes: the page's own ink, at an alpha nothing can see.
+    ///
+    /// The first version of this was magenta, on the grounds that no other colour in the app could
+    /// be mistaken for it. The alpha is what makes it unmistakable, though -- nothing else in
+    /// Telegram builds a colour at 1/255 -- and the hue is the part that survives when somebody
+    /// derives a new colour from a card: `withAlphaComponent(0.6)` over a row that cannot be
+    /// tapped, `mixedWith` under an avatar placeholder, `.rgb` into a mini app's palette. Eighty
+    /// odd places in the app do exactly that, and every one of them was turning the marker into
+    /// magenta paint -- which is what the pink rectangle over an administrator's rights was. Ink at
+    /// the same invisible alpha is still unique, and it is neutral everywhere it is amplified.
+    ///
+    /// Two of them because the amplified form has to fall on the right side of the pane it lands
+    /// on: a wash over dark glass is dark, and over pale glass it is pale. That also puts every
+    /// derivation back where upstream aimed it, since upstream's own card is near-black on a dark
+    /// theme and near-white on a light one -- amplifying black or white lands within a shade of the
+    /// colour that code was written for.
+    public static let blockMarker = UIColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 / 255.0)
+    public static let blockMarkerLight = UIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0 / 255.0)
+
+    /// Whether a colour is one of the two markers -- i.e. whether the node wearing it is a card.
+    public static func isBlockMarker(_ color: UIColor) -> Bool {
+        return color.isEqual(AorusGlassPane.blockMarker) || color.isEqual(AorusGlassPane.blockMarkerLight)
+    }
+
+    /// The wash a row gets when it has to read as unavailable.
+    ///
+    /// Upstream fills a disabled row with its own card colour at 40 to 60 percent, which on an
+    /// opaque card is most of the way back to the page and reads as washed out. Under Interface 2.0
+    /// the card is a marker, and `withAlphaComponent` replaces an alpha rather than scaling it: the
+    /// same expression does not fade the marker, it makes it visible -- a slab of it at 60%, opaque
+    /// enough to hide the material the row is sitting on. Which is the whole point of the row.
+    ///
+    /// So the wash is stated here instead: the page's own ink, deep enough to read as unavailable
+    /// and shallow enough to leave the glass showing through.
+    ///
+    /// `ink` is the colour the row draws its text in, white on a dark pane and near-black on a pale
+    /// one. Asking it rather than the theme is what lets one helper serve the settings lists and the
+    /// profile, whose pane follows the avatar rather than the appearance.
+    public static func rowWash(over color: UIColor, ink: UIColor, alpha: CGFloat) -> UIColor {
+        guard AorusGlassPane.isBlockMarker(color) else {
+            return color.withAlphaComponent(alpha)
+        }
+        return AorusGlassPane.isLight(ink) ? UIColor(white: 0.0, alpha: 0.25) : UIColor(white: 1.0, alpha: 0.5)
+    }
 
     /// The radius the panes are drawn with, and the one the rows have to agree with when they clip
     /// their own content.
@@ -219,7 +262,7 @@ private final class AorusGlassThemeCache {
         // the two a theme is, it carries with it: the marker fill below is written by this method
         // and by nothing else in the app, so the test is exact and needs no memory of what was
         // handed out before -- and cannot be fooled by an address that has changed hands.
-        if theme.list.itemBlocksBackgroundColor.isEqual(AorusGlassPane.blockMarker) {
+        if AorusGlassPane.isBlockMarker(theme.list.itemBlocksBackgroundColor) {
             return theme
         }
 
@@ -257,8 +300,8 @@ private final class AorusGlassThemeCache {
             // for, so that a whole run of rows can be backed by one sheet of real glass. Every row
             // in the section carries it, not just the two at the ends, which is what stops a block
             // from coming out striped the way the corner-image version did.
-            itemBlocksBackgroundColor: AorusGlassPane.blockMarker,
-            itemModalBlocksBackgroundColor: AorusGlassPane.blockMarker,
+            itemBlocksBackgroundColor: dark ? AorusGlassPane.blockMarker : AorusGlassPane.blockMarkerLight,
+            itemModalBlocksBackgroundColor: dark ? AorusGlassPane.blockMarker : AorusGlassPane.blockMarkerLight,
             // A rectangular pressed fill leaks outside the rounded glass pane. Native controls
             // already provide their own interaction feedback, so the list itself stays clear.
             itemHighlightedBackgroundColor: .clear,
@@ -357,7 +400,7 @@ public extension PresentationTheme {
     /// call sites need no test of their own.
     func aorusBadgeForegroundColor(over fill: UIColor?) -> UIColor {
         let stock = self.list.itemCheckColors.foregroundColor
-        guard self.list.itemBlocksBackgroundColor.isEqual(AorusGlassPane.blockMarker), let fill else {
+        guard AorusGlassPane.isBlockMarker(self.list.itemBlocksBackgroundColor), let fill else {
             return stock
         }
         guard AorusGlassPane.isLight(fill) == AorusGlassPane.isLight(stock) else {
@@ -2275,7 +2318,7 @@ _LIST_GLASS_SWIFT = '''    // MARK: - AorusGram Interface 2.0
             return
         }
         for subnode in subnodes {
-            if let color = subnode.backgroundColor, color.isEqual(AorusGlassPane.blockMarker) {
+            if let color = subnode.backgroundColor, AorusGlassPane.isBlockMarker(color) {
                 // Through the layer tree rather than the node tree, because the list is drawn in a
                 // rotated coordinate space and a layer conversion is what accounts for that.
                 let rect = subnode.layer.convert(subnode.bounds, to: self.layer)
@@ -5404,6 +5447,92 @@ def _patch_proxy_connection_section(tg: Path) -> None:
     print("InterfaceV2: put the AorusGram connection and VLESS blocks on the Proxy screen")
 
 
+# A row that cannot be tapped is dimmed by painting the card's own colour over it at a raised
+# alpha: on an opaque card that reads as "this row is the block, only fainter". Under glass the
+# card has no colour of its own -- it is the marker -- and `withAlphaComponent` keeps a colour's
+# hue while replacing only its alpha, so the expression does not fade the marker, it makes it
+# opaque enough to see: a slab at 60% that hides the material underneath. That is what put a pink
+# rectangle over an administrator's default-granted rights -- `ItemListExpandableSwitchItem`
+# disables those rows, and its wash took the marker from 1/255 to 153/255. With the marker
+# neutralised the slab is ink rather than magenta, which is the right colour and still far too
+# much of it.
+#
+# `AorusGlassPane.rowWash` restates the intent instead of the mechanism: over a real card it is
+# still `withAlphaComponent`, byte for byte what upstream did; over the marker it returns a scrim
+# shallow enough to leave the glass visible through the dimmed row. Each site hands it the ink
+# beside it, which is why the receiver differs from file to file.
+_ROW_WASH_SITES = (
+    (
+        "submodules/ItemListUI/Sources/Items/ItemListSwitchItem.swift",
+        "currentDisabledOverlayNode.backgroundColor = itemBackgroundColor.withAlphaComponent(0.6)",
+        "currentDisabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: itemBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.6)",
+    ),
+    (
+        "submodules/ItemListUI/Sources/Items/ItemListExpandableSwitchItem.swift",
+        "currentDisabledOverlayNode.backgroundColor = itemBackgroundColor.withAlphaComponent(0.6)",
+        "currentDisabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: itemBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.6)",
+    ),
+    (
+        "submodules/PeerInfoUI/Sources/ItemListReactionItem.swift",
+        "currentDisabledOverlayNode.backgroundColor = itemBackgroundColor.withAlphaComponent(0.6)",
+        "currentDisabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: itemBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.6)",
+    ),
+    (
+        "submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
+        "currentDisabledOverlayNode?.backgroundColor = item.presentationData.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.5)",
+        "currentDisabledOverlayNode?.backgroundColor = AorusGlassPane.rowWash(over: item.presentationData.theme.list.itemBlocksBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.5)",
+    ),
+    (
+        "submodules/ItemListStickerPackItem/Sources/ItemListStickerPackItem.swift",
+        "currentDisabledOverlayNode?.backgroundColor = item.presentationData.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.5)",
+        "currentDisabledOverlayNode?.backgroundColor = AorusGlassPane.rowWash(over: item.presentationData.theme.list.itemBlocksBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.5)",
+    ),
+    (
+        "submodules/PeerInfoUI/Sources/PeerAutoremoveTimeoutItem.swift",
+        "strongSelf.disabledOverlayNode.backgroundColor = item.presentationData.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.4)",
+        "strongSelf.disabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: item.presentationData.theme.list.itemBlocksBackgroundColor, ink: item.presentationData.theme.list.itemPrimaryTextColor, alpha: 0.4)",
+    ),
+    (
+        "submodules/SettingsUI/Sources/Text Size/TextSizeSelectionItem.swift",
+        "strongSelf.disabledOverlayNode.backgroundColor = item.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.4)",
+        "strongSelf.disabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: item.theme.list.itemBlocksBackgroundColor, ink: item.theme.list.itemPrimaryTextColor, alpha: 0.4)",
+    ),
+    (
+        "submodules/SettingsUI/Sources/Themes/ThemeSettingsFontSizeItem.swift",
+        "strongSelf.disabledOverlayNode.backgroundColor = item.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.4)",
+        "strongSelf.disabledOverlayNode.backgroundColor = AorusGlassPane.rowWash(over: item.theme.list.itemBlocksBackgroundColor, ink: item.theme.list.itemPrimaryTextColor, alpha: 0.4)",
+    ),
+    (
+        "submodules/ListMessageItem/Sources/ListMessageFileItemNode.swift",
+        "strongSelf.restrictionNode.backgroundColor = item.presentationData.theme.theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.6)",
+        "strongSelf.restrictionNode.backgroundColor = AorusGlassPane.rowWash(over: item.presentationData.theme.theme.list.itemBlocksBackgroundColor, ink: item.presentationData.theme.theme.list.itemPrimaryTextColor, alpha: 0.6)",
+    ),
+)
+
+
+def _patch_disabled_row_wash(tg: Path) -> None:
+    """Dim a disabled row without repainting the card's colour over it.
+
+    Nine sites, each the same shape and each already importing TelegramPresentationData, so this
+    adds no dependency anywhere. The other seventy-odd derivations of the card colour -- shimmer
+    placeholders, gradient blends, the mini-app palettes -- are left to the marker alone, and they
+    are right by construction now that it carries the page's ink: upstream's card is near-black on
+    a dark theme and near-white on a light one, so a derivation that amplifies black or white lands
+    within a shade of where upstream aimed it. These nine are the ones where landing on upstream's
+    own value is still wrong, because upstream's own value is an opaque slab and the point of the
+    row is that the glass shows through it.
+    """
+    for relative, old, new in _ROW_WASH_SITES:
+        path = tg / relative
+        text = _read(path, Path(relative).name)
+        if "AorusGlassPane.rowWash" in text:
+            print(f"InterfaceV2: disabled row wash already applied in {Path(relative).name}")
+            continue
+        text = _replace_once(text, old, new, f"{Path(relative).name} disabled row wash")
+        path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: dimmed disabled rows with a neutral scrim instead of the card colour")
+
+
 def _patch_build(tg: Path) -> None:
     _add_build_deps(
         tg / "submodules/UndoUI/BUILD",
@@ -5472,5 +5601,6 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_recommended_pane_glass(tg)
     _patch_rating_shield(tg)
     _patch_switch_item_leading_icon(tg)
+    _patch_disabled_row_wash(tg)
     _patch_proxy_connection_section(tg)
     _patch_build(tg)
