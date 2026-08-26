@@ -252,12 +252,31 @@ public final class AorusAIClient {
         let code = (object?["error"] as? String)?.lowercased() ?? ""
         if status == 401 || status == 403 { return .authorization }
         if status == 429 || code.contains("quota") {
-            let reset = Self.dateFromMilliseconds(object?["reset_at"] ?? object?["quota_reset_at"])
-            return .quota(AorusAIQuota(resetAt: reset, label: object?["message"] as? String))
+            return .quota(Self.quota(from: object))
         }
         if status == 404 && code.contains("artifact") { return .artifactExpired }
         if status >= 500 { return .serverUnavailable }
         return .http(status)
+    }
+
+    /// Reads the quota reset metadata the backend actually reports. Nothing is
+    /// invented locally: without server metadata the UI shows no reset time.
+    fileprivate static func quota(from object: [String: Any]?) -> AorusAIQuota {
+        let label = (object?["label"] as? String) ?? (object?["message"] as? String)
+        if let seconds = Self.secondsFromNumber(object?["retry_after"] ?? object?["retry_after_seconds"] ?? object?["reset_in"]) {
+            return AorusAIQuota(resetAt: Date().addingTimeInterval(seconds), label: label, isRelative: true)
+        }
+        let reset = Self.dateFromMilliseconds(object?["reset_at"] ?? object?["quota_reset_at"] ?? object?["resets_at"])
+        return AorusAIQuota(resetAt: reset, label: label, isRelative: false)
+    }
+
+    fileprivate static func secondsFromNumber(_ value: Any?) -> TimeInterval? {
+        let raw: Double?
+        if let number = value as? NSNumber { raw = number.doubleValue }
+        else if let string = value as? String { raw = Double(string) }
+        else { raw = nil }
+        guard let raw, raw > 0, raw < 60 * 60 * 24 * 31 else { return nil }
+        return raw
     }
 
     fileprivate static func dateFromMilliseconds(_ value: Any?) -> Date? {
@@ -435,7 +454,11 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
                   let filename = source["filename"] as? String else { return nil }
             let download = source["download"] as? [String: Any]
             let path = (download?["path"] as? String) ?? "/download/\(artifactId)"
-            let expires = (download?["expires_at"] as? NSNumber)?.int64Value ?? (source["expires_at"] as? NSNumber)?.int64Value
+            // The artifact lifetime wins over the download link lifetime: the
+            // production payload ships a later `expires_at` on the artifact and
+            // a shorter one on the signed link, and the card must stay usable
+            // for as long as the artifact itself is alive.
+            let expires = (source["expires_at"] as? NSNumber)?.int64Value ?? (download?["expires_at"] as? NSNumber)?.int64Value
             let artifact = AorusAIArtifact(
                 artifactId: artifactId,
                 filename: filename,
@@ -453,8 +476,7 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             let count = (object["count"] as? NSNumber)?.intValue
             return .permissionRequest(AorusAIPermissionRequest(requestId: requestId, kind: kind, peerId: peerId, count: count, previewText: object["text"] as? String))
         case "quota", "quota.exhausted":
-            let reset = AorusAIClient.dateFromMilliseconds(object["reset_at"] ?? object["quota_reset_at"])
-            return .quota(AorusAIQuota(resetAt: reset, label: object["label"] as? String))
+            return .quota(AorusAIClient.quota(from: object))
         case "response.done":
             return .responseDone
         case "done":

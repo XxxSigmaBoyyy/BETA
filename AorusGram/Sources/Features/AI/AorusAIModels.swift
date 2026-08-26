@@ -109,86 +109,101 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
     public var updatedAt: Date
     public var messages: [AorusAIMessage]
     public var draft: String
-    public var serverContext: String?
+    /// Reset moment reported by the backend's quota event. Purely presentational:
+    /// the client never invents it and never sends it back.
     public var quotaResetAt: Date?
 
-    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", serverContext: String? = nil, quotaResetAt: Date? = nil) {
+    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", quotaResetAt: Date? = nil) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.messages = messages
         self.draft = draft
-        self.serverContext = serverContext
         self.quotaResetAt = quotaResetAt
     }
 }
 
+public enum AorusAIRequestLimits {
+    /// Newest conversation turns that are replayed as context.
+    public static let historyMessageCount = 40
+    /// Per-message clamp applied to replayed context.
+    public static let historyMessageCharacters = 6_000
+    /// Total clamp applied to replayed context.
+    public static let historyTotalCharacters = 60_000
+    /// Clamp applied to the message the user is sending right now.
+    public static let promptCharacters = 24_000
+    /// Telegram messages the chat analysis workflow may hand over at once.
+    public static let chatHistoryMessageCount = 200
+    /// Per-Telegram-message clamp used by the chat analysis workflow.
+    public static let chatHistoryMessageCharacters = 700
+}
+
+/// The production body of `POST /v1/aorus/agent`.
+///
+/// The backend accepts a plain chat-completions shaped payload and detects the
+/// workflow (chat, presentation, document, build) from the natural language
+/// request itself, so there is deliberately no client side `kind`, no protocol
+/// envelope and no separate conversation identifier here.
 public struct AorusAIAgentPayload: Encodable {
-    public struct HistoryMessage: Encodable {
+    public struct Message: Encodable, Equatable {
         public var role: String
-        public var text: String
-        public var telegramEntities: [AorusAITelegramEntity]
-        public var referencedMessage: AorusAIReferencedMessage?
+        public var content: String
 
-        enum CodingKeys: String, CodingKey {
-            case role
-            case text
-            case telegramEntities = "telegram_entities"
-            case referencedMessage = "referenced_message"
-        }
-
-        init(message: AorusAIMessage) {
-            self.role = message.role == .assistant ? "assistant" : "user"
-            self.text = message.rawText
-            self.telegramEntities = message.telegramEntities
-            self.referencedMessage = message.referencedMessage
+        public init(role: String, content: String) {
+            self.role = role
+            self.content = content
         }
     }
 
-    public struct Input: Encodable {
-        public var text: String
-        public var telegramEntities: [AorusAITelegramEntity]
-        public var referencedMessage: AorusAIReferencedMessage?
+    public var model: String
+    public var stream: Bool
+    public var messages: [Message]
 
-        enum CodingKeys: String, CodingKey {
-            case text
-            case telegramEntities = "telegram_entities"
-            case referencedMessage = "referenced_message"
+    public init(model: String = "AorusAI", stream: Bool = true, messages: [Message]) {
+        self.model = model
+        self.stream = stream
+        self.messages = messages
+    }
+
+    /// Builds the payload from the locally stored conversation.
+    ///
+    /// `history` must be the turns that precede the new request. Notices, empty
+    /// and failed turns are dropped, the newest turns win when the character
+    /// budget is exhausted, and chronological order is preserved.
+    public init(history: [AorusAIMessage], text: String) {
+        var context: [Message] = []
+        var budget = AorusAIRequestLimits.historyTotalCharacters
+        for message in history.suffix(AorusAIRequestLimits.historyMessageCount).reversed() {
+            guard message.role != .notice, message.state != .failed else { continue }
+            let content = AorusAIAgentPayload.clamp(message.rawText, to: AorusAIRequestLimits.historyMessageCharacters)
+            guard !content.isEmpty, content.count <= budget else { continue }
+            budget -= content.count
+            context.append(Message(role: message.role == .assistant ? "assistant" : "user", content: content))
         }
+        var messages = Array(context.reversed())
+        messages.append(Message(role: "user", content: AorusAIAgentPayload.clamp(text, to: AorusAIRequestLimits.promptCharacters)))
+        self.init(messages: messages)
     }
 
-    public var protocolVersion: String = "AORUS_AGENT_EVENTS_V1"
-    public var conversationId: String
-    public var input: Input
-    public var history: [HistoryMessage]
-    public var serverContext: String?
-
-    enum CodingKeys: String, CodingKey {
-        case protocolVersion = "protocol"
-        case conversationId = "conversation_id"
-        case input
-        case history
-        case serverContext = "context"
-    }
-
-    public init(conversationId: String, text: String, entities: [AorusAITelegramEntity], referencedMessage: AorusAIReferencedMessage?, history: [AorusAIMessage], serverContext: String?) {
-        self.conversationId = conversationId
-        self.input = Input(text: text, telegramEntities: entities, referencedMessage: referencedMessage)
-        self.history = history
-            .filter { $0.role != .notice && !$0.rawText.isEmpty }
-            .map(HistoryMessage.init(message:))
-        self.serverContext = serverContext
+    private static func clamp(_ value: String, to limit: Int) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit))
     }
 }
 
 public struct AorusAIQuota: Equatable {
     public var resetAt: Date?
     public var label: String?
+    /// True when the backend reported a countdown rather than an absolute time,
+    /// so the UI can say "Обновится через 42 мин." instead of a wall clock time.
+    public var isRelative: Bool
 
-    public init(resetAt: Date?, label: String?) {
+    public init(resetAt: Date?, label: String?, isRelative: Bool = false) {
         self.resetAt = resetAt
         self.label = label
+        self.isRelative = isRelative
     }
 }
 

@@ -31,6 +31,7 @@ swift_library(
         "//submodules/MediaResources:MediaResources",
         "//submodules/AnimatedStickerNode:AnimatedStickerNode",
         "//submodules/AvatarNode:AvatarNode",
+        "//submodules/LocalizedPeerData:LocalizedPeerData",
         "//submodules/TelegramUI/Components/ItemListDatePickerItem:ItemListDatePickerItem",
         "//submodules/UndoUI:UndoUI",
     ],

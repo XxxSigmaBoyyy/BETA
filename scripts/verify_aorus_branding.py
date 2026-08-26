@@ -3420,6 +3420,73 @@ def main() -> None:
         if "let (accountPeer, limits, premiumLimits) = result" in document_size_gate_text:
             err.append(f"DocumentPicker: removed file-size gate left unused limit bindings in {document_size_gate_file.name}")
 
+    # AorusAI: the request contract, the module boundary and the nested message menu
+    # are all load-bearing and all silently breakable, so pin them here.
+    ai_core_dir = tg / "submodules" / "AorusGram" / "Sources" / "Features" / "AI"
+    ai_ui = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIControllers.swift"
+    ai_models = ai_core_dir / "AorusAIModels.swift"
+    ai_client = ai_core_dir / "AorusAIClient.swift"
+
+    if not ai_models.is_file():
+        err.append("AorusAI: missing submodules/AorusGram/Sources/Features/AI/AorusAIModels.swift")
+    else:
+        models_text = ai_models.read_text(encoding="utf-8")
+        # §2 of the backend contract: the body is exactly {model, stream, messages}.
+        for required_key in ('public var model: String', 'public var stream: Bool', 'public var messages: [Message]'):
+            if required_key not in models_text:
+                err.append(f"AorusAI: agent payload lost {required_key}")
+        if "AorusAIAgentPayload(history:" not in models_text and "init(history:" not in models_text:
+            err.append("AorusAI: agent payload lost its history-budgeting initializer")
+
+    if not ai_client.is_file():
+        err.append("AorusAI: missing submodules/AorusGram/Sources/Features/AI/AorusAIClient.swift")
+
+    for ai_core_file in sorted(ai_core_dir.glob("*.swift")) if ai_core_dir.is_dir() else []:
+        core_text = ai_core_file.read_text(encoding="utf-8")
+        # aorusL lives in AorusGramUI; the core files are typechecked standalone in the
+        # preflight above, so a call here breaks CI before Bazel even starts.
+        if "aorusL(" in core_text or "aorusAILocalized(" in core_text:
+            err.append(f"AorusAI: {ai_core_file.name} calls the AorusGramUI localizer from the core module")
+        # Invented request fields were the original structural defect: the backend
+        # documents no conversation_id / protocol / input / history keys.
+        for forbidden_key in ('"conversation_id"', '"protocol"', '"input"', '"history"'):
+            if forbidden_key in core_text:
+                err.append(f"AorusAI: {ai_core_file.name} still serializes {forbidden_key}")
+
+    for ai_source in ([ai_ui] + (sorted(ai_core_dir.glob("*.swift")) if ai_core_dir.is_dir() else [])):
+        if not ai_source.is_file():
+            continue
+        if "debugDisplayTitle" in ai_source.read_text(encoding="utf-8"):
+            err.append(f"AorusAI: {ai_source.name} shows a debug peer description to the user")
+
+    if not ai_ui.is_file():
+        err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift")
+    else:
+        ai_ui_text = ai_ui.read_text(encoding="utf-8")
+        for exported in ("public func aorusAIMessageMenuTitle()", "public func aorusAIMessageMenuSections()", "public func aorusAIRunMessageMenuAction("):
+            if exported not in ai_ui_text:
+                err.append(f"AorusAI: message menu export missing — {exported}")
+        if "import ContextUI" in ai_ui_text:
+            err.append("AorusAI: AorusGramUI must not import ContextUI (it is not in its BUILD deps)")
+
+    ai_ui_build = tg / "submodules" / "AorusGramUI" / "BUILD"
+    if ai_ui_build.is_file() and "//submodules/LocalizedPeerData:LocalizedPeerData" not in ai_ui_build.read_text(encoding="utf-8"):
+        err.append("AorusAI: AorusGramUI BUILD is missing LocalizedPeerData (peer display titles)")
+
+    ai_menu_host = tg / "submodules" / "TelegramUI" / "Sources" / "ChatInterfaceStateContextMenus.swift"
+    if not ai_menu_host.is_file():
+        err.append("AorusAI: missing ChatInterfaceStateContextMenus.swift")
+    else:
+        ai_menu_text = ai_menu_host.read_text(encoding="utf-8")
+        if "// AorusGram: AorusAI message action v2" not in ai_menu_text:
+            err.append("AorusAI: nested message menu (v2) was not integrated")
+        if "// AorusGram: AorusAI message action v1" in ai_menu_text:
+            err.append("AorusAI: legacy flat message action (v1) is still present")
+        if "aorusAIOpenMessageActions" in ai_menu_text:
+            err.append("AorusAI: message menu calls the removed aorusAIOpenMessageActions")
+        if "aorusAIMessageMenuSections()" not in ai_menu_text or "c?.pushItems(" not in ai_menu_text:
+            err.append("AorusAI: message menu does not push a nested native submenu")
+
     # BGTask identifier in plist
     bgtask_key = "BGTaskSchedulerPermittedIdentifiers"
     bgtask_val = "com.aorusgram.dmc.sync"

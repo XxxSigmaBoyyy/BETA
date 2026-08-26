@@ -33,13 +33,10 @@ public final class AorusAIStore {
 
     public func save(_ conversations: [AorusAIConversation], accountId: Int64, completion: ((Bool) -> Void)? = nil) {
         queue.async {
-            let result: Bool
-            switch self.read(accountId: accountId) {
-            case .corrupt:
-                result = false
-            case .missing, .conversations:
-                result = self.write(conversations, accountId: accountId)
+            if case .corrupt = self.read(accountId: accountId) {
+                self.discardUnreadable(accountId: accountId)
             }
+            let result = self.write(conversations, accountId: accountId)
             DispatchQueue.main.async {
                 if result {
                     NotificationCenter.default.post(name: Self.changedNotification, object: NSNumber(value: accountId))
@@ -58,8 +55,10 @@ public final class AorusAIStore {
             case let .conversations(value):
                 conversations = value
             case .corrupt:
-                DispatchQueue.main.async { completion?(false) }
-                return
+                // An unreadable store (lost keychain item, interrupted write)
+                // must not brick history forever: drop it and start a new one.
+                self.discardUnreadable(accountId: accountId)
+                conversations = []
             }
             if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
                 conversations[index] = conversation
@@ -87,7 +86,11 @@ public final class AorusAIStore {
             case let .conversations(value):
                 conversations = value.filter { $0.id != conversationId }
             case .corrupt:
-                DispatchQueue.main.async { completion?(false) }
+                self.discardUnreadable(accountId: accountId)
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Self.changedNotification, object: NSNumber(value: accountId))
+                    completion?(true)
+                }
                 return
             }
             let result = self.write(conversations, accountId: accountId)
@@ -98,6 +101,10 @@ public final class AorusAIStore {
                 completion?(result)
             }
         }
+    }
+
+    private func discardUnreadable(accountId: Int64) {
+        try? FileManager.default.removeItem(at: fileURL(accountId: accountId))
     }
 
     private func read(accountId: Int64) -> ReadResult {

@@ -10,6 +10,7 @@ import SwiftSignalKit
 import AorusGram
 import UndoUI
 import AvatarNode
+import LocalizedPeerData
 
 // AorusAI owns a large, self-contained vocabulary. Route it through the shared AorusGram
 // language resolver so Russian stays first-class and every other Telegram language follows
@@ -31,126 +32,282 @@ public func aorusAIConversationListController(context: AccountContext) -> ViewCo
     return AorusAIConversationListController(context: context)
 }
 
-public func aorusAIOpenMessageActions(
+/// One row of the AorusAI message menu.
+///
+/// The host renders these rows with Telegram's own context menu, so a descriptor
+/// deliberately carries no UI: only a stable identifier and a localized title.
+/// That keeps ContextUI out of this module and the menu contents out of the
+/// generated host patch.
+public struct AorusAIMenuEntry {
+    public var id: String
+    public var title: String
+
+    public init(id: String, title: String) {
+        self.id = id
+        self.title = title
+    }
+}
+
+/// A group of rows rendered between two separators of the AorusAI message menu.
+public struct AorusAIMenuSection {
+    public var entries: [AorusAIMenuEntry]
+
+    public init(entries: [AorusAIMenuEntry]) {
+        self.entries = entries
+    }
+}
+
+public func aorusAIMessageMenuTitle() -> String {
+    return aorusAILocalized("ИИ-компаньон", "AI Companion")
+}
+
+public func aorusAIMessageMenuSections() -> [AorusAIMenuSection] {
+    return AorusAIMessageMenu.sections()
+}
+
+/// Runs the menu row `id` against the message the context menu was opened on.
+///
+/// The author's display name is resolved here, inside the module that owns the
+/// AorusAI presentation layer, so the host patch never has to reach for a debug
+/// description of a peer.
+public func aorusAIRunMessageMenuAction(
+    id: String,
     context: AccountContext,
     navigationController: NavigationController?,
     peerId: Int64,
     messageNamespace: Int32,
     messageId: Int32,
     authorPeerId: Int64?,
-    authorName: String?,
     text: String
 ) {
     guard let navigationController else { return }
-    let reference = AorusAIReferencedMessage(peerId: peerId, messageNamespace: messageNamespace, messageId: messageId, authorPeerId: authorPeerId, authorName: authorName, text: text)
-    let data = context.sharedContext.currentPresentationData.with { $0 }
-    let controller = UIAlertController(
-        title: aorusAILocalized("Спросить AorusAI", "Ask AorusAI"),
-        message: reference.text.isEmpty ? nil : String(reference.text.prefix(180)),
-        preferredStyle: .actionSheet
-    )
-    let primaryActions: [(String, String)] = [
-        (aorusAILocalized("Улучшить текст", "Improve writing"), aorusAILocalized("Улучши текст, сохранив смысл", "Improve the writing while preserving its meaning")),
-        (aorusAILocalized("Исправить ошибки", "Fix mistakes"), aorusAILocalized("Исправь ошибки в этом сообщении", "Fix mistakes in this message")),
-        (aorusAILocalized("Сделать короче", "Make shorter"), aorusAILocalized("Сделай это сообщение короче", "Make this message shorter")),
-        (aorusAILocalized("Кратко пересказать", "Summarize"), aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
-        (aorusAILocalized("Перевести", "Translate"), aorusAILocalized("Переведи это сообщение на мой язык", "Translate this message into my language")),
-        (aorusAILocalized("Ответить на сообщение", "Draft a reply"), aorusAILocalized("Подготовь уместный ответ на это сообщение", "Draft an appropriate reply to this message"))
-    ]
-    let styleActions: [(String, String)] = [
-        (aorusAILocalized("Сделать подробнее", "Make more detailed"), aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
-        (aorusAILocalized("Переформулировать", "Rewrite"), aorusAILocalized("Переформулируй это сообщение", "Rewrite this message")),
-        (aorusAILocalized("Сделать вежливее", "Make more polite"), aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
-        (aorusAILocalized("Сделать увереннее", "Make more confident"), aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
-        (aorusAILocalized("Сделать официальнее", "Make more formal"), aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
-        (aorusAILocalized("Сделать проще", "Simplify"), aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language"))
-    ]
-    let analysisActions: [(String, String)] = [
-        (aorusAILocalized("Объяснить", "Explain"), aorusAILocalized("Объясни это сообщение", "Explain this message")),
-        (aorusAILocalized("Выделить главное", "Key points"), aorusAILocalized("Выдели главное в этом сообщении", "Extract the key points from this message")),
-        (aorusAILocalized("Несколько ответов", "Several replies"), aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message")),
-    ]
-    let createActions: [(String, String)] = [
-        (aorusAILocalized("Telegram-пост", "Telegram post"), aorusAILocalized("Сделай из этого профессиональный Telegram-пост", "Turn this into a professional Telegram post")),
-        (aorusAILocalized("Instagram-пост", "Instagram post"), aorusAILocalized("Сделай из этого профессиональный Instagram-пост", "Turn this into a professional Instagram post")),
-        (aorusAILocalized("Заголовок", "Title"), aorusAILocalized("Придумай сильный заголовок для этого текста", "Create a strong title for this text")),
-        (aorusAILocalized("Описание", "Description"), aorusAILocalized("Создай краткое и точное описание для этого текста", "Create a concise, accurate description for this text")),
-        (aorusAILocalized("Продолжить текст", "Continue writing"), aorusAILocalized("Естественно продолжи этот текст в том же стиле", "Continue this text naturally in the same style"))
-    ]
+    let start: (String?) -> Void = { authorName in
+        let reference = AorusAIReferencedMessage(
+            peerId: peerId,
+            messageNamespace: messageNamespace,
+            messageId: messageId,
+            authorPeerId: authorPeerId,
+            authorName: authorName,
+            text: text
+        )
+        AorusAIMessageMenu.run(id: id, context: context, navigationController: navigationController, reference: reference)
+    }
+    guard let authorPeerId else {
+        start(nil)
+        return
+    }
+    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+    var started = false
+    let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(authorPeerId)))
+    |> deliverOnMainQueue).start(next: { peer in
+        guard !started else { return }
+        started = true
+        start(peer?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder))
+    })
+}
 
-    let openAction: ((String, String)) -> Void = { item in
-        let conversation = AorusAIConversation()
-        let chat = AorusAIChatController(context: context, conversation: conversation, initialPrompt: item.1, reference: reference)
-        navigationController.pushViewController(chat)
-    }
-    let addActions: (UIAlertController, [(String, String)]) -> Void = { sheet, actions in
-        for item in actions {
-            sheet.addAction(UIAlertAction(title: item.0, style: .default, handler: { _ in openAction(item) }))
-        }
-    }
-    let presentGroup: (String, [(String, String)]) -> Void = { title, actions in
-        let sheet = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
-        addActions(sheet, actions)
-        sheet.addAction(UIAlertAction(title: data.strings.Common_Cancel, style: .cancel))
-        DispatchQueue.main.async {
-            aorusAIPresentActionSheet(sheet, from: navigationController)
-        }
+private enum AorusAIMessageMenu {
+    static let analyzeChatId = "chat.analyze"
+    static let newChatId = "chat.new"
+
+    private struct Item {
+        var id: String
+        var title: String
+        var prompt: String
     }
 
-    for item in primaryActions {
-        controller.addAction(UIAlertAction(title: item.0, style: .default, handler: { _ in
-            openAction(item)
-        }))
+    private static var groups: [[Item]] {
+        return [
+            [
+                Item(id: "text.improve", title: aorusAILocalized("Улучшить текст", "Improve writing"), prompt: aorusAILocalized("Улучши текст, сохранив смысл", "Improve the writing while preserving its meaning")),
+                Item(id: "text.fix", title: aorusAILocalized("Исправить ошибки", "Fix mistakes"), prompt: aorusAILocalized("Исправь ошибки в этом сообщении", "Fix mistakes in this message")),
+                Item(id: "text.shorten", title: aorusAILocalized("Сделать короче", "Make shorter"), prompt: aorusAILocalized("Сделай это сообщение короче", "Make this message shorter")),
+                Item(id: "text.summarize", title: aorusAILocalized("Кратко пересказать", "Summarize"), prompt: aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
+                Item(id: "text.translate", title: aorusAILocalized("Перевести", "Translate"), prompt: aorusAILocalized("Переведи это сообщение на мой язык", "Translate this message into my language")),
+                Item(id: "text.reply", title: aorusAILocalized("Ответить на сообщение", "Draft a reply"), prompt: aorusAILocalized("Подготовь уместный ответ на это сообщение", "Draft an appropriate reply to this message"))
+            ],
+            [
+                Item(id: "tone.detailed", title: aorusAILocalized("Сделать подробнее", "Make more detailed"), prompt: aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
+                Item(id: "tone.rewrite", title: aorusAILocalized("Переформулировать", "Rewrite"), prompt: aorusAILocalized("Переформулируй это сообщение", "Rewrite this message")),
+                Item(id: "tone.polite", title: aorusAILocalized("Сделать вежливее", "Make more polite"), prompt: aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
+                Item(id: "tone.confident", title: aorusAILocalized("Сделать увереннее", "Make more confident"), prompt: aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
+                Item(id: "tone.formal", title: aorusAILocalized("Сделать официальнее", "Make more formal"), prompt: aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
+                Item(id: "tone.simple", title: aorusAILocalized("Сделать проще", "Simplify"), prompt: aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language"))
+            ],
+            [
+                Item(id: "review.explain", title: aorusAILocalized("Объяснить", "Explain"), prompt: aorusAILocalized("Объясни это сообщение", "Explain this message")),
+                Item(id: "review.key", title: aorusAILocalized("Выделить главное", "Key points"), prompt: aorusAILocalized("Выдели главное в этом сообщении", "Extract the key points from this message")),
+                Item(id: "review.variants", title: aorusAILocalized("Несколько ответов", "Several replies"), prompt: aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message"))
+            ],
+            [
+                Item(id: "create.telegram", title: aorusAILocalized("Telegram-пост", "Telegram post"), prompt: aorusAILocalized("Сделай из этого профессиональный Telegram-пост", "Turn this into a professional Telegram post")),
+                Item(id: "create.instagram", title: aorusAILocalized("Instagram-пост", "Instagram post"), prompt: aorusAILocalized("Сделай из этого профессиональный Instagram-пост", "Turn this into a professional Instagram post")),
+                Item(id: "create.title", title: aorusAILocalized("Заголовок", "Title"), prompt: aorusAILocalized("Придумай сильный заголовок для этого текста", "Create a strong title for this text")),
+                Item(id: "create.description", title: aorusAILocalized("Описание", "Description"), prompt: aorusAILocalized("Создай краткое и точное описание для этого текста", "Create a concise, accurate description for this text")),
+                Item(id: "create.continue", title: aorusAILocalized("Продолжить текст", "Continue writing"), prompt: aorusAILocalized("Естественно продолжи этот текст в том же стиле", "Continue this text naturally in the same style"))
+            ],
+            [
+                Item(id: analyzeChatId, title: aorusAILocalized("Анализ переписки", "Analyze chat"), prompt: ""),
+                Item(id: newChatId, title: aorusAILocalized("Новый диалог", "New chat"), prompt: "")
+            ]
+        ]
     }
-    controller.addAction(UIAlertAction(title: aorusAILocalized("Тон и стиль...", "Tone and style..."), style: .default, handler: { _ in
-        presentGroup(aorusAILocalized("Тон и стиль", "Tone and style"), styleActions)
-    }))
-    controller.addAction(UIAlertAction(title: aorusAILocalized("Разобрать сообщение...", "Explore message..."), style: .default, handler: { _ in
-        presentGroup(aorusAILocalized("Разобрать сообщение", "Explore message"), analysisActions)
-    }))
-    controller.addAction(UIAlertAction(title: aorusAILocalized("Создать из сообщения...", "Create from message..."), style: .default, handler: { _ in
-        presentGroup(aorusAILocalized("Создать из сообщения", "Create from message"), createActions)
-    }))
-    controller.addAction(UIAlertAction(title: aorusAILocalized("Анализ переписки", "Analyze chat"), style: .default, handler: { _ in
-        aorusAIPresentHistoryCount(context: context, navigationController: navigationController, reference: reference)
-    }))
-    controller.addAction(UIAlertAction(title: aorusAILocalized("Новый диалог", "New chat"), style: .default, handler: { _ in
-        navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), reference: reference))
-    }))
-    controller.addAction(UIAlertAction(title: data.strings.Common_Cancel, style: .cancel))
-    aorusAIPresentActionSheet(controller, from: navigationController)
+
+    static func sections() -> [AorusAIMenuSection] {
+        return groups.map { group in
+            AorusAIMenuSection(entries: group.map { AorusAIMenuEntry(id: $0.id, title: $0.title) })
+        }
+    }
+
+    static func run(id: String, context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
+        switch id {
+        case analyzeChatId:
+            aorusAIPresentHistoryCount(context: context, navigationController: navigationController, reference: reference)
+        case newChatId:
+            navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), reference: reference))
+        default:
+            guard let prompt = groups.joined().first(where: { $0.id == id })?.prompt, !prompt.isEmpty else { return }
+            navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), initialPrompt: prompt, reference: reference))
+        }
+    }
 }
 
 private func aorusAIPresentHistoryCount(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-    let sheet = UIAlertController(title: aorusAILocalized("Сколько сообщений проанализировать?", "How many messages should be analyzed?"), message: nil, preferredStyle: .actionSheet)
-    for count in [20, 50, 100, 200] {
+    let limit = AorusAIRequestLimits.chatHistoryMessageCount
+    let sheet = UIAlertController(
+        title: aorusAILocalized("Сколько сообщений проанализировать?", "How many messages should be analyzed?"),
+        message: aorusAILocalized(
+            "Сообщения читаются на устройстве и передаются AorusAI только после подтверждения.",
+            "The messages are read on this device and shared with AorusAI only after you confirm."
+        ),
+        preferredStyle: .actionSheet
+    )
+    for count in [20, 50, 100, limit] {
         sheet.addAction(UIAlertAction(title: "\(count)", style: .default, handler: { _ in
-            aorusAIRequestHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: count)
+            aorusAIPrepareHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: count)
         }))
     }
     sheet.addAction(UIAlertAction(title: aorusAILocalized("Другое...", "Other..."), style: .default, handler: { _ in
-        let alert = UIAlertController(title: aorusAILocalized("Количество сообщений", "Message count"), message: aorusAILocalized("От 1 до 200", "From 1 to 200"), preferredStyle: .alert)
-        alert.addTextField { field in field.keyboardType = .numberPad; field.placeholder = "50" }
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default, handler: { _ in
-            let count = min(200, max(1, Int(alert.textFields?.first?.text ?? "") ?? 50))
-            aorusAIRequestHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: count)
-        }))
-        navigationController.present(alert, animated: true)
+        aorusAIPresentCustomHistoryCount(context: context, navigationController: navigationController, reference: reference)
     }))
     sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
     aorusAIPresentActionSheet(sheet, from: navigationController)
 }
 
-private func aorusAIRequestHistoryAnalysis(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage, count: Int) {
-    let safeCount = min(200, max(1, count))
-    let visiblePrompt = aorusAILocalized(
-        "Проанализируй последние \(safeCount) сообщений текущей переписки. Сначала запроси разрешение на чтение.",
-        "Analyze the last \(safeCount) messages in the current chat. Request permission to read them first."
+private func aorusAIPresentCustomHistoryCount(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
+    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+    let limit = AorusAIRequestLimits.chatHistoryMessageCount
+    let alert = UIAlertController(
+        title: aorusAILocalized("Количество сообщений", "Message count"),
+        message: aorusAILocalized("От 1 до \(limit)", "From 1 to \(limit)"),
+        preferredStyle: .alert
     )
-    let conversation = AorusAIConversation()
-    navigationController.pushViewController(AorusAIChatController(context: context, conversation: conversation, initialPrompt: visiblePrompt, reference: reference))
+    alert.addTextField { field in
+        field.keyboardType = .numberPad
+        field.placeholder = "50"
+    }
+    alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
+    alert.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default, handler: { [weak alert] _ in
+        let raw = (alert?.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // An unparsable value is a mistake, not a request for a default: say so and
+        // ask again instead of quietly analysing some other number of messages.
+        guard let parsed = Int(raw), parsed > 0 else {
+            let invalid = UIAlertController(
+                title: aorusAILocalized("Некорректное количество", "Invalid count"),
+                message: aorusAILocalized("Введите число от 1 до \(limit).", "Enter a number between 1 and \(limit)."),
+                preferredStyle: .alert
+            )
+            invalid.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default, handler: { _ in
+                aorusAIPresentCustomHistoryCount(context: context, navigationController: navigationController, reference: reference)
+            }))
+            navigationController.present(invalid, animated: true)
+            return
+        }
+        aorusAIPrepareHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: min(limit, parsed))
+    }))
+    navigationController.present(alert, animated: true)
+}
+
+private struct AorusAITranscript {
+    var messageCount: Int
+    var text: String
+}
+
+/// Reads the newest `count` text messages of `peerId` from the local Postbox.
+///
+/// The backend protocol declares a `telegram.chat.history` capability but does not
+/// publish a body schema for answering a suspended `permission_request`, so the
+/// client never lets the server pull history: it reads the messages itself, shows
+/// exactly what will leave the device, and sends the transcript inline in the
+/// request the user confirmed.
+private func aorusAIChatTranscript(context: AccountContext, peerId: PeerId, namespace: Int32, count: Int) -> Signal<AorusAITranscript, NoError> {
+    let limit = min(AorusAIRequestLimits.chatHistoryMessageCount, max(1, count))
+    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+    let strings = presentationData.strings
+    let nameOrder = presentationData.nameDisplayOrder
+    let unknownAuthor = aorusAILocalized("Сообщение", "Message")
+    let perMessage = AorusAIRequestLimits.chatHistoryMessageCharacters
+    return context.account.postbox.transaction { transaction -> AorusAITranscript in
+        var lines: [String] = []
+        transaction.scanTopMessages(peerId: peerId, namespace: namespace, limit: limit) { message in
+            guard lines.count < limit else { return false }
+            let body = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return true }
+            let author = message.author.flatMap { EnginePeer($0).displayTitle(strings: strings, displayOrder: nameOrder) } ?? unknownAuthor
+            let clamped = body.count > perMessage ? String(body.prefix(perMessage)) + "…" : body
+            lines.append("\(author): \(clamped)")
+            return true
+        }
+        let ordered = Array(lines.reversed())
+        return AorusAITranscript(messageCount: ordered.count, text: ordered.joined(separator: "\n"))
+    }
+}
+
+private func aorusAIPrepareHistoryAnalysis(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage, count: Int) {
+    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+    let limit = AorusAIRequestLimits.chatHistoryMessageCount
+    let requested = min(limit, max(1, count))
+    let signal = aorusAIChatTranscript(context: context, peerId: PeerId(reference.peerId), namespace: reference.messageNamespace, count: requested)
+    let _ = (signal |> deliverOnMainQueue).start(next: { transcript in
+        guard transcript.messageCount > 0 else {
+            let empty = UIAlertController(
+                title: aorusAILocalized("Нет сообщений для анализа", "Nothing to analyze"),
+                message: aorusAILocalized(
+                    "В этой переписке нет текстовых сообщений, которые можно передать AorusAI.",
+                    "This chat has no text messages that could be shared with AorusAI."
+                ),
+                preferredStyle: .alert
+            )
+            empty.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default))
+            navigationController.present(empty, animated: true)
+            return
+        }
+        let confirmation = UIAlertController(
+            title: aorusAILocalized("Передать переписку AorusAI?", "Share the chat with AorusAI?"),
+            message: aorusAILocalized(
+                "Будет передано \(transcript.messageCount) из последних \(requested) сообщений — \(transcript.text.count) символов. Ничего не уходит с устройства до подтверждения.",
+                "\(transcript.messageCount) of the latest \(requested) messages — \(transcript.text.count) characters — will be shared. Nothing leaves the device until you confirm."
+            ),
+            preferredStyle: .alert
+        )
+        confirmation.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
+        confirmation.addAction(UIAlertAction(title: aorusAILocalized("Передать", "Share"), style: .default, handler: { _ in
+            let visiblePrompt = aorusAILocalized(
+                "Проанализируй последние \(transcript.messageCount) сообщений этой переписки.",
+                "Analyze the last \(transcript.messageCount) messages of this chat."
+            )
+            let header = aorusAILocalized("Переписка:", "Chat transcript:")
+            navigationController.pushViewController(AorusAIChatController(
+                context: context,
+                conversation: AorusAIConversation(),
+                initialPrompt: visiblePrompt,
+                initialRequest: visiblePrompt + "\n\n" + header + "\n" + transcript.text,
+                reference: reference
+            ))
+        }))
+        navigationController.present(confirmation, animated: true)
+    })
 }
 
 private final class AorusAIConversationListController: ViewController, UITableViewDataSource, UITableViewDelegate {
@@ -339,6 +496,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private let accountId: Int64
     private var conversation: AorusAIConversation
     private let initialPrompt: String?
+    private let initialRequest: String?
     private var initialRequestStarted = false
     private var pendingReference: AorusAIReferencedMessage?
     private var streamHandle: AorusAIStreamHandle?
@@ -359,12 +517,16 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let composer = AorusAIComposerView()
 
-    init(context: AccountContext, conversation: AorusAIConversation, initialPrompt: String? = nil, reference: AorusAIReferencedMessage? = nil) {
+    /// `initialPrompt` is what the user sees in the conversation. `initialRequest`
+    /// is what is actually sent when the two differ — a chat analysis shows a short
+    /// instruction but transports the confirmed transcript with it.
+    init(context: AccountContext, conversation: AorusAIConversation, initialPrompt: String? = nil, initialRequest: String? = nil, reference: AorusAIReferencedMessage? = nil) {
         self.context = context
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
         self.accountId = context.account.id.int64
         self.conversation = conversation
         self.initialPrompt = initialPrompt
+        self.initialRequest = initialRequest
         self.pendingReference = reference
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
         self.title = "AorusAI"
@@ -425,8 +587,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         super.viewDidAppear(animated)
         if let initialPrompt, !initialPrompt.isEmpty, !initialRequestStarted {
             initialRequestStarted = true
+            let requestText = initialRequest ?? initialPrompt
             DispatchQueue.main.async { [weak self] in
-                self?.send(displayText: initialPrompt, requestText: initialPrompt)
+                self?.send(displayText: initialPrompt, requestText: requestText)
             }
         }
     }
@@ -485,6 +648,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         persist(force: false)
     }
 
+    func textViewDidBeginEditing(_ textView: UITextView) {
+        composer.setInputActive(true)
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        composer.setInputActive(false)
+    }
+
     private func sendOrStop() {
         if streamHandle != nil {
             stopGeneration()
@@ -506,10 +677,23 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             conversation.quotaResetAt = nil
         }
         let text = displayText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transportText = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var transportText = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !transportText.isEmpty else { return }
         let entities = draftEntitiesText == text ? draftEntities : AorusAIFormat.entities(in: text)
         let userMessage = AorusAIMessage(role: .user, rawText: text, telegramEntities: entities, referencedMessage: pendingReference)
+        // The production contract is a plain chat-completions body, so a quoted
+        // Telegram message travels inside the request text. It stays out of the
+        // visible bubble: that one keeps the reference card instead.
+        if let reference = userMessage.referencedMessage {
+            let quoted = reference.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !quoted.isEmpty {
+                let author = reference.authorName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let heading = (author?.isEmpty == false)
+                    ? aorusAILocalized("Сообщение из Telegram от \(author ?? ""):", "Telegram message from \(author ?? ""):")
+                    : aorusAILocalized("Сообщение из Telegram:", "Telegram message:")
+                transportText += "\n\n" + heading + "\n" + quoted
+            }
+        }
         let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming, statusLabel: aorusAILocalized("Подключение...", "Connecting..."))
         conversation.messages.append(userMessage)
         conversation.messages.append(assistant)
@@ -527,15 +711,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         persist(force: true)
         resolveEntities(forMessageId: userMessage.id)
 
-        let history = Array(conversation.messages.dropLast(2).suffix(60))
-        let payload = AorusAIAgentPayload(
-            conversationId: conversation.id.uuidString.lowercased(),
-            text: transportText,
-            entities: entities,
-            referencedMessage: userMessage.referencedMessage,
-            history: history,
-            serverContext: conversation.serverContext
-        )
+        // Everything before the two turns just appended is replayed context; the
+        // payload itself trims it to the transport budget.
+        let payload = AorusAIAgentPayload(history: Array(conversation.messages.dropLast(2)), text: transportText)
         streamHandle = AorusAIClient.shared.start(payload: payload, event: { [weak self] event in
             self?.handle(event)
         }, completion: { [weak self] result in
@@ -554,9 +732,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private func handle(_ event: AorusAIEvent) {
         guard let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
         switch event {
-        case let .agentStarted(turnId, context):
+        case let .agentStarted(turnId, _):
+            // §5: the turn id is kept only to be able to cancel, and is never shown.
+            // `context` is a server-side field with no documented client use, so it is
+            // parsed and deliberately dropped rather than stored as dead state.
             self.turnId = turnId
-            if let context { conversation.serverContext = context }
         case let .status(label, progress):
             let visibleLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? aorusAILocalized("Выполняю...", "Working...")
@@ -646,8 +826,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             show(nil)
             return
         }
+        let strings = presentationData.strings
+        let nameOrder = presentationData.nameDisplayOrder
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(peerId))) |> deliverOnMainQueue).start(next: { peer in
-            show(peer?.debugDisplayTitle)
+            show(peer?.displayTitle(strings: strings, displayOrder: nameOrder))
         })
     }
 
@@ -783,6 +965,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         }
     }
 
+    private func displayName(of peer: EnginePeer) -> String {
+        return peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+    }
+
     private func resolveDraftEntities(in text: String) {
         draftEntityResolutionDisposables.forEach { $0.dispose() }
         draftEntityResolutionDisposables.removeAll()
@@ -796,7 +982,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 guard let self, self.draftEntitiesText == expectedText, case let .result(peer) = result, let peer else { return }
                 guard index < self.draftEntities.count, self.draftEntities[index].username?.lowercased() == username.lowercased() else { return }
                 self.draftEntities[index].peerId = peer.id.toInt64()
-                self.draftEntities[index].displayName = peer.debugDisplayTitle
+                self.draftEntities[index].displayName = self.displayName(of: peer)
                 self.composer.entities = self.draftEntities
             })
             draftEntityResolutionDisposables.append(disposable)
@@ -816,7 +1002,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                       let currentMessageIndex = self.conversation.messages.firstIndex(where: { $0.id == messageId }),
                       entityIndex < self.conversation.messages[currentMessageIndex].telegramEntities.count else { return }
                 self.conversation.messages[currentMessageIndex].telegramEntities[entityIndex].peerId = peer.id.toInt64()
-                self.conversation.messages[currentMessageIndex].telegramEntities[entityIndex].displayName = peer.debugDisplayTitle
+                self.conversation.messages[currentMessageIndex].telegramEntities[entityIndex].displayName = self.displayName(of: peer)
                 self.reloadMessage(id: messageId)
                 self.persist(force: false)
             })
@@ -861,7 +1047,19 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     private func reloadMessage(id: UUID) {
         guard let row = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
-        tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
+        let indexPath = IndexPath(row: row, section: 0)
+        let message = conversation.messages[row]
+        let canRetry = message.state == .failed && row == conversation.messages.count - 1
+        // §27: during streaming this method fires several times per second. Rebuilding the
+        // whole cell drops the text selection and flickers, so try to push only the changed
+        // text into the live views and let the table re-measure the height.
+        if let cell = tableView.cellForRow(at: indexPath) as? AorusAIMessageCell,
+           cell.applyIncremental(message: message, theme: presentationData.theme, canRetry: canRetry) {
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        } else {
+            tableView.reloadRows(at: [indexPath], with: .none)
+        }
         scrollToBottom(animated: false)
     }
 
@@ -998,6 +1196,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 private final class AorusAIComposerView: UIView {
     let textView = UITextView()
     private let container = UIView()
+    private let brandView = UIView()
+    private let brandIcon = UIImageView()
     private let brandLabel = UILabel()
     private let placeholder = UILabel()
     private let referenceView = UIView()
@@ -1032,7 +1232,9 @@ private final class AorusAIComposerView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         addSubview(container)
-        [brandLabel, referenceView, entityScrollView, textView, sendButton].forEach { container.addSubview($0) }
+        [brandView, referenceView, entityScrollView, textView, sendButton].forEach { container.addSubview($0) }
+        brandView.addSubview(brandIcon)
+        brandView.addSubview(brandLabel)
         entityScrollView.addSubview(entityStack)
         entityScrollView.showsHorizontalScrollIndicator = false
         entityStack.axis = .horizontal
@@ -1040,8 +1242,13 @@ private final class AorusAIComposerView: UIView {
         referenceView.addSubview(referenceLabel)
         referenceView.addSubview(referenceClose)
         textView.addSubview(placeholder)
+        brandIcon.contentMode = .scaleAspectFit
+        brandIcon.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
         brandLabel.text = "AorusAI"
-        brandLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        brandLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        // §4: the brand row belongs to the active input, not to the resting composer.
+        brandView.isHidden = true
+        brandView.alpha = 0.0
         placeholder.text = aorusAILocalized("Сообщение AorusAI", "Message AorusAI")
         placeholder.font = .systemFont(ofSize: 16)
         textView.font = .systemFont(ofSize: 16)
@@ -1072,6 +1279,7 @@ private final class AorusAIComposerView: UIView {
         textView.textColor = theme.list.itemPrimaryTextColor
         textView.tintColor = theme.list.itemAccentColor
         placeholder.textColor = theme.list.itemSecondaryTextColor
+        brandIcon.tintColor = theme.list.itemAccentColor
         brandLabel.textColor = theme.list.itemAccentColor
         referenceLabel.textColor = theme.list.itemSecondaryTextColor
         referenceView.backgroundColor = theme.list.blocksBackgroundColor.withAlphaComponent(0.75)
@@ -1085,28 +1293,46 @@ private final class AorusAIComposerView: UIView {
         super.layoutSubviews()
         let side: CGFloat = 10
         container.frame = CGRect(x: side, y: 5, width: bounds.width - side * 2, height: bounds.height - 10)
-        brandLabel.frame = CGRect(x: 14, y: 6, width: 90, height: 14)
+        let brandHeight = self.brandHeight
+        brandView.frame = CGRect(x: 12, y: 7, width: max(0, container.bounds.width - 24), height: brandHeight)
+        brandIcon.frame = CGRect(x: 0, y: 1, width: 14, height: 14)
+        brandLabel.frame = CGRect(x: 18, y: 0, width: max(0, brandView.bounds.width - 18), height: 16)
         let buttonSize: CGFloat = 38
         sendButton.frame = CGRect(x: container.bounds.width - buttonSize - 7, y: container.bounds.height - buttonSize - 6, width: buttonSize, height: buttonSize)
         let chipsHeight: CGFloat = entityScrollView.isHidden ? 0 : 32
-        entityScrollView.frame = CGRect(x: 10, y: 22, width: container.bounds.width - 20, height: chipsHeight)
+        let stackTop: CGFloat = brandHeight > 0 ? 7 + brandHeight + 3 : 8
+        entityScrollView.frame = CGRect(x: 10, y: stackTop, width: container.bounds.width - 20, height: chipsHeight)
         entityStack.frame = CGRect(origin: .zero, size: entityStack.systemLayoutSizeFitting(CGSize(width: UIView.layoutFittingCompressedSize.width, height: 28)))
         entityStack.frame.size.height = chipsHeight
         entityScrollView.contentSize = entityStack.bounds.size
         let refHeight: CGFloat = reference == nil ? 0 : 42
-        referenceView.frame = CGRect(x: 10, y: 22 + chipsHeight, width: container.bounds.width - 20, height: refHeight)
+        referenceView.frame = CGRect(x: 10, y: stackTop + chipsHeight, width: container.bounds.width - 20, height: refHeight)
         referenceView.layer.cornerRadius = 8
         referenceLabel.frame = CGRect(x: 9, y: 4, width: referenceView.bounds.width - 38, height: 34)
         referenceClose.frame = CGRect(x: referenceView.bounds.width - 32, y: 7, width: 28, height: 28)
-        let inputTop: CGFloat = 23 + chipsHeight + refHeight
-        textView.frame = CGRect(x: 12, y: inputTop, width: container.bounds.width - buttonSize - 28, height: container.bounds.height - inputTop - 6)
-        placeholder.frame = CGRect(x: 5, y: 5, width: textView.bounds.width - 10, height: 24)
+        let inputTop: CGFloat = stackTop + chipsHeight + refHeight + 1
+        textView.frame = CGRect(x: 12, y: inputTop, width: container.bounds.width - buttonSize - 28, height: max(0, container.bounds.height - inputTop - 6))
+        placeholder.frame = CGRect(x: 5, y: 5, width: max(0, textView.bounds.width - 10), height: 24)
+    }
+
+    private var brandHeight: CGFloat { brandView.isHidden ? 0 : 16 }
+
+    /// §4: while the keyboard is up the composer identifies the assistant. Collapsing
+    /// the row again when the input goes idle keeps the resting composer plain.
+    func setInputActive(_ active: Bool) {
+        guard brandView.isHidden == active else { return }
+        brandView.isHidden = !active
+        onHeightChanged?()
+        UIView.animate(withDuration: 0.18, delay: 0.0, options: [.beginFromCurrentState, .curveEaseInOut]) {
+            self.brandView.alpha = active ? 1.0 : 0.0
+        }
     }
 
     func requiredHeight(width: CGFloat) -> CGFloat {
         let available = max(100, width - 20 - 38 - 28)
         let measured = textView.sizeThatFits(CGSize(width: available, height: 120)).height
-        return min(182, max(58, measured + 34 + (reference == nil ? 0 : 42) + (entityScrollView.isHidden ? 0 : 32))) + 10
+        let extras = brandHeight + (reference == nil ? 0 : 42) + (entityScrollView.isHidden ? 0 : 32)
+        return min(196, max(52, measured + 20 + extras)) + 10
     }
 
     func invalidateHeight() { placeholder.isHidden = !textView.text.isEmpty; setNeedsLayout() }
@@ -1144,6 +1370,13 @@ private final class AorusAIComposerView: UIView {
 }
 
 private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
+    private enum BodySlot {
+        case text(UITextView)
+        case code(AorusAICodeCard)
+        case quote(AorusAIQuoteCard)
+        case separator
+    }
+
     private let contentStack = UIStackView()
     private let bubble = UIView()
     private let bodyStack = UIStackView()
@@ -1151,6 +1384,13 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private let retryButton = UIButton(type: .system)
     var onOpenLink: ((URL) -> Void)?
     private var bubbleWidthConstraint: NSLayoutConstraint?
+    private var slots: [BodySlot] = []
+    private var slotValues: [String] = []
+    private var structureSignature: String?
+    private var configuredMessageId: UUID?
+    private var configuredTextColor: UIColor = .white
+    private var configuredAccent: UIColor = .white
+    private var configuredTheme: PresentationTheme?
     var onArtifact: ((AorusAIArtifact, AorusAIArtifactCard) -> Void)?
     var onCopy: (() -> Void)?
     var onRetry: (() -> Void)?
@@ -1191,13 +1431,76 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     override func prepareForReuse() {
         super.prepareForReuse()
         bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        slots.removeAll()
+        slotValues.removeAll()
+        structureSignature = nil
+        configuredMessageId = nil
         onOpenLink = nil; onArtifact = nil; onCopy = nil; onRetry = nil
+    }
+
+    /// Streaming path (§27): keeps the existing view tree and only pushes the text that
+    /// actually changed. Returns false when the block structure moved and the caller has
+    /// to fall back to a full rebuild.
+    func applyIncremental(message: AorusAIMessage, theme: PresentationTheme, canRetry: Bool) -> Bool {
+        guard configuredMessageId == message.id, configuredTheme === theme else { return false }
+        let resolvedEntities = message.telegramEntities.filter { $0.peerId != nil }
+        let displayText = AorusAIFormat.removingResolvedEntitySources(from: message.rawText, entities: resolvedEntities)
+        let blocks = AorusAIMarkdown.blocks(displayText)
+        guard Self.signature(blocks: blocks, message: message, entities: resolvedEntities) == structureSignature,
+              blocks.count == slots.count, blocks.count == slotValues.count else {
+            return false
+        }
+        for index in blocks.indices {
+            let value = Self.value(of: blocks[index])
+            guard value != slotValues[index] else { continue }
+            slotValues[index] = value
+            switch (slots[index], blocks[index]) {
+            case let (.text(view), .text(source)):
+                view.attributedText = AorusAIMarkdown.attributed(source, color: configuredTextColor, accent: configuredAccent)
+            case let (.code(card), .code(language, code)):
+                card.configure(language: language, code: code, theme: theme)
+            case let (.quote(card), .quote(source)):
+                card.configure(text: source, theme: theme, textColor: configuredTextColor, accentOnColor: message.role == .user)
+            default:
+                return false
+            }
+        }
+        statusLabel.text = message.statusLabel
+        statusLabel.isHidden = message.statusLabel == nil
+        retryButton.isHidden = !canRetry
+        return true
+    }
+
+    private static func value(of block: AorusAIMarkdownBlock) -> String {
+        switch block {
+        case let .text(value): return value
+        case let .code(_, code): return code
+        case let .quote(value): return value
+        case .separator: return ""
+        }
+    }
+
+    private static func signature(blocks: [AorusAIMarkdownBlock], message: AorusAIMessage, entities: [AorusAITelegramEntity]) -> String {
+        var parts: [String] = [message.referencedMessage == nil ? "r0" : "r1"]
+        parts.append("e:" + entities.map { "\($0.peerId ?? 0)/\($0.displayName)" }.joined(separator: ","))
+        for block in blocks {
+            switch block {
+            case .text: parts.append("t")
+            case let .code(language, _): parts.append("c/\(language ?? "")")
+            case .quote: parts.append("q")
+            case .separator: parts.append("s")
+            }
+        }
+        parts.append("a:" + message.artifacts.map { "\($0.artifactId)/\($0.isExpired ? 1 : 0)" }.joined(separator: ","))
+        return parts.joined(separator: "|")
     }
 
     func configure(message: AorusAIMessage, context: AccountContext, theme: PresentationTheme, canRetry: Bool) {
         backgroundColor = theme.list.blocksBackgroundColor
         contentView.backgroundColor = theme.list.blocksBackgroundColor
         bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        slots.removeAll()
+        slotValues.removeAll()
         let isUser = message.role == .user
         contentStack.alignment = isUser ? .trailing : .leading
         bubbleWidthConstraint?.isActive = false
@@ -1234,8 +1537,16 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         }
 
         let textColor: UIColor = isUser ? .white : theme.list.itemPrimaryTextColor
+        let accent: UIColor = isUser ? .white : theme.list.itemAccentColor
+        configuredTextColor = textColor
+        configuredAccent = accent
+        configuredTheme = theme
+        configuredMessageId = message.id
         let displayText = AorusAIFormat.removingResolvedEntitySources(from: message.rawText, entities: resolvedEntities)
-        for block in AorusAIMarkdown.blocks(displayText) {
+        let blocks = AorusAIMarkdown.blocks(displayText)
+        structureSignature = Self.signature(blocks: blocks, message: message, entities: resolvedEntities)
+        for block in blocks {
+            slotValues.append(Self.value(of: block))
             switch block {
             case let .text(value):
                 let view = UITextView()
@@ -1245,23 +1556,27 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 view.textContainerInset = .zero
                 view.textContainer.lineFragmentPadding = 0
                 view.delegate = self
-                view.linkTextAttributes = [.foregroundColor: isUser ? UIColor.white : theme.list.itemAccentColor, .underlineStyle: 0]
-                view.attributedText = AorusAIMarkdown.attributed(value, color: textColor, accent: isUser ? .white : theme.list.itemAccentColor)
+                view.linkTextAttributes = [.foregroundColor: accent, .underlineStyle: 0]
+                view.attributedText = AorusAIMarkdown.attributed(value, color: textColor, accent: accent)
                 bodyStack.addArrangedSubview(view)
+                slots.append(.text(view))
             case let .code(language, code):
                 let card = AorusAICodeCard()
                 card.configure(language: language, code: code, theme: theme)
                 card.onCopy = { [weak self] in self?.onCopy?() }
                 bodyStack.addArrangedSubview(card)
+                slots.append(.code(card))
             case let .quote(value):
                 let card = AorusAIQuoteCard()
                 card.configure(text: value, theme: theme, textColor: textColor, accentOnColor: isUser)
                 bodyStack.addArrangedSubview(card)
+                slots.append(.quote(card))
             case .separator:
                 let separator = UIView()
                 separator.backgroundColor = isUser ? UIColor.white.withAlphaComponent(0.35) : theme.list.itemBlocksSeparatorColor
                 separator.heightAnchor.constraint(equalToConstant: UIScreenPixel).isActive = true
                 bodyStack.addArrangedSubview(separator)
+                slots.append(.separator)
             }
         }
 
@@ -1374,6 +1689,8 @@ private final class AorusAIEntityChipView: UIControl {
     private let titleLabel = UILabel()
     private var disposable: Disposable?
     private var peerId: PeerId?
+    private var nameStrings: PresentationStrings?
+    private var nameOrder: PresentationPersonNameOrder?
     var onOpenPeer: ((PeerId) -> Void)?
 
     override init(frame: CGRect) {
@@ -1407,6 +1724,9 @@ private final class AorusAIEntityChipView: UIControl {
 
     func configure(context: AccountContext, entity: AorusAITelegramEntity, theme: PresentationTheme, accentOnColor: Bool) {
         disposable?.dispose()
+        let namePresentationData = context.sharedContext.currentPresentationData.with { $0 }
+        nameStrings = namePresentationData.strings
+        nameOrder = namePresentationData.nameDisplayOrder
         let accent = accentOnColor ? UIColor.white : theme.list.itemAccentColor
         backgroundColor = accent.withAlphaComponent(accentOnColor ? 0.16 : 0.12)
         titleLabel.textColor = accent
@@ -1428,18 +1748,22 @@ private final class AorusAIEntityChipView: UIControl {
             disposable = (context.engine.peers.resolvePeerByName(name: username, referrer: nil) |> deliverOnMainQueue).start(next: { [weak self] result in
                 guard let self, case let .result(peer) = result, let peer else { return }
                 self.peerId = peer.id
-                self.titleLabel.text = peer.debugDisplayTitle
-                self.accessibilityLabel = aorusAILocalized("Профиль ", "Profile ") + peer.debugDisplayTitle
                 self.apply(peer: peer, context: context, theme: theme)
             })
         }
     }
 
+    private func displayName(of peer: EnginePeer) -> String {
+        guard let nameStrings, let nameOrder else { return peer.compactDisplayTitle }
+        return peer.displayTitle(strings: nameStrings, displayOrder: nameOrder)
+    }
+
     private func apply(peer: EnginePeer?, context: AccountContext, theme: PresentationTheme) {
         avatarNode.setPeer(context: context, theme: theme, peer: peer, clipStyle: .round, synchronousLoad: false, displayDimensions: CGSize(width: 22, height: 22))
         if let peer {
-            titleLabel.text = peer.debugDisplayTitle
-            accessibilityLabel = aorusAILocalized("Профиль ", "Profile ") + peer.debugDisplayTitle
+            let name = displayName(of: peer)
+            titleLabel.text = name
+            accessibilityLabel = aorusAILocalized("Профиль ", "Profile ") + name
         }
     }
 
@@ -1498,24 +1822,48 @@ private final class AorusAIReferenceCard: UIView {
 
 private final class AorusAICodeCard: UIView {
     private let languageLabel = UILabel()
+    private let scrollView = UIScrollView()
     private let codeView = UITextView()
     private let copyButton = UIButton(type: .system)
     private var code = ""
+    private var codeWidthConstraint: NSLayoutConstraint?
     var onCopy: (() -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         layer.cornerRadius = 10; layer.cornerCurve = .continuous
         languageLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         codeView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        codeView.isEditable = false; codeView.isScrollEnabled = false; codeView.backgroundColor = .clear
-        copyButton.setImage(UIImage(systemName: "doc.on.doc"), for: .normal)
+        // The text view never scrolls itself: it is laid out at its intrinsic width
+        // inside a horizontal scroll view so long lines can be reached by swiping
+        // instead of being wrapped or clipped.
+        codeView.isEditable = false
+        codeView.isScrollEnabled = false
+        codeView.isSelectable = true
+        codeView.backgroundColor = .clear
+        codeView.textContainerInset = .zero
+        codeView.textContainer.lineFragmentPadding = 0
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceVertical = false
+        copyButton.setTitle(aorusAILocalized("Скопировать", "Copy"), for: .normal)
+        copyButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
         copyButton.accessibilityLabel = aorusAILocalized("Скопировать код", "Copy code")
         copyButton.addTarget(self, action: #selector(copyCode), for: .touchUpInside)
-        [languageLabel, codeView, copyButton].forEach { addSubview($0); $0.translatesAutoresizingMaskIntoConstraints = false }
+        [languageLabel, scrollView, copyButton].forEach { addSubview($0); $0.translatesAutoresizingMaskIntoConstraints = false }
+        scrollView.addSubview(codeView)
+        codeView.translatesAutoresizingMaskIntoConstraints = false
+        let codeWidth = codeView.widthAnchor.constraint(equalToConstant: 0)
+        codeWidth.isActive = true
+        codeWidthConstraint = codeWidth
         NSLayoutConstraint.activate([
             languageLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), languageLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9),
-            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), copyButton.centerYAnchor.constraint(equalTo: languageLabel.centerYAnchor), copyButton.widthAnchor.constraint(equalToConstant: 30), copyButton.heightAnchor.constraint(equalToConstant: 30),
-            codeView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), codeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), codeView.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 5), codeView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+            copyButton.leadingAnchor.constraint(greaterThanOrEqualTo: languageLabel.trailingAnchor, constant: 8),
+            copyButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), copyButton.centerYAnchor.constraint(equalTo: languageLabel.centerYAnchor), copyButton.heightAnchor.constraint(equalToConstant: 26),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), scrollView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), scrollView.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 6), scrollView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+            codeView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            codeView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            codeView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            codeView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            scrollView.heightAnchor.constraint(equalTo: codeView.heightAnchor),
             widthAnchor.constraint(greaterThanOrEqualToConstant: 210)
         ])
     }
@@ -1526,12 +1874,21 @@ private final class AorusAICodeCard: UIView {
         layer.borderWidth = UIScreenPixel; layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
         languageLabel.text = language.flatMap { $0.isEmpty ? nil : $0.uppercased() } ?? "CODE"
         languageLabel.textColor = theme.list.itemSecondaryTextColor
-        codeView.textColor = theme.list.itemPrimaryTextColor; codeView.text = code
+        codeView.textColor = theme.list.itemPrimaryTextColor
+        codeView.text = code
+        // Lay the code out at its natural width so nothing wraps; the scroll view
+        // takes over when that width exceeds the card.
+        let natural = codeView.sizeThatFits(CGSize(width: 10_000, height: 10_000))
+        codeWidthConstraint?.constant = max(1, ceil(natural.width))
         copyButton.tintColor = theme.list.itemAccentColor
     }
     @objc private func copyCode() {
         UIPasteboard.general.string = code
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        copyButton.setTitle(aorusAILocalized("Скопировано", "Copied"), for: .normal)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            self?.copyButton.setTitle(aorusAILocalized("Скопировать", "Copy"), for: .normal)
+        }
         onCopy?()
     }
 }
@@ -1767,9 +2124,71 @@ private enum AorusAIFormat {
         let compact = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         return String(compact.prefix(54))
     }
+    /// §2: explicit wording instead of `RelativeDateTimeFormatter`, whose `.short` style
+    /// produces abbreviations that do not match the mockup ("5 мин." vs "5 мин. назад").
     static func relativeDate(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
+        let now = Date()
+        let seconds = now.timeIntervalSince(date)
+        if seconds < 60 {
+            return aorusAILocalized("только что", "just now")
+        }
+        let calendar = Calendar.current
+        let minutes = Int(seconds / 60)
+        if minutes < 60 {
+            return aorusAILocalized("\(minutes) мин. назад", minutes == 1 ? "1 min ago" : "\(minutes) min ago")
+        }
+        let hours = Int(seconds / 3600)
+        if hours < 24, calendar.isDateInToday(date) {
+            if hours == 1 {
+                return aorusAILocalized("час назад", "an hour ago")
+            }
+            return aorusAILocalized("\(hours) ч. назад", "\(hours) h ago")
+        }
+        if calendar.isDateInYesterday(date) {
+            return aorusAILocalized("вчера", "yesterday")
+        }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
+        if days >= 1 && days < 7 {
+            return aorusAILocalized("\(days) дн. назад", days == 1 ? "1 day ago" : "\(days) days ago")
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+    /// §14: quota wording built only from backend metadata. Never invents a reset time.
+    static func quotaText(_ quota: AorusAIQuota) -> String {
+        let title = aorusAILocalized("Лимит AorusAI исчерпан", "AorusAI limit reached")
+        guard let date = quota.resetAt else {
+            if let label = quota.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+                return title + "\n" + String(label.prefix(160))
+            }
+            return title
+        }
+        let detail: String
+        if quota.isRelative {
+            let seconds = max(0, date.timeIntervalSince(Date()))
+            if seconds < 60 {
+                detail = aorusAILocalized("Обновится через минуту.", "Resets in a minute.")
+            } else if seconds < 3600 {
+                let minutes = Int(seconds / 60)
+                detail = aorusAILocalized("Обновится через \(minutes) мин.", "Resets in \(minutes) min.")
+            } else {
+                let hours = Int(seconds / 3600)
+                detail = aorusAILocalized("Обновится через \(hours) ч.", "Resets in \(hours) h.")
+            }
+        } else {
+            let time = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+            if Calendar.current.isDateInToday(date) {
+                detail = aorusAILocalized("Обновится сегодня в \(time).", "Resets today at \(time).")
+            } else if Calendar.current.isDateInTomorrow(date) {
+                detail = aorusAILocalized("Обновится завтра в \(time).", "Resets tomorrow at \(time).")
+            } else {
+                let day = DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+                detail = aorusAILocalized("Обновится \(day).", "Resets \(day).")
+            }
+        }
+        return title + "\n" + detail
     }
     static func entities(in text: String) -> [AorusAITelegramEntity] {
         let source = text as NSString
@@ -1832,9 +2251,7 @@ private enum AorusAIFormat {
         case .offline: return aorusAILocalized("Нет подключения к сети", "No network connection")
         case .timeout: return aorusAILocalized("Сервер отвечает слишком долго", "The server took too long to respond")
         case .authorization: return aorusAILocalized("Не удалось подтвердить доступ", "Access could not be verified")
-        case let .quota(quota):
-            if let date = quota.resetAt { return aorusAILocalized("Лимит исчерпан до \(DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short))", "Limit reached until \(DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short))") }
-            return quota.label ?? aorusAILocalized("Лимит запросов исчерпан", "Request limit reached")
+        case let .quota(quota): return quotaText(quota)
         case .serverUnavailable: return aorusAILocalized("AorusAI временно недоступен", "AorusAI is temporarily unavailable")
         case .malformedResponse: return aorusAILocalized("Получен некорректный ответ", "Invalid response received")
         case .artifactExpired: return aorusAILocalized("Срок ссылки на файл истёк. Попросите создать файл снова.", "The file link expired. Ask AorusAI to create it again.")
