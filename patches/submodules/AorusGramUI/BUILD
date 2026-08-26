@@ -8,6 +8,7 @@ swift_library(
     ]),
     # Telegram’s deployment target is below iOS 14; SwiftUI uses .toolbar / ToolbarItem (14+).
     copts = ["-Xfrontend", "-disable-availability-checking"],
+    sdk_frameworks = ["QuickLook"],
     deps = [
         "//submodules/AorusGram:AorusGram",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
@@ -29,6 +30,7 @@ swift_library(
         "//submodules/AppBundle:AppBundle",
         "//submodules/MediaResources:MediaResources",
         "//submodules/AnimatedStickerNode:AnimatedStickerNode",
+        "//submodules/AvatarNode:AvatarNode",
         "//submodules/TelegramUI/Components/ItemListDatePickerItem:ItemListDatePickerItem",
         "//submodules/UndoUI:UndoUI",
     ],

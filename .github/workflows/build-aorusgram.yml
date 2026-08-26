@@ -33,6 +33,24 @@ jobs:
       - name: Release security preflight
         run: python3 aorusgram/scripts/release_security_check.py aorusgram
 
+      - name: AorusAI transport and store preflight
+        run: |
+          mkdir -p /tmp/aorus-ai-preflight/module-cache
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAISSEParser.swift \
+            aorusgram/scripts/tests/AorusAISSEParserTests.swift \
+            -o /tmp/aorus-ai-preflight/sse-tests
+          /tmp/aorus-ai-preflight/sse-tests
+          swiftc -typecheck \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIStore.swift
+          swiftc -frontend -parse \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIClient.swift
+          swiftc -frontend -parse \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift
+
       # Cache only an immutable, unmodified upstream checkout. The working copy is
       # recreated below on every run, so build-time HMAC injection can never leak
       # into the cache or survive a secret rotation.
@@ -655,6 +673,7 @@ jobs:
           PROXY_HMAC_KEY_HEX: ${{ secrets.PROXY_HMAC_KEY_HEX }}
         run: |
           python3 aorusgram/scripts/aorus_branding.py telegram-ios
+          python3 aorusgram/scripts/aorus_ai_integration.py telegram-ios
           # Cached telegram-ios trees can carry AppDelegate edits without a matching import line.
           python3 << 'PY'
           import sys

@@ -55,7 +55,16 @@ enum SubscriptionConfig {
     // map with a wildcard host: banner/media services have independent lifecycles.
     static let pinnedSPKIHashesByHost: [String: [String]] = [
         "license.aorusgram.com": protectedAPISPKIPins,
-        "api.aorusgram.com": protectedAPISPKIPins
+        "api.aorusgram.com": protectedAPISPKIPins,
+        "ai.aorusgram.com": aiAPISPKIPins
+    ]
+
+    // ai.aorusgram.com has its own leaf key, while using the same verified
+    // Let's Encrypt chain as the other protected Aorus endpoints.
+    private static let aiAPISPKIPins: [String] = [
+        "Z/Olfhfs1OaJN2JjMhd4P2+AzcWrz5oY3PUQbx+RUno=",
+        "s/tdAOmUzd8syaTuqfgGvFcn6DzA5Cmb+Vby1ST+U3Y=",
+        "sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w="
     ]
 
     private static let protectedAPISPKIPins: [String] = [
