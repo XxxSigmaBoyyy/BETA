@@ -8,7 +8,10 @@ swift_library(
     ]),
     # Telegram’s deployment target is below iOS 14; SwiftUI uses .toolbar / ToolbarItem (14+).
     copts = ["-Xfrontend", "-disable-availability-checking"],
-    sdk_frameworks = ["QuickLook"],
+    # No sdk_frameworks here: this rules_swift removed the attribute from
+    # swift_library, and Swift autolinking already pulls in the SDK frameworks this
+    # module imports — the same way AVFoundation, Photos, Speech and Intents are
+    # linked in the builds that shipped.
     deps = [
         "//submodules/AorusGram:AorusGram",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",

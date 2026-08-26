@@ -613,7 +613,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         let composerFrame = CGRect(x: 0, y: layout.size.height - bottomInset - composerHeight, width: layout.size.width, height: composerHeight)
         transition.updateFrame(view: composer, frame: composerFrame)
         transition.updateFrame(view: tableView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: max(0, composerFrame.minY - top)))
-        tableView.scrollIndicatorInsets.bottom = 8
+        // A read-modify-write on `scrollIndicatorInsets` goes through a getter the SDK
+        // deprecated in iOS 13, so assign the vertical insets directly instead.
+        tableView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 0.0, left: 0.0, bottom: 8.0, right: 0.0)
     }
 
     @objc private func keyboardChanged(_ note: Notification) {

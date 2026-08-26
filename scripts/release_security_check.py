@@ -104,6 +104,15 @@ def main() -> int:
         if marker not in aorus_build:
             fail(errors, f"LibXray system dependency invariant is missing {marker}")
 
+    # rules_swift dropped sdk_frameworks from swift_library: a stray one fails Bazel
+    # analysis in a few seconds, but only after the runner has spent ~40 minutes
+    # preparing the tree. Catch it here, in the check that runs first.
+    for build_file in sorted((root / "patches").rglob("BUILD")):
+        text = build_file.read_text(encoding="utf-8")
+        for match in re.finditer(r"swift_library\((.*?)^\)", text, re.DOTALL | re.MULTILINE):
+            if re.search(r"^\s*sdk_frameworks\s*=", match.group(1), re.MULTILINE):
+                fail(errors, f"{build_file.relative_to(root)}: swift_library does not accept sdk_frameworks")
+
     if upstream_version is not None:
         spoof_paths = [
             root / "AorusGram/Sources/Core/ClientSpoofManager.swift",
