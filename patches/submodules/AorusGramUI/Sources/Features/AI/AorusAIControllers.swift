@@ -5,6 +5,7 @@ import Display
 import Postbox
 import TelegramCore
 import TelegramPresentationData
+import TelegramUIPreferences
 import AccountContext
 import SwiftSignalKit
 import AorusGram
@@ -378,7 +379,7 @@ private final class AorusAIConversationListController: ViewController, UITableVi
     @objc private func createConversation() {
         let conversation = AorusAIConversation()
         AorusAIStore.shared.upsert(conversation, accountId: accountId)
-        self.navigationController?.pushViewController(AorusAIChatController(context: context, conversation: conversation))
+        (self.navigationController as? NavigationController)?.pushViewController(AorusAIChatController(context: context, conversation: conversation))
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { conversations.count }
@@ -394,7 +395,7 @@ private final class AorusAIConversationListController: ViewController, UITableVi
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        self.navigationController?.pushViewController(AorusAIChatController(context: context, conversation: conversations[indexPath.row]))
+        (self.navigationController as? NavigationController)?.pushViewController(AorusAIChatController(context: context, conversation: conversations[indexPath.row]))
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
@@ -503,7 +504,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private var turnId: String?
     private var activeAssistantId: UUID?
     private var previewURL: URL?
-    private var quotaTimer: Timer?
+    private var quotaTimer: Foundation.Timer?
     private var keyboardHeight: CGFloat = 0
     private var lastLayout: ContainerViewLayout?
     private var lastPersist = Date.distantPast
@@ -958,7 +959,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             }
             return
         }
-        quotaTimer = Timer.scheduledTimer(withTimeInterval: max(1.0, resetAt.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+        quotaTimer = Foundation.Timer.scheduledTimer(withTimeInterval: max(1.0, resetAt.timeIntervalSinceNow), repeats: false) { [weak self] _ in
             guard let self else { return }
             self.conversation.quotaResetAt = nil
             self.quotaTimer = nil
@@ -1124,7 +1125,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId)) |> deliverOnMainQueue).start(next: { [weak self] peer in
             guard let self, let peer,
                   let controller = self.context.sharedContext.makePeerInfoController(context: self.context, updatedPresentationData: nil, peer: peer, mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil) else { return }
-            self.navigationController?.pushViewController(controller)
+            (self.navigationController as? NavigationController)?.pushViewController(controller)
         })
     }
 
