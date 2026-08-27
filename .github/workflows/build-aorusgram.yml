@@ -42,14 +42,25 @@ jobs:
             aorusgram/scripts/tests/AorusAISSEParserTests.swift \
             -o /tmp/aorus-ai-preflight/sse-tests
           /tmp/aorus-ai-preflight/sse-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAISSEParser.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
+            aorusgram/scripts/tests/AorusAIArtifactFlowTests.swift \
+            -o /tmp/aorus-ai-preflight/artifact-tests
+          /tmp/aorus-ai-preflight/artifact-tests
           swiftc -typecheck \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIStore.swift
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIClient.swift
           swiftc -frontend -parse \
             aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift
+          swiftc -frontend -parse \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIDictation.swift
 
       # Cache only an immutable, unmodified upstream checkout. The working copy is
       # recreated below on every run, so build-time HMAC injection can never leak

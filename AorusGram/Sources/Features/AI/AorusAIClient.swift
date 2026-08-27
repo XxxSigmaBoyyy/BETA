@@ -101,35 +101,122 @@ public final class AorusAIClient {
         }
     }
 
-    public func downloadArtifact(
+    /// Metadata-only probe (`HEAD`) for one artifact.
+    ///
+    /// The body is empty, so the signature covers the SHA-256 of zero bytes exactly
+    /// like the `GET`. Used before a large transfer to confirm the signed link is
+    /// still alive without spending the user's bandwidth.
+    public func probeArtifact(
         _ artifact: AorusAIArtifact,
-        completion: @escaping (Result<URL, AorusAIClientError>) -> Void
+        completion: @escaping (Result<AorusAIArtifactProbe, AorusAIClientError>) -> Void
     ) {
-        guard !artifact.isExpired else {
-            completion(.failure(.artifactExpired))
-            return
-        }
-        guard Self.isSafeArtifactId(artifact.artifactId), artifact.size >= 0, artifact.size <= 512 * 1024 * 1024 else {
-            completion(.failure(.malformedResponse))
+        guard let path = Self.artifactPath(for: artifact) else {
+            completion(.failure(artifact.isExpired ? .artifactExpired : .malformedResponse))
             return
         }
         requestQueue.async { [weak self] in
             guard let self else { return }
-            let normalizedPath = "/download/" + artifact.artifactId
-            let accept = Self.safeMIMEType(artifact.mime) ?? "application/octet-stream"
-            guard let request = self.signedRequest(method: "GET", path: normalizedPath, body: Data(), contentType: nil, accept: accept) else {
+            guard let request = self.signedRequest(method: "HEAD", path: path, body: Data(), contentType: nil, accept: "*/*") else {
                 DispatchQueue.main.async {
                     completion(.failure(LicenseKeyProvider.isProvisioned ? .malformedResponse : .notProvisioned))
                 }
                 return
             }
-            self.performArtifactDownload(artifact, request: request, completion: completion)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 20
+            configuration.httpShouldSetCookies = false
+            configuration.urlCache = nil
+            let session = URLSession(configuration: configuration, delegate: AorusPinnedSessionDelegate.shared, delegateQueue: nil)
+            session.dataTask(with: request) { _, response, error in
+                defer { session.finishTasksAndInvalidate() }
+                guard error == nil, let http = response as? HTTPURLResponse else {
+                    DispatchQueue.main.async { completion(.failure(Self.mapArtifactTransportError(error))) }
+                    return
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    DispatchQueue.main.async { completion(.failure(Self.mapArtifactHTTP(http.statusCode))) }
+                    return
+                }
+                let probe = AorusAIArtifactProbe(
+                    size: http.expectedContentLength >= 0 ? http.expectedContentLength : nil,
+                    mime: http.mimeType.flatMap { AorusAIArtifactFlow.safeMIME($0) },
+                    filename: Self.filename(from: http, fallback: artifact.filename),
+                    acceptsRanges: (http.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased().contains("bytes")
+                )
+                DispatchQueue.main.async { completion(.success(probe)) }
+            }.resume()
         }
+    }
+
+    /// Downloads one artifact through the public gateway.
+    ///
+    /// The path comes from `AorusAIArtifactFlow`, so a payload that tried to point at
+    /// another host, another object or a query string never reaches the network. The
+    /// gateway attaches the private vault token server-side; the client never holds
+    /// one.
+    public func downloadArtifact(
+        _ artifact: AorusAIArtifact,
+        range: ClosedRange<Int64>? = nil,
+        completion: @escaping (Result<URL, AorusAIClientError>) -> Void
+    ) {
+        guard let path = Self.artifactPath(for: artifact) else {
+            completion(.failure(artifact.isExpired ? .artifactExpired : .malformedResponse))
+            return
+        }
+        requestQueue.async { [weak self] in
+            guard let self else { return }
+            let accept = AorusAIArtifactFlow.safeMIME(artifact.mime) ?? "application/octet-stream"
+            guard var request = self.signedRequest(method: "GET", path: path, body: Data(), contentType: nil, accept: accept) else {
+                DispatchQueue.main.async {
+                    completion(.failure(LicenseKeyProvider.isProvisioned ? .malformedResponse : .notProvisioned))
+                }
+                return
+            }
+            if let range, range.lowerBound >= 0, range.upperBound >= range.lowerBound {
+                request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
+            }
+            self.performArtifactDownload(artifact, request: request, isPartial: range != nil, completion: completion)
+        }
+    }
+
+    /// The one relative path this artifact may be fetched from, or nil when the
+    /// artifact is expired, its id unsafe, or its stored path not ours.
+    private static func artifactPath(for artifact: AorusAIArtifact) -> String? {
+        guard !artifact.isExpired else { return nil }
+        guard artifact.size >= 0, artifact.size <= 512 * 1024 * 1024 else { return nil }
+        guard AorusAIArtifactFlow.downloadURL(for: artifact) != nil else { return nil }
+        return AorusAIArtifactFlow.signingPath(for: artifact)
+    }
+
+    /// `Content-Disposition` wins over the stored filename, exactly as the spec asks,
+    /// but only after the same sanitising the stored name went through.
+    private static func filename(from response: HTTPURLResponse, fallback: String) -> String {
+        guard let disposition = response.value(forHTTPHeaderField: "Content-Disposition") else {
+            return AorusAIArtifactFlow.safeFilename(fallback)
+        }
+        var candidate: String?
+        for part in disposition.components(separatedBy: ";") {
+            let token = part.trimmingCharacters(in: .whitespaces)
+            if token.lowercased().hasPrefix("filename*=") {
+                var value = String(token.dropFirst("filename*=".count))
+                if let marker = value.range(of: "''") { value = String(value[marker.upperBound...]) }
+                candidate = value.removingPercentEncoding ?? value
+                break
+            }
+            if token.lowercased().hasPrefix("filename=") {
+                candidate = String(token.dropFirst("filename=".count))
+            }
+        }
+        guard var value = candidate else { return AorusAIArtifactFlow.safeFilename(fallback) }
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+        let safe = AorusAIArtifactFlow.safeFilename(value)
+        return safe == "AorusAI-file" ? AorusAIArtifactFlow.safeFilename(fallback) : safe
     }
 
     private func performArtifactDownload(
         _ artifact: AorusAIArtifact,
         request: URLRequest,
+        isPartial: Bool,
         completion: @escaping (Result<URL, AorusAIClientError>) -> Void
     ) {
         let configuration = URLSessionConfiguration.ephemeral
@@ -141,15 +228,19 @@ public final class AorusAIClient {
         session.downloadTask(with: request) { temporaryURL, response, error in
             defer { session.finishTasksAndInvalidate() }
             guard error == nil, let http = response as? HTTPURLResponse else {
-                DispatchQueue.main.async { completion(.failure(Self.mapTransportError(error))) }
+                DispatchQueue.main.async { completion(.failure(Self.mapArtifactTransportError(error))) }
                 return
             }
-            guard (200..<300).contains(http.statusCode), let temporaryURL else {
-                DispatchQueue.main.async { completion(.failure(Self.mapHTTP(http.statusCode, data: nil))) }
+            // A ranged request answers 206; a full one answers 200. A server that
+            // ignores the range and sends 200 for a partial request is answering a
+            // different question than the one asked.
+            let expectedStatus = isPartial ? 206 : 200
+            guard http.statusCode == expectedStatus || (!isPartial && http.statusCode == 206), let temporaryURL else {
+                DispatchQueue.main.async { completion(.failure(Self.mapArtifactHTTP(http.statusCode))) }
                 return
             }
             if let responseMIME = http.mimeType?.lowercased(),
-               let expectedMIME = Self.safeMIMEType(artifact.mime)?.lowercased(),
+               let expectedMIME = AorusAIArtifactFlow.safeMIME(artifact.mime)?.lowercased(),
                expectedMIME != "application/octet-stream",
                responseMIME != expectedMIME {
                 DispatchQueue.main.async { completion(.failure(.malformedResponse)) }
@@ -159,7 +250,7 @@ public final class AorusAIClient {
                 DispatchQueue.main.async { completion(.failure(.malformedResponse)) }
                 return
             }
-            let safeName = Self.safeFilename(artifact.filename)
+            let safeName = Self.filename(from: http, fallback: artifact.filename)
             let target = FileManager.default.temporaryDirectory
                 .appendingPathComponent("AorusAI", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -167,9 +258,8 @@ public final class AorusAIClient {
             do {
                 let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
                 let actualSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
-                guard actualSize >= 0,
-                      actualSize <= 512 * 1024 * 1024,
-                      artifact.size == 0 || actualSize == artifact.size else {
+                let sizeMatches = isPartial || artifact.size == 0 || actualSize == artifact.size
+                guard actualSize >= 0, actualSize <= 512 * 1024 * 1024, sizeMatches else {
                     DispatchQueue.main.async { completion(.failure(.malformedResponse)) }
                     return
                 }
@@ -177,7 +267,7 @@ public final class AorusAIClient {
                 try FileManager.default.moveItem(at: temporaryURL, to: target)
                 DispatchQueue.main.async { completion(.success(target)) }
             } catch {
-                DispatchQueue.main.async { completion(.failure(.malformedResponse)) }
+                DispatchQueue.main.async { completion(.failure(.artifactDownloadFailed)) }
             }
         }.resume()
     }
@@ -254,7 +344,8 @@ public final class AorusAIClient {
         if status == 429 || code.contains("quota") {
             return .quota(Self.quota(from: object))
         }
-        if status == 404 && code.contains("artifact") { return .artifactExpired }
+        if status == 410 { return .artifactExpired }
+        if status == 404 && code.contains("artifact") { return .artifactGone }
         if status >= 500 { return .serverUnavailable }
         return .http(status)
     }
@@ -288,29 +379,43 @@ public final class AorusAIClient {
         return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1000 : raw)
     }
 
-    private static func safeFilename(_ filename: String) -> String {
-        let lastComponent = URL(fileURLWithPath: filename).lastPathComponent
-        let cleaned = lastComponent
-            .components(separatedBy: CharacterSet(charactersIn: "/\\:\0"))
-            .joined(separator: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "AorusAI-file" : String(cleaned.prefix(180))
-    }
-
-    private static func isSafeArtifactId(_ value: String) -> Bool {
-        guard !value.isEmpty, value.count <= 128 else { return false }
-        return value.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.alphanumerics.contains(scalar) || scalar.value == 45 || scalar.value == 95
+    /// Artifact-specific status mapping. The vault answers with a plain status and no
+    /// JSON body, so each case is turned into one user-facing situation here and the
+    /// raw code never reaches the UI.
+    fileprivate static func mapArtifactHTTP(_ status: Int) -> AorusAIClientError {
+        switch status {
+        case 403: return .artifactNotOwned
+        case 410: return .artifactExpired
+        case 404: return .artifactGone
+        case 401: return .authorization
+        case 429: return .quota(AorusAIQuota(resetAt: nil, label: nil))
+        default: return status >= 500 ? .serverUnavailable : .artifactDownloadFailed
         }
     }
 
-    private static func safeMIMEType(_ value: String) -> String? {
-        guard !value.isEmpty, value.count <= 127,
-              !value.contains("\r"), !value.contains("\n") else {
-            return nil
+    /// A dropped transfer is a download failure, not a generic server outage: the
+    /// spec asks for "Не удалось скачать файл" in that case.
+    fileprivate static func mapArtifactTransportError(_ error: Error?) -> AorusAIClientError {
+        switch Self.mapTransportError(error) {
+        case .cancelled: return .cancelled
+        case .offline: return .offline
+        default: return .artifactDownloadFailed
         }
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$&^_.+-/")
-        return value.unicodeScalars.allSatisfy(allowed.contains) ? value : nil
+    }
+}
+
+/// What a `HEAD` on an artifact told us. Deliberately metadata only.
+public struct AorusAIArtifactProbe: Equatable {
+    public var size: Int64?
+    public var mime: String?
+    public var filename: String
+    public var acceptsRanges: Bool
+
+    public init(size: Int64?, mime: String?, filename: String, acceptsRanges: Bool) {
+        self.size = size
+        self.mime = mime
+        self.filename = filename
+        self.acceptsRanges = acceptsRanges
     }
 }
 
@@ -449,25 +554,12 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             if let text = object["text"] as? String { return .responseDelta(text) }
             return nil
         case "artifact.ready", "build_result", "build.result":
-            let source = (object["artifact"] as? [String: Any]) ?? object
-            guard let artifactId = source["artifact_id"] as? String,
-                  let filename = source["filename"] as? String else { return nil }
-            let download = source["download"] as? [String: Any]
-            let path = (download?["path"] as? String) ?? "/download/\(artifactId)"
-            // The artifact lifetime wins over the download link lifetime: the
-            // production payload ships a later `expires_at` on the artifact and
-            // a shorter one on the signed link, and the card must stay usable
-            // for as long as the artifact itself is alive.
-            let expires = (source["expires_at"] as? NSNumber)?.int64Value ?? (download?["expires_at"] as? NSNumber)?.int64Value
-            let artifact = AorusAIArtifact(
-                artifactId: artifactId,
-                filename: filename,
-                mime: (source["mime"] as? String) ?? "application/octet-stream",
-                size: (source["size"] as? NSNumber)?.int64Value ?? 0,
-                format: (source["format"] as? String) ?? URL(fileURLWithPath: filename).pathExtension,
-                downloadPath: path,
-                expiresAt: expires
-            )
+            // Decoding lives in `AorusAIArtifactFlow` so the exact production payload
+            // — including a hostile `download.path` or a `token` the backend might
+            // add later — is covered by the release preflight tests, not only by a
+            // device. `artifact.ready` is never merely "unknown": losing it loses the
+            // user's file.
+            guard let artifact = AorusAIArtifactFlow.decode(object) else { return nil }
             return .artifactReady(artifact)
         case "permission_request":
             let requestId = (object["request_id"] as? String) ?? (object["id"] as? String) ?? UUID().uuidString

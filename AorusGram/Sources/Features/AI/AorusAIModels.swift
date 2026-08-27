@@ -49,6 +49,11 @@ public struct AorusAIReferencedMessage: Codable, Equatable {
     }
 }
 
+/// A file the backend produced for one assistant turn.
+///
+/// The public `artifact.ready` event carries no vault token, so this model has no
+/// field for one: a token that ever appeared in a payload is dropped on decode and
+/// can therefore neither be persisted nor displayed.
 public struct AorusAIArtifact: Codable, Equatable, Identifiable {
     public var id: String { artifactId }
     public var artifactId: String
@@ -57,9 +62,13 @@ public struct AorusAIArtifact: Codable, Equatable, Identifiable {
     public var size: Int64
     public var format: String
     public var downloadPath: String
+    /// Lifetime of the artifact itself, as reported by the backend.
     public var expiresAt: Int64?
+    /// Lifetime of the signed download link, which the backend reports separately
+    /// and which usually ends earlier than the artifact's own expiry.
+    public var downloadExpiresAt: Int64?
 
-    public init(artifactId: String, filename: String, mime: String, size: Int64, format: String, downloadPath: String, expiresAt: Int64?) {
+    public init(artifactId: String, filename: String, mime: String, size: Int64, format: String, downloadPath: String, expiresAt: Int64?, downloadExpiresAt: Int64? = nil) {
         self.artifactId = artifactId
         self.filename = filename
         self.mime = mime
@@ -67,11 +76,23 @@ public struct AorusAIArtifact: Codable, Equatable, Identifiable {
         self.format = format
         self.downloadPath = downloadPath
         self.expiresAt = expiresAt
+        self.downloadExpiresAt = downloadExpiresAt
     }
 
     public var isExpired: Bool {
-        guard let expiresAt else { return false }
-        let seconds = expiresAt > 10_000_000_000 ? expiresAt / 1000 : expiresAt
+        return AorusAIArtifact.isPast(expiresAt)
+    }
+
+    /// True once the signed link is stale while the artifact itself is still alive.
+    /// The card stays visible as a historical fact either way; only the tap action
+    /// changes.
+    public var isDownloadExpired: Bool {
+        return AorusAIArtifact.isPast(downloadExpiresAt)
+    }
+
+    private static func isPast(_ value: Int64?) -> Bool {
+        guard let value else { return false }
+        let seconds = value > 10_000_000_000 ? value / 1000 : value
         return Int64(Date().timeIntervalSince1970) >= seconds
     }
 }
@@ -207,6 +228,63 @@ public struct AorusAIQuota: Equatable {
     }
 }
 
+/// Facts about a Telegram peer the user mentioned, resolved on the device and sent
+/// with the request so the model actually knows who `@name` is.
+///
+/// Only data the user can already see in the app is included, it is clamped, and it
+/// is built here — in a plain, testable value — instead of inside the view layer.
+public struct AorusAIProfileSummary: Equatable {
+    public var title: String
+    public var username: String?
+    public var kind: String
+    public var bio: String?
+    public var participantCount: Int?
+
+    public init(title: String, username: String?, kind: String, bio: String?, participantCount: Int?) {
+        self.title = title
+        self.username = username
+        self.kind = kind
+        self.bio = bio
+        self.participantCount = participantCount
+    }
+
+    /// One compact block per profile. `header` and `labels` come from the caller so
+    /// this stays free of any localization dependency.
+    public func transportBlock(labels: AorusAIProfileLabels) -> String {
+        var lines: [String] = []
+        var head = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let username, !username.isEmpty {
+            head += " (@\(username))"
+        }
+        lines.append("\(labels.profile): \(String(head.prefix(160)))")
+        let type = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !type.isEmpty {
+            lines.append("\(labels.kind): \(type)")
+        }
+        if let participantCount, participantCount > 0 {
+            lines.append("\(labels.participants): \(participantCount)")
+        }
+        if let bio = bio?.trimmingCharacters(in: .whitespacesAndNewlines), !bio.isEmpty {
+            lines.append("\(labels.about): \(String(bio.prefix(700)))")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+public struct AorusAIProfileLabels: Equatable {
+    public var profile: String
+    public var kind: String
+    public var participants: String
+    public var about: String
+
+    public init(profile: String, kind: String, participants: String, about: String) {
+        self.profile = profile
+        self.kind = kind
+        self.participants = participants
+        self.about = about
+    }
+}
+
 public struct AorusAIPermissionRequest: Equatable {
     public var requestId: String
     public var kind: String
@@ -245,7 +323,14 @@ public enum AorusAIClientError: Error, Equatable {
     case quota(AorusAIQuota)
     case serverUnavailable
     case malformedResponse
+    /// The stored lifetime of the file or of its signed link has passed (HTTP 410).
     case artifactExpired
+    /// The vault refused the file for this device (HTTP 403 `artifact_not_owned`).
+    case artifactNotOwned
+    /// The file is no longer stored at all (HTTP 404).
+    case artifactGone
+    /// The transfer itself failed: no connection, a dropped socket, a bad payload.
+    case artifactDownloadFailed
     case cancelled
     case http(Int)
 }

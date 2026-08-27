@@ -592,6 +592,60 @@ def main() -> int:
             if re.search(r"\bghp_[A-Za-z0-9]{30,}\b", text):
                 fail(errors, f"GitHub token is tracked: {path.relative_to(root)}")
 
+    # The AorusAI artifact flow. Its logic is covered by the swiftc preflight tests, but
+    # three invariants live in code the tests cannot reach: the signature of a bodyless
+    # method must be taken over empty bytes, the client must never hold a vault token,
+    # and a file must open in the native preview rather than in Safari.
+    ai_client = (root / "AorusGram/Sources/Features/AI/AorusAIClient.swift").read_text(encoding="utf-8")
+    if 'if method != "GET" && method != "HEAD" { request.httpBody = body }' not in ai_client:
+        fail(errors, "artifact GET/HEAD must be signed over an empty body")
+    if "AorusAIArtifactFlow.decode(object)" not in ai_client:
+        fail(errors, "artifact.ready must be decoded through AorusAIArtifactFlow")
+    if "AorusAIArtifactFlow.signingPath(for: artifact)" not in ai_client:
+        fail(errors, "artifact downloads must use the sanitized signing path")
+    for marker in ("vaultToken", "vault_token", "?token=", "&token="):
+        if marker in ai_client:
+            fail(errors, f"AorusAI client must not deal in vault tokens — found {marker}")
+
+    ai_models = (root / "AorusGram/Sources/Features/AI/AorusAIModels.swift").read_text(encoding="utf-8")
+    if "public var artifacts: [AorusAIArtifact]" not in ai_models:
+        fail(errors, "an assistant message must carry a list of artifacts, not one optional")
+    for marker in ("public var downloadExpiresAt: Int64?", "public var expiresAt: Int64?", "public var downloadPath: String"):
+        if marker not in ai_models:
+            fail(errors, f"persisted artifact metadata is missing {marker}")
+    if "vaultToken" in ai_models:
+        fail(errors, "the artifact model must have no token field")
+
+    ai_flow = root / "AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift"
+    if not ai_flow.is_file():
+        fail(errors, "AorusAIArtifactFlow.swift is missing")
+    ai_tests = root / "scripts/tests/AorusAIArtifactFlowTests.swift"
+    if not ai_tests.is_file():
+        fail(errors, "AorusAIArtifactFlowTests.swift is missing")
+    workflow_text = (root / ".github/workflows/build-aorusgram.yml").read_text(encoding="utf-8")
+    if "AorusAIArtifactFlowTests.swift" not in workflow_text:
+        fail(errors, "the artifact flow tests are not wired into the preflight")
+
+    ai_controllers = (root / "patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift").read_text(encoding="utf-8")
+    if "QLPreviewController" not in ai_controllers:
+        fail(errors, "a downloaded artifact must open in Quick Look")
+    if re.search(r"UIApplication\.shared\.open\(", ai_controllers):
+        fail(errors, "an artifact must never be handed to Safari")
+    if "case let .artifactReady(artifact)" not in ai_controllers:
+        fail(errors, "artifact.ready must have its own branch in the event dispatcher")
+
+    # A mention has to reach the model as resolved facts, and only through the clamped
+    # value type — never as a raw peer dump assembled in the view layer.
+    if "resolveProfileContext(usernames:" not in ai_controllers:
+        fail(errors, "mentioned profiles must be resolved before the request is sent")
+    if "transportBlock(labels: labels)" not in ai_controllers:
+        fail(errors, "profile context must travel through AorusAIProfileSummary.transportBlock")
+    if "timeout(2.5, queue: Queue.mainQueue()" not in ai_controllers:
+        fail(errors, "the profile lookup must have a ceiling so a turn can never hang on it")
+    for marker in ("phoneNumber", "peer.phone"):
+        if marker in ai_controllers:
+            fail(errors, f"a phone number must never be transported — found {marker}")
+
     # The patch pipeline is 23k lines and main() is a flat list of ~150 calls, so a function
     # deleted or renamed without updating the call is a NameError that only surfaces ninety
     # seconds into the build — after the clone. py_compile does not catch it. Resolve every
