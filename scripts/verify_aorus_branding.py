@@ -3478,14 +3478,19 @@ def main() -> None:
         err.append("AorusAI: missing ChatInterfaceStateContextMenus.swift")
     else:
         ai_menu_text = ai_menu_host.read_text(encoding="utf-8")
-        if "// AorusGram: AorusAI message action v2" not in ai_menu_text:
-            err.append("AorusAI: nested message menu (v2) was not integrated")
-        if "// AorusGram: AorusAI message action v1" in ai_menu_text:
-            err.append("AorusAI: legacy flat message action (v1) is still present")
+        if "// AorusGram: AorusAI message action v3" not in ai_menu_text:
+            err.append("AorusAI: nested message menu (v3) was not integrated")
+        for legacy in ("v1", "v2"):
+            if f"// AorusGram: AorusAI message action {legacy}" in ai_menu_text:
+                err.append(f"AorusAI: legacy message action ({legacy}) is still present")
         if "aorusAIOpenMessageActions" in ai_menu_text:
             err.append("AorusAI: message menu calls the removed aorusAIOpenMessageActions")
         if "aorusAIMessageMenuSections()" not in ai_menu_text or "c?.pushItems(" not in ai_menu_text:
             err.append("AorusAI: message menu does not push a nested native submenu")
+        # A titled section must open its own level, otherwise the whole prompt list is
+        # back on the first page and runs off the bottom of the screen.
+        if ai_menu_text.count("c?.pushItems(") < 2:
+            err.append("AorusAI: message menu is not two levels deep")
 
     # BGTask identifier in plist
     bgtask_key = "BGTaskSchedulerPermittedIdentifiers"

@@ -646,6 +646,24 @@ def main() -> int:
         if marker in ai_controllers:
             fail(errors, f"a phone number must never be transported — found {marker}")
 
+    # The integrator writes a versioned sentinel and the verifier demands one. When the
+    # two drift the build dies six minutes in, after the clone — so they are compared
+    # here, where it costs nothing.
+    integrator_text = (root / "scripts/aorus_ai_integration.py").read_text(encoding="utf-8")
+    verifier_text = (root / "scripts/verify_aorus_branding.py").read_text(encoding="utf-8")
+    sentinels = re.findall(r'"(// AorusGram: AorusAI message action v\d+)"', integrator_text)
+    current = [s for s in sentinels if f'sentinel = "{s}"' in integrator_text]
+    if len(current) != 1:
+        fail(errors, "AorusAI integrator must declare exactly one current menu sentinel")
+    else:
+        if f'"{current[0]}" not in ai_menu_text' not in verifier_text:
+            fail(errors, f"verify_aorus_branding.py does not require the current sentinel ({current[0]})")
+        for legacy in sentinels:
+            if legacy == current[0]:
+                continue
+            if legacy.rsplit(" ", 1)[-1] not in verifier_text:
+                fail(errors, f"verify_aorus_branding.py does not reject the legacy sentinel ({legacy})")
+
     # The patch pipeline is 23k lines and main() is a flat list of ~150 calls, so a function
     # deleted or renamed without updating the call is a NameError that only surfaces ninety
     # seconds into the build — after the clone. py_compile does not catch it. Resolve every
