@@ -145,6 +145,262 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
     }
 }
 
+/// A JSON value the client hands to the backend inside a tool result.
+///
+/// The backend does `JSON.stringify(item.result ?? {})` and passes the text to the
+/// model as data, so there is no fixed schema to satisfy — but there is also no
+/// place for `Any`: every value that leaves the device is built explicitly here, so
+/// the HMAC can be taken over exact bytes and the payload stays reviewable.
+public indirect enum AorusAIJSONValue: Equatable, Encodable {
+    case string(String)
+    case int(Int)
+    case int64(Int64)
+    case double(Double)
+    case bool(Bool)
+    case array([AorusAIJSONValue])
+    case object([String: AorusAIJSONValue])
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value):
+            try container.encode(value)
+        case let .int(value):
+            try container.encode(value)
+        case let .int64(value):
+            try container.encode(value)
+        case let .double(value):
+            try container.encode(value)
+        case let .bool(value):
+            try container.encode(value)
+        case let .array(value):
+            try container.encode(value)
+        case let .object(value):
+            try container.encode(value)
+        }
+    }
+
+    /// Drops empty strings and empty containers so the model never receives a field
+    /// that only says "the client had nothing here".
+    public static func object(fields: [(String, AorusAIJSONValue?)]) -> AorusAIJSONValue {
+        var result: [String: AorusAIJSONValue] = [:]
+        for (key, value) in fields {
+            guard let value else { continue }
+            if case let .string(text) = value, text.isEmpty { continue }
+            if case let .array(items) = value, items.isEmpty { continue }
+            if case let .object(fields) = value, fields.isEmpty { continue }
+            result[key] = value
+        }
+        return .object(result)
+    }
+}
+
+/// Tool names the backend advertises in `agent.start.capabilities` and asks for in
+/// `tool.request` / `permission.request`.
+public enum AorusAITool {
+    public static let profileGet = "telegram.profile.get"
+    public static let chatHistory = "telegram.chat.history"
+}
+
+/// `done.state` values that are successful intermediate states, not failures.
+public enum AorusAIAgentState {
+    public static let awaitingTool = "awaiting_tool"
+    public static let awaitingPermission = "awaiting_permission"
+}
+
+/// `event: tool.request` — the backend asks the device to run one Telegram tool.
+///
+/// `requiresUserApproval` mirrors the server field of the same name: for
+/// `telegram.profile.get` it is `false`, and the client must then run the tool
+/// without showing any additional dialog.
+public struct AorusAIToolRequest: Equatable {
+    public var requestId: String
+    public var tool: String
+    public var label: String?
+    public var username: String?
+    public var limit: Int?
+    public var requiresUserApproval: Bool
+
+    public init(requestId: String, tool: String, label: String?, username: String?, limit: Int?, requiresUserApproval: Bool) {
+        self.requestId = requestId
+        self.tool = tool
+        self.label = label
+        self.username = username
+        self.limit = limit
+        self.requiresUserApproval = requiresUserApproval
+    }
+}
+
+/// One button of a server-supplied `permission.request`.
+///
+/// Either it carries a `limit` (that many newest messages) or `mode == "period"`,
+/// which asks for a date range instead. The client never invents options.
+public struct AorusAIPermissionOption: Equatable {
+    public static let periodMode = "period"
+
+    public var id: String
+    public var label: String
+    public var limit: Int?
+    public var mode: String?
+
+    public init(id: String, label: String, limit: Int?, mode: String?) {
+        self.id = id
+        self.label = label
+        self.limit = limit
+        self.mode = mode
+    }
+
+    public var isPeriod: Bool {
+        return mode == AorusAIPermissionOption.periodMode
+    }
+}
+
+/// `event: permission.request` — the backend asks the user, through the device, for
+/// permission to read something. The options come from the payload.
+public struct AorusAIPermissionRequest: Equatable {
+    public var requestId: String
+    public var tool: String
+    public var title: String?
+    public var text: String?
+    public var username: String?
+    public var options: [AorusAIPermissionOption]
+    public var allowCancel: Bool
+
+    public init(requestId: String, tool: String, title: String?, text: String?, username: String?, options: [AorusAIPermissionOption], allowCancel: Bool) {
+        self.requestId = requestId
+        self.tool = tool
+        self.title = title
+        self.text = text
+        self.username = username
+        self.options = options
+        self.allowCancel = allowCancel
+    }
+}
+
+/// One element of `aorus_tool_results`, exactly as the backend reads it.
+public struct AorusAIToolResult: Equatable, Encodable {
+    public struct Arguments: Equatable, Encodable {
+        public var username: String?
+        public var limit: Int?
+        public var fromDate: Int64?
+        public var toDate: Int64?
+
+        public init(username: String? = nil, limit: Int? = nil, fromDate: Int64? = nil, toDate: Int64? = nil) {
+            self.username = username
+            self.limit = limit
+            self.fromDate = fromDate
+            self.toDate = toDate
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case username
+            case limit
+            case fromDate = "from_date"
+            case toDate = "to_date"
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(username, forKey: .username)
+            try container.encodeIfPresent(limit, forKey: .limit)
+            try container.encodeIfPresent(fromDate, forKey: .fromDate)
+            try container.encodeIfPresent(toDate, forKey: .toDate)
+        }
+    }
+
+    public var tool: String
+    public var requestId: String?
+    public var ok: Bool
+    public var denied: Bool
+    public var arguments: Arguments
+    public var result: AorusAIJSONValue?
+
+    public init(tool: String, requestId: String?, ok: Bool, denied: Bool, arguments: Arguments, result: AorusAIJSONValue?) {
+        self.tool = tool
+        self.requestId = requestId
+        self.ok = ok
+        self.denied = denied
+        self.arguments = arguments
+        self.result = result
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tool
+        case requestId = "request_id"
+        case ok
+        case denied
+        case arguments
+        case result
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(tool, forKey: .tool)
+        try container.encodeIfPresent(requestId, forKey: .requestId)
+        try container.encode(ok, forKey: .ok)
+        try container.encode(denied, forKey: .denied)
+        try container.encode(arguments, forKey: .arguments)
+        try container.encodeIfPresent(result, forKey: .result)
+    }
+
+    /// The user refused: a real, expected answer, never an error.
+    public static func denied(tool: String, requestId: String?, username: String?) -> AorusAIToolResult {
+        return AorusAIToolResult(
+            tool: tool,
+            requestId: requestId,
+            ok: false,
+            denied: true,
+            arguments: Arguments(username: username),
+            result: nil
+        )
+    }
+
+    /// The tool ran but could not produce data — a failed username resolution, for
+    /// instance. The backend is told the truth so the model does not invent facts.
+    public static func failure(tool: String, requestId: String?, username: String?, reason: String) -> AorusAIToolResult {
+        return AorusAIToolResult(
+            tool: tool,
+            requestId: requestId,
+            ok: false,
+            denied: false,
+            arguments: Arguments(username: username),
+            result: .object(fields: [("error", .string(reason))])
+        )
+    }
+
+    /// `telegram.chat.history` result in the shape the backend reads: it takes
+    /// `result.messages`, keeps the last 100 and reads `sender_name` / `text`.
+    public static func history(
+        requestId: String?,
+        username: String?,
+        limit: Int?,
+        fromDate: Int64? = nil,
+        toDate: Int64? = nil,
+        messages: [(sender: String, text: String)]
+    ) -> AorusAIToolResult {
+        let clamped = messages.suffix(AorusAIRequestLimits.chatHistoryMessageCount).map { message in
+            AorusAIJSONValue.object(fields: [
+                ("sender_name", .string(String(message.sender.prefix(96)))),
+                ("text", .string(String(message.text.prefix(AorusAIRequestLimits.chatHistoryMessageCharacters))))
+            ])
+        }
+        // `messages` stays even when it is empty: "the chat has nothing to read" is a
+        // fact the model needs, unlike an absent field.
+        var fields: [String: AorusAIJSONValue] = ["messages": .array(clamped)]
+        if let limit {
+            fields["requested_limit"] = .int(limit)
+        }
+        return AorusAIToolResult(
+            tool: AorusAITool.chatHistory,
+            requestId: requestId,
+            ok: true,
+            denied: false,
+            arguments: Arguments(username: username, limit: limit, fromDate: fromDate, toDate: toDate),
+            result: .object(fields)
+        )
+    }
+}
+
 public enum AorusAIRequestLimits {
     /// Newest conversation turns that are replayed as context.
     public static let historyMessageCount = 40
@@ -180,11 +436,35 @@ public struct AorusAIAgentPayload: Encodable {
     public var model: String
     public var stream: Bool
     public var messages: [Message]
+    /// Results of the Telegram tools the backend asked for, accumulated across every
+    /// continuation of one logical request (§14: dropping the profile result makes the
+    /// server ask for the profile again).
+    public var toolResults: [AorusAIToolResult]
 
-    public init(model: String = "AorusAI", stream: Bool = true, messages: [Message]) {
+    public init(model: String = "AorusAI", stream: Bool = true, messages: [Message], toolResults: [AorusAIToolResult] = []) {
         self.model = model
         self.stream = stream
         self.messages = messages
+        self.toolResults = toolResults
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case stream
+        case messages
+        case toolResults = "aorus_tool_results"
+    }
+
+    /// `aorus_tool_results` is written only when there is something to report, so a
+    /// plain chat request keeps the exact body it has always had.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(stream, forKey: .stream)
+        try container.encode(messages, forKey: .messages)
+        if !toolResults.isEmpty {
+            try container.encode(toolResults, forKey: .toolResults)
+        }
     }
 
     /// Builds the payload from the locally stored conversation.
@@ -192,7 +472,7 @@ public struct AorusAIAgentPayload: Encodable {
     /// `history` must be the turns that precede the new request. Notices, empty
     /// and failed turns are dropped, the newest turns win when the character
     /// budget is exhausted, and chronological order is preserved.
-    public init(history: [AorusAIMessage], text: String) {
+    public init(history: [AorusAIMessage], text: String, toolResults: [AorusAIToolResult] = []) {
         var context: [Message] = []
         var budget = AorusAIRequestLimits.historyTotalCharacters
         for message in history.suffix(AorusAIRequestLimits.historyMessageCount).reversed() {
@@ -204,7 +484,7 @@ public struct AorusAIAgentPayload: Encodable {
         }
         var messages = Array(context.reversed())
         messages.append(Message(role: "user", content: AorusAIAgentPayload.clamp(text, to: AorusAIRequestLimits.promptCharacters)))
-        self.init(messages: messages)
+        self.init(messages: messages, toolResults: toolResults)
     }
 
     private static func clamp(_ value: String, to limit: Int) -> String {
@@ -285,19 +565,56 @@ public struct AorusAIProfileLabels: Equatable {
     }
 }
 
-public struct AorusAIPermissionRequest: Equatable {
-    public var requestId: String
+public struct AorusAIProfileSummaryFields: Equatable {
+    public var displayName: String
+    public var username: String?
     public var kind: String
-    public var peerId: Int64?
-    public var count: Int?
-    public var previewText: String?
+    public var about: String?
+    public var participantCount: Int?
+    public var isVerified: Bool
+    public var isPremium: Bool
+    public var isScam: Bool
 
-    public init(requestId: String, kind: String, peerId: Int64?, count: Int?, previewText: String?) {
-        self.requestId = requestId
+    public init(displayName: String, username: String?, kind: String, about: String?, participantCount: Int?, isVerified: Bool, isPremium: Bool, isScam: Bool) {
+        self.displayName = displayName
+        self.username = username
         self.kind = kind
-        self.peerId = peerId
-        self.count = count
-        self.previewText = previewText
+        self.about = about
+        self.participantCount = participantCount
+        self.isVerified = isVerified
+        self.isPremium = isPremium
+        self.isScam = isScam
+    }
+
+    /// `telegram.profile.get` result: only fields the device actually has, clamped,
+    /// no avatar bytes, nothing invented (§20).
+    public func toolResult(requestId: String?, username argumentUsername: String?) -> AorusAIToolResult {
+        var fields: [(String, AorusAIJSONValue?)] = [
+            ("display_name", .string(String(displayName.prefix(160)))),
+            ("username", username.map { .string($0) }),
+            ("kind", .string(kind)),
+            ("about", about.map { .string(String($0.prefix(700))) })
+        ]
+        if let participantCount, participantCount > 0 {
+            fields.append(("participant_count", .int(participantCount)))
+        }
+        if isVerified {
+            fields.append(("verified", .bool(true)))
+        }
+        if isPremium {
+            fields.append(("premium", .bool(true)))
+        }
+        if isScam {
+            fields.append(("scam", .bool(true)))
+        }
+        return AorusAIToolResult(
+            tool: AorusAITool.profileGet,
+            requestId: requestId,
+            ok: true,
+            denied: false,
+            arguments: AorusAIToolResult.Arguments(username: argumentUsername ?? username),
+            result: .object(fields: fields)
+        )
     }
 }
 
@@ -308,10 +625,14 @@ public enum AorusAIEvent: Equatable {
     case responseStarted
     case responseDelta(String)
     case artifactReady(AorusAIArtifact)
+    case toolRequest(AorusAIToolRequest)
+    case toolResult(tool: String, ok: Bool, label: String?)
     case permissionRequest(AorusAIPermissionRequest)
     case responseDone
     case quota(AorusAIQuota)
-    case done(ok: Bool)
+    /// `state` carries the backend's `done.state`. `awaiting_tool` and
+    /// `awaiting_permission` are successful intermediate states (§1, §17).
+    case done(ok: Bool, state: String?)
     case unknown(name: String)
 }
 

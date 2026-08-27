@@ -31,6 +31,41 @@ public final class AorusAIStreamHandle {
     deinit { cancelTransport() }
 }
 
+/// Cancels one artifact download.
+///
+/// Unlike `AorusAIStreamHandle` it does **not** cancel itself when it is released: a
+/// download the caller stopped tracking must still finish and land in the temporary
+/// directory, and only an explicit `cancel()` — the user tapping the card again — stops
+/// the transfer.
+public final class AorusAIDownloadHandle {
+    private let lock = NSLock()
+    private var cancellation: (() -> Void)?
+    private var isCancelled = false
+
+    fileprivate init() {
+    }
+
+    fileprivate func installCancellation(_ cancellation: @escaping () -> Void) {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            cancellation()
+        } else {
+            self.cancellation = cancellation
+            lock.unlock()
+        }
+    }
+
+    public func cancel() {
+        lock.lock()
+        isCancelled = true
+        let action = cancellation
+        cancellation = nil
+        lock.unlock()
+        action?()
+    }
+}
+
 public final class AorusAIClient {
     public static let shared = AorusAIClient()
     public static let baseURL = URL(string: "https://ai.aorusgram.com")!
@@ -154,14 +189,20 @@ public final class AorusAIClient {
     /// another host, another object or a query string never reaches the network. The
     /// gateway attaches the private vault token server-side; the client never holds
     /// one.
+    ///
+    /// The returned handle cancels the transfer, which is what makes a stalled download
+    /// stoppable instead of a card that spins until the resource timeout: cancelling
+    /// reports `.cancelled`, exactly like a cancelled turn.
+    @discardableResult
     public func downloadArtifact(
         _ artifact: AorusAIArtifact,
         range: ClosedRange<Int64>? = nil,
         completion: @escaping (Result<URL, AorusAIClientError>) -> Void
-    ) {
+    ) -> AorusAIDownloadHandle {
+        let handle = AorusAIDownloadHandle()
         guard let path = Self.artifactPath(for: artifact) else {
             completion(.failure(artifact.isExpired ? .artifactExpired : .malformedResponse))
-            return
+            return handle
         }
         requestQueue.async { [weak self] in
             guard let self else { return }
@@ -175,8 +216,9 @@ public final class AorusAIClient {
             if let range, range.lowerBound >= 0, range.upperBound >= range.lowerBound {
                 request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
             }
-            self.performArtifactDownload(artifact, request: request, isPartial: range != nil, completion: completion)
+            self.performArtifactDownload(artifact, request: request, isPartial: range != nil, handle: handle, completion: completion)
         }
+        return handle
     }
 
     /// The one relative path this artifact may be fetched from, or nil when the
@@ -217,6 +259,7 @@ public final class AorusAIClient {
         _ artifact: AorusAIArtifact,
         request: URLRequest,
         isPartial: Bool,
+        handle: AorusAIDownloadHandle,
         completion: @escaping (Result<URL, AorusAIClientError>) -> Void
     ) {
         let configuration = URLSessionConfiguration.ephemeral
@@ -225,7 +268,7 @@ public final class AorusAIClient {
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
         let session = URLSession(configuration: configuration, delegate: AorusPinnedSessionDelegate.shared, delegateQueue: nil)
-        session.downloadTask(with: request) { temporaryURL, response, error in
+        let task = session.downloadTask(with: request) { temporaryURL, response, error in
             defer { session.finishTasksAndInvalidate() }
             guard error == nil, let http = response as? HTTPURLResponse else {
                 DispatchQueue.main.async { completion(.failure(Self.mapArtifactTransportError(error))) }
@@ -269,7 +312,11 @@ public final class AorusAIClient {
             } catch {
                 DispatchQueue.main.async { completion(.failure(.artifactDownloadFailed)) }
             }
-        }.resume()
+        }
+        handle.installCancellation { [weak task] in
+            task?.cancel()
+        }
+        task.resume()
     }
 
     fileprivate func signedRequest(method: String, path: String, body: Data, contentType: String?, accept: String?) -> URLRequest? {
@@ -510,7 +557,11 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
     private func emit(_ events: [AorusAISSEParser.Event]) {
         for raw in events {
             if let parsed = Self.parse(raw) {
-                if case .done(ok: true) = parsed {
+                // `awaiting_tool` and `awaiting_permission` arrive with `ok: true`:
+                // the stream legitimately ends there and the controller answers with a
+                // continuation request, so the transport must report success, not an
+                // "unavailable" error (§17).
+                if case .done(ok: true, state: _) = parsed {
                     receivedSuccessfulDone = true
                 }
                 DispatchQueue.main.async { self.eventHandler(parsed) }
@@ -561,20 +612,65 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             // user's file.
             guard let artifact = AorusAIArtifactFlow.decode(object) else { return nil }
             return .artifactReady(artifact)
-        case "permission_request":
-            let requestId = (object["request_id"] as? String) ?? (object["id"] as? String) ?? UUID().uuidString
-            let kind = (object["kind"] as? String) ?? (object["permission"] as? String) ?? "unknown"
-            let peerId = (object["peer_id"] as? NSNumber)?.int64Value
-            let count = (object["count"] as? NSNumber)?.intValue
-            return .permissionRequest(AorusAIPermissionRequest(requestId: requestId, kind: kind, peerId: peerId, count: count, previewText: object["text"] as? String))
+        case "tool.request":
+            // The device is asked to run a Telegram tool. `requires_user_approval`
+            // is honoured literally: `telegram.profile.get` sends `false` and must
+            // therefore run without any extra dialog (§4).
+            guard let tool = (object["tool"] as? String), !tool.isEmpty else { return nil }
+            let requestId = (object["id"] as? String) ?? (object["request_id"] as? String) ?? UUID().uuidString
+            let arguments = object["arguments"] as? [String: Any]
+            return .toolRequest(AorusAIToolRequest(
+                requestId: requestId,
+                tool: tool,
+                label: object["label"] as? String,
+                username: AorusAIStreamOperation.username(from: arguments),
+                limit: (arguments?["limit"] as? NSNumber)?.intValue,
+                requiresUserApproval: (object["requires_user_approval"] as? Bool) ?? false
+            ))
+        case "tool.result":
+            // The backend confirming its own bookkeeping. Purely informational: it is
+            // shown as a transient status, never as a chat message (§15).
+            guard let tool = object["tool"] as? String, !tool.isEmpty else { return nil }
+            return .toolResult(tool: tool, ok: (object["ok"] as? Bool) ?? true, label: object["label"] as? String)
+        case "permission.request":
+            let requestId = (object["id"] as? String) ?? (object["request_id"] as? String) ?? UUID().uuidString
+            let tool = (object["tool"] as? String) ?? AorusAITool.chatHistory
+            let arguments = object["arguments"] as? [String: Any]
+            var options: [AorusAIPermissionOption] = []
+            for rawOption in (object["options"] as? [[String: Any]]) ?? [] {
+                guard let label = rawOption["label"] as? String, !label.isEmpty else { continue }
+                let limit = (rawOption["limit"] as? NSNumber)?.intValue
+                let mode = rawOption["mode"] as? String
+                let id = (rawOption["id"] as? String) ?? limit.map({ String($0) }) ?? mode ?? label
+                options.append(AorusAIPermissionOption(id: id, label: label, limit: limit, mode: mode))
+            }
+            return .permissionRequest(AorusAIPermissionRequest(
+                requestId: requestId,
+                tool: tool,
+                title: object["title"] as? String,
+                text: (object["description"] as? String) ?? (object["text"] as? String),
+                username: AorusAIStreamOperation.username(from: arguments),
+                options: options,
+                allowCancel: (object["allow_cancel"] as? Bool) ?? true
+            ))
         case "quota", "quota.exhausted":
             return .quota(AorusAIClient.quota(from: object))
         case "response.done":
             return .responseDone
         case "done":
-            return .done(ok: (object["ok"] as? Bool) ?? false)
+            // `state` decides whether this is the end of the turn or a successful
+            // intermediate stop that the client has to answer (§17).
+            return .done(ok: (object["ok"] as? Bool) ?? false, state: object["state"] as? String)
         default:
             return .unknown(name: raw.name)
         }
+    }
+
+    /// `arguments.username` without the decorative `@`, or nil when absent.
+    private static func username(from arguments: [String: Any]?) -> String? {
+        guard let raw = arguments?["username"] as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = trimmed.hasPrefix("@") ? String(trimmed.dropFirst()) : trimmed
+        return value.isEmpty ? nil : value
     }
 }

@@ -109,7 +109,7 @@ def patch_context_menu(root: Path) -> None:
     if not path.is_file():
         raise RuntimeError(f"AorusAI: missing {path}")
     value = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: AorusAI message action v3"
+    sentinel = "// AorusGram: AorusAI message action v4"
     if sentinel in value:
         return
     if "import AorusGramUI\n" not in value:
@@ -123,6 +123,7 @@ def patch_context_menu(root: Path) -> None:
     for legacy_sentinel in (
         "        // AorusGram: AorusAI message action v1\n",
         "        // AorusGram: AorusAI message action v2\n",
+        "        // AorusGram: AorusAI message action v3\n",
     ):
         legacy_index = value.find(legacy_sentinel)
         if legacy_index < 0:
@@ -132,10 +133,22 @@ def patch_context_menu(root: Path) -> None:
             raise RuntimeError("AorusAI: legacy message action block end not found")
         value = value[:legacy_index] + value[anchor_index:]
 
-    # §10: the top row only opens a nested native menu, and inside it every titled
-    # section opens one more level, so the visible list is six rows instead of the
-    # twenty-two that used to run off the bottom of the screen. Both levels carry
-    # Telegram's own Back row, exactly as the native sponsored-message menu does.
+    # §10: the AorusAI row opens exactly ONE nested native level.
+    #
+    # Telegram's ContextControllerActionsStackNode only positions the top two
+    # containers of its stack (`i == count - 1` and `i == count - 2`); anything
+    # deeper keeps `transitionFraction = 0`, i.e. stays on screen at x = 0 behind a
+    # dim node whose colour is `contextMenu.sectionSeparatorColor` — 20 % black in
+    # the dark theme. A second pushed level therefore leaves the chat menu readable
+    # underneath, shifted, because every container is forced to the top item's width
+    # and height. Native code never pushes more than once, and neither do we: the
+    # sections become titled groups inside the single pushed list, separated exactly
+    # like native groups and headed by the same small disabled row Telegram uses for
+    # non-tappable text. The list itself scrolls with the menu's own scroll view.
+    #
+    # Icons are native bundle images tinted through `generateTintedImage`, like every
+    # other row in this file. SF Symbols went through `withTintColor(_:renderingMode:)`
+    # before, which keeps the symbol's own (black) rendering in a context menu.
     # The contents come from AorusGramUI so that ContextUI stays out of that module.
     block = (
         "        " + sentinel + "\n"
@@ -154,45 +167,38 @@ def patch_context_menu(root: Path) -> None:
         "                    text: aorusAIMessage.text\n"
         "                )\n"
         "            }\n"
-        "            let aorusAISymbol: (String?) -> (PresentationTheme) -> UIImage? = { name in\n"
+        "            let aorusAIIcon: (String?) -> (PresentationTheme) -> UIImage? = { name in\n"
         "                return { theme in\n"
         "                    guard let name = name else {\n"
         "                        return nil\n"
         "                    }\n"
-        "                    return UIImage(systemName: name)?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)\n"
+        "                    return generateTintedImage(image: UIImage(bundleImageName: name), color: theme.actionSheet.primaryTextColor)\n"
         "                }\n"
         "            }\n"
-        "            let aorusAIBackItem: ContextMenuItem = .action(ContextMenuActionItem(text: aorusAIPresentationData.strings.Common_Back, icon: { theme in\n"
-        "                return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Back\"), color: theme.actionSheet.primaryTextColor)\n"
-        "            }, iconPosition: .left, action: { c, _ in\n"
-        "                c?.popItems()\n"
-        "            }))\n"
-        "            let aorusAIEntryItems: ([AorusAIMenuEntry]) -> [ContextMenuItem] = { entries in\n"
-        "                return entries.map { entry in\n"
-        "                    let entryId = entry.id\n"
-        "                    return .action(ContextMenuActionItem(text: entry.title, icon: aorusAISymbol(entry.iconName), action: { c, _ in\n"
-        "                        c?.dismiss(completion: {\n"
-        "                            aorusAIRun(entryId)\n"
-        "                        })\n"
-        "                    }))\n"
-        "                }\n"
-        "            }\n"
-        "            actions.append(.action(ContextMenuActionItem(text: aorusAIMessageMenuTitle(), icon: aorusAISymbol(\"sparkles\"), action: { c, _ in\n"
-        "                var aorusAIItems: [ContextMenuItem] = [aorusAIBackItem, .separator]\n"
+        "            let aorusAINoAction: ((ContextMenuActionItem.Action) -> Void)? = nil\n"
+        "            actions.append(.action(ContextMenuActionItem(text: aorusAIMessageMenuTitle(), icon: aorusAIIcon(aorusAIMessageMenuIconName()), action: { c, _ in\n"
+        "                var aorusAIItems: [ContextMenuItem] = [.action(ContextMenuActionItem(text: aorusAIPresentationData.strings.Common_Back, icon: { theme in\n"
+        "                    return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Back\"), color: theme.actionSheet.primaryTextColor)\n"
+        "                }, iconPosition: .left, action: { c, _ in\n"
+        "                    c?.popItems()\n"
+        "                }))]\n"
         "                for aorusAISection in aorusAIMessageMenuSections() {\n"
-        "                    let aorusAIEntries = aorusAISection.entries\n"
-        "                    if aorusAIEntries.isEmpty {\n"
+        "                    if aorusAISection.entries.isEmpty {\n"
         "                        continue\n"
         "                    }\n"
+        "                    aorusAIItems.append(.separator)\n"
         "                    if let aorusAISectionTitle = aorusAISection.title {\n"
-        "                        aorusAIItems.append(.action(ContextMenuActionItem(text: aorusAISectionTitle, icon: aorusAISymbol(aorusAISection.iconName), action: { c, _ in\n"
-        "                            var aorusAINestedItems: [ContextMenuItem] = [aorusAIBackItem, .separator]\n"
-        "                            aorusAINestedItems.append(contentsOf: aorusAIEntryItems(aorusAIEntries))\n"
-        "                            c?.pushItems(items: .single(ContextController.Items(content: .list(aorusAINestedItems))))\n"
+        "                        aorusAIItems.append(.action(ContextMenuActionItem(text: aorusAISectionTitle, textColor: .disabled, textFont: .small, icon: { _ in\n"
+        "                            return nil\n"
+        "                        }, action: aorusAINoAction)))\n"
+        "                    }\n"
+        "                    for aorusAIEntry in aorusAISection.entries {\n"
+        "                        let aorusAIEntryId = aorusAIEntry.id\n"
+        "                        aorusAIItems.append(.action(ContextMenuActionItem(text: aorusAIEntry.title, icon: aorusAIIcon(aorusAIEntry.iconName), action: { c, _ in\n"
+        "                            c?.dismiss(completion: {\n"
+        "                                aorusAIRun(aorusAIEntryId)\n"
+        "                            })\n"
         "                        })))\n"
-        "                    } else {\n"
-        "                        aorusAIItems.append(.separator)\n"
-        "                        aorusAIItems.append(contentsOf: aorusAIEntryItems(aorusAIEntries))\n"
         "                    }\n"
         "                }\n"
         "                c?.pushItems(items: .single(ContextController.Items(content: .list(aorusAIItems))))\n"

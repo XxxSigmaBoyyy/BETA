@@ -37,8 +37,8 @@ public func aorusAIConversationListController(context: AccountContext) -> ViewCo
 ///
 /// The host renders these rows with Telegram's own context menu, so a descriptor
 /// deliberately carries no UI: a stable identifier, a localized title and the name
-/// of an SF Symbol the host tints with the current theme. That keeps ContextUI out
-/// of this module and the menu contents out of the generated host patch.
+/// of a native bundle image the host tints with the current theme. That keeps
+/// ContextUI out of this module and the menu contents out of the generated host patch.
 public struct AorusAIMenuEntry {
     public var id: String
     public var title: String
@@ -53,9 +53,9 @@ public struct AorusAIMenuEntry {
 
 /// A group of rows of the AorusAI message menu.
 ///
-/// A section with a `title` is rendered as its own submenu, so the top level stays a
-/// handful of rows instead of the twenty-two it would be if every action were flat.
-/// A section without one is rendered inline, separated from its neighbours.
+/// A section with a `title` is rendered as a headed group inside the single pushed
+/// level, exactly like a native titled group. A section without one is rendered
+/// inline, separated from its neighbours.
 public struct AorusAIMenuSection {
     public var title: String?
     public var iconName: String?
@@ -70,6 +70,15 @@ public struct AorusAIMenuSection {
 
 public func aorusAIMessageMenuTitle() -> String {
     return aorusAILocalized("ИИ-компаньон", "AI Companion")
+}
+
+/// Bundle image for the AorusAI row in the message context menu.
+///
+/// `Chat/Input/Text/InputAIIcon` is a 24×24 template asset that already ships with
+/// the app, so the row is tinted and sized exactly like every native row instead of
+/// carrying an SF Symbol that a context menu renders in its own black.
+public func aorusAIMessageMenuIconName() -> String {
+    return "Chat/Input/Text/InputAIIcon"
 }
 
 public func aorusAIMessageMenuSections() -> [AorusAIMenuSection] {
@@ -128,46 +137,49 @@ private enum AorusAIMessageMenu {
         var prompt: String
     }
 
-    /// A titled group becomes a submenu; an untitled one stays on the top level.
+    /// A titled group becomes a headed section inside the single pushed menu level;
+    /// an untitled one is just separated from the section above it.
     private struct Group {
         var title: String?
         var icon: String?
         var items: [Item]
     }
 
+    /// Every icon is a native `Chat/Context Menu/*` bundle asset: the host patch tints
+    /// it with `generateTintedImage`, exactly like Telegram's own rows.
     private static var groups: [Group] {
         return [
-            Group(title: aorusAILocalized("Текст", "Text"), icon: "textformat", items: [
-                Item(id: "text.improve", title: aorusAILocalized("Улучшить текст", "Improve writing"), icon: "wand.and.stars", prompt: aorusAILocalized("Улучши текст, сохранив смысл", "Improve the writing while preserving its meaning")),
-                Item(id: "text.fix", title: aorusAILocalized("Исправить ошибки", "Fix mistakes"), icon: "checkmark.circle", prompt: aorusAILocalized("Исправь ошибки в этом сообщении", "Fix mistakes in this message")),
-                Item(id: "text.shorten", title: aorusAILocalized("Сделать короче", "Make shorter"), icon: "arrow.down.right.and.arrow.up.left", prompt: aorusAILocalized("Сделай это сообщение короче", "Make this message shorter")),
-                Item(id: "text.summarize", title: aorusAILocalized("Кратко пересказать", "Summarize"), icon: "text.alignleft", prompt: aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
-                Item(id: "text.translate", title: aorusAILocalized("Перевести", "Translate"), icon: "globe", prompt: aorusAILocalized("Переведи это сообщение на мой язык", "Translate this message into my language")),
-                Item(id: "text.reply", title: aorusAILocalized("Ответить на сообщение", "Draft a reply"), icon: "arrowshape.turn.up.left", prompt: aorusAILocalized("Подготовь уместный ответ на это сообщение", "Draft an appropriate reply to this message"))
+            Group(title: aorusAILocalized("Текст", "Text"), icon: "Chat/Context Menu/FormatText", items: [
+                Item(id: "text.improve", title: aorusAILocalized("Улучшить текст", "Improve writing"), icon: "Chat/Context Menu/Edit", prompt: aorusAILocalized("Улучши текст, сохранив смысл", "Improve the writing while preserving its meaning")),
+                Item(id: "text.fix", title: aorusAILocalized("Исправить ошибки", "Fix mistakes"), icon: "Chat/Context Menu/Check", prompt: aorusAILocalized("Исправь ошибки в этом сообщении", "Fix mistakes in this message")),
+                Item(id: "text.shorten", title: aorusAILocalized("Сделать короче", "Make shorter"), icon: "Chat/Context Menu/Collapse", prompt: aorusAILocalized("Сделай это сообщение короче", "Make this message shorter")),
+                Item(id: "text.summarize", title: aorusAILocalized("Кратко пересказать", "Summarize"), icon: "Chat/Context Menu/List", prompt: aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
+                Item(id: "text.translate", title: aorusAILocalized("Перевести", "Translate"), icon: "Chat/Context Menu/Translate", prompt: aorusAILocalized("Переведи это сообщение на мой язык", "Translate this message into my language")),
+                Item(id: "text.reply", title: aorusAILocalized("Ответить на сообщение", "Draft a reply"), icon: "Chat/Context Menu/Reply", prompt: aorusAILocalized("Подготовь уместный ответ на это сообщение", "Draft an appropriate reply to this message"))
             ]),
-            Group(title: aorusAILocalized("Тон", "Tone"), icon: "slider.horizontal.3", items: [
-                Item(id: "tone.detailed", title: aorusAILocalized("Сделать подробнее", "Make more detailed"), icon: "plus.magnifyingglass", prompt: aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
-                Item(id: "tone.rewrite", title: aorusAILocalized("Переформулировать", "Rewrite"), icon: "arrow.triangle.2.circlepath", prompt: aorusAILocalized("Переформулируй это сообщение", "Rewrite this message")),
-                Item(id: "tone.polite", title: aorusAILocalized("Сделать вежливее", "Make more polite"), icon: "heart", prompt: aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
-                Item(id: "tone.confident", title: aorusAILocalized("Сделать увереннее", "Make more confident"), icon: "bolt", prompt: aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
-                Item(id: "tone.formal", title: aorusAILocalized("Сделать официальнее", "Make more formal"), icon: "briefcase", prompt: aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
-                Item(id: "tone.simple", title: aorusAILocalized("Сделать проще", "Simplify"), icon: "textformat.size", prompt: aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language"))
+            Group(title: aorusAILocalized("Тон", "Tone"), icon: "Chat/Context Menu/Customize", items: [
+                Item(id: "tone.detailed", title: aorusAILocalized("Сделать подробнее", "Make more detailed"), icon: "Chat/Context Menu/Expand", prompt: aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
+                Item(id: "tone.rewrite", title: aorusAILocalized("Переформулировать", "Rewrite"), icon: "Chat/Context Menu/Reload", prompt: aorusAILocalized("Переформулируй это сообщение", "Rewrite this message")),
+                Item(id: "tone.polite", title: aorusAILocalized("Сделать вежливее", "Make more polite"), icon: "Chat/Context Menu/ThumbsUp", prompt: aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
+                Item(id: "tone.confident", title: aorusAILocalized("Сделать увереннее", "Make more confident"), icon: "Chat/Context Menu/Boost", prompt: aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
+                Item(id: "tone.formal", title: aorusAILocalized("Сделать официальнее", "Make more formal"), icon: "Chat/Context Menu/FormatQuote", prompt: aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
+                Item(id: "tone.simple", title: aorusAILocalized("Сделать проще", "Simplify"), icon: "Chat/Context Menu/Smile", prompt: aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language"))
             ]),
-            Group(title: aorusAILocalized("Разобрать", "Break down"), icon: "magnifyingglass", items: [
-                Item(id: "review.explain", title: aorusAILocalized("Объяснить", "Explain"), icon: "questionmark.circle", prompt: aorusAILocalized("Объясни это сообщение", "Explain this message")),
-                Item(id: "review.key", title: aorusAILocalized("Выделить главное", "Key points"), icon: "star", prompt: aorusAILocalized("Выдели главное в этом сообщении", "Extract the key points from this message")),
-                Item(id: "review.variants", title: aorusAILocalized("Несколько ответов", "Several replies"), icon: "square.on.square", prompt: aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message"))
+            Group(title: aorusAILocalized("Разобрать", "Break down"), icon: "Chat/Context Menu/Search", items: [
+                Item(id: "review.explain", title: aorusAILocalized("Объяснить", "Explain"), icon: "Chat/Context Menu/Help", prompt: aorusAILocalized("Объясни это сообщение", "Explain this message")),
+                Item(id: "review.key", title: aorusAILocalized("Выделить главное", "Key points"), icon: "Chat/Context Menu/Fave", prompt: aorusAILocalized("Выдели главное в этом сообщении", "Extract the key points from this message")),
+                Item(id: "review.variants", title: aorusAILocalized("Несколько ответов", "Several replies"), icon: "Chat/Context Menu/Replies", prompt: aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message"))
             ]),
-            Group(title: aorusAILocalized("Создать", "Create"), icon: "sparkles", items: [
-                Item(id: "create.telegram", title: aorusAILocalized("Telegram-пост", "Telegram post"), icon: "paperplane", prompt: aorusAILocalized("Сделай из этого профессиональный Telegram-пост", "Turn this into a professional Telegram post")),
-                Item(id: "create.instagram", title: aorusAILocalized("Instagram-пост", "Instagram post"), icon: "camera", prompt: aorusAILocalized("Сделай из этого профессиональный Instagram-пост", "Turn this into a professional Instagram post")),
-                Item(id: "create.title", title: aorusAILocalized("Заголовок", "Title"), icon: "text.quote", prompt: aorusAILocalized("Придумай сильный заголовок для этого текста", "Create a strong title for this text")),
-                Item(id: "create.description", title: aorusAILocalized("Описание", "Description"), icon: "doc.text", prompt: aorusAILocalized("Создай краткое и точное описание для этого текста", "Create a concise, accurate description for this text")),
-                Item(id: "create.continue", title: aorusAILocalized("Продолжить текст", "Continue writing"), icon: "pencil", prompt: aorusAILocalized("Естественно продолжи этот текст в том же стиле", "Continue this text naturally in the same style"))
+            Group(title: aorusAILocalized("Создать", "Create"), icon: "Chat/Context Menu/Pencil", items: [
+                Item(id: "create.telegram", title: aorusAILocalized("Telegram-пост", "Telegram post"), icon: "Chat/Context Menu/Telegram", prompt: aorusAILocalized("Сделай из этого профессиональный Telegram-пост", "Turn this into a professional Telegram post")),
+                Item(id: "create.instagram", title: aorusAILocalized("Instagram-пост", "Instagram post"), icon: "Chat/Context Menu/Camera", prompt: aorusAILocalized("Сделай из этого профессиональный Instagram-пост", "Turn this into a professional Instagram post")),
+                Item(id: "create.title", title: aorusAILocalized("Заголовок", "Title"), icon: "Chat/Context Menu/FormatHeading", prompt: aorusAILocalized("Придумай сильный заголовок для этого текста", "Create a strong title for this text")),
+                Item(id: "create.description", title: aorusAILocalized("Описание", "Description"), icon: "Chat/Context Menu/Caption", prompt: aorusAILocalized("Создай краткое и точное описание для этого текста", "Create a concise, accurate description for this text")),
+                Item(id: "create.continue", title: aorusAILocalized("Продолжить текст", "Continue writing"), icon: "Chat/Context Menu/AddCaption", prompt: aorusAILocalized("Естественно продолжи этот текст в том же стиле", "Continue this text naturally in the same style"))
             ]),
             Group(title: nil, icon: nil, items: [
-                Item(id: analyzeChatId, title: aorusAILocalized("Анализ переписки", "Analyze chat"), icon: "chart.bar", prompt: ""),
-                Item(id: newChatId, title: aorusAILocalized("Новый диалог", "New chat"), icon: "plus.bubble", prompt: "")
+                Item(id: analyzeChatId, title: aorusAILocalized("Анализ переписки", "Analyze chat"), icon: "Chat/Context Menu/Statistics", prompt: ""),
+                Item(id: newChatId, title: aorusAILocalized("Новый диалог", "New chat"), icon: "Chat/Context Menu/MessageBubble", prompt: "")
             ])
         ]
     }
@@ -255,11 +267,10 @@ private struct AorusAITranscript {
 
 /// Reads the newest `count` text messages of `peerId` from the local Postbox.
 ///
-/// The backend protocol declares a `telegram.chat.history` capability but does not
-/// publish a body schema for answering a suspended `permission_request`, so the
-/// client never lets the server pull history: it reads the messages itself, shows
-/// exactly what will leave the device, and sends the transcript inline in the
-/// request the user confirmed.
+/// This is the "analyze this chat" entry point of the message context menu: it builds
+/// a transcript the user sees in full before confirming, and sends it inline with the
+/// prompt. The agent-driven path is `aorusAIChatHistoryLines` below, which answers a
+/// server `permission.request` with `aorus_tool_results` instead.
 private func aorusAIChatTranscript(context: AccountContext, peerId: PeerId, namespace: Int32, count: Int) -> Signal<AorusAITranscript, NoError> {
     let limit = min(AorusAIRequestLimits.chatHistoryMessageCount, max(1, count))
     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
@@ -280,6 +291,57 @@ private func aorusAIChatTranscript(context: AccountContext, peerId: PeerId, name
         }
         let ordered = Array(lines.reversed())
         return AorusAITranscript(messageCount: ordered.count, text: ordered.joined(separator: "\n"))
+    }
+}
+
+/// One `result.messages[]` element of a `telegram.chat.history` tool result.
+private struct AorusAIHistoryLine {
+    var sender: String
+    var text: String
+}
+
+/// The device-side implementation of the `telegram.chat.history` tool.
+///
+/// The messages are read from the local Postbox — the server never gets a way to pull
+/// them itself. `fromDate` / `toDate` implement the `mode: "period"` option: the scan
+/// walks newest-first, skips everything newer than `toDate` and stops as soon as it
+/// crosses below `fromDate`, so a period query does not read the whole chat.
+private func aorusAIChatHistoryLines(
+    context: AccountContext,
+    peerId: PeerId,
+    limit: Int,
+    fromDate: Int64?,
+    toDate: Int64?,
+    strings: PresentationStrings,
+    nameOrder: PresentationPersonNameOrder,
+    unknownAuthor: String
+) -> Signal<[AorusAIHistoryLine], NoError> {
+    let requested = min(AorusAIRequestLimits.chatHistoryMessageCount, max(1, limit))
+    let perMessage = AorusAIRequestLimits.chatHistoryMessageCharacters
+    // A period query has to look past the messages it rejects, so its scan window is
+    // wider than the number of lines it may return, but still bounded.
+    let scanLimit = (fromDate != nil || toDate != nil)
+        ? min(AorusAIRequestLimits.chatHistoryMessageCount * 4, max(requested, 400))
+        : requested
+    return context.account.postbox.transaction { transaction -> [AorusAIHistoryLine] in
+        var lines: [AorusAIHistoryLine] = []
+        transaction.scanTopMessages(peerId: peerId, namespace: Namespaces.Message.Cloud, limit: scanLimit) { message in
+            guard lines.count < requested else { return false }
+            let timestamp = Int64(message.timestamp)
+            if let toDate = toDate, timestamp > toDate {
+                return true
+            }
+            if let fromDate = fromDate, timestamp < fromDate {
+                return false
+            }
+            let body = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return true }
+            let author = message.author.flatMap { EnginePeer($0).displayTitle(strings: strings, displayOrder: nameOrder) } ?? unknownAuthor
+            let clamped = body.count > perMessage ? String(body.prefix(perMessage)) + "…" : body
+            lines.append(AorusAIHistoryLine(sender: author, text: clamped))
+            return true
+        }
+        return Array(lines.reversed())
     }
 }
 
@@ -420,13 +482,23 @@ private final class AorusAIConversationListController: ViewController, UITableVi
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        (self.navigationController as? NavigationController)?.pushViewController(AorusAIChatController(context: context, conversation: conversations[indexPath.row]))
+        let conversation = conversations[indexPath.row]
+        // A turn that outlived its screen is still running inside its own controller, so the
+        // row re-opens that instance. A second controller over the same conversation would
+        // fight it for the same messages and the live answer would look frozen.
+        let key = AorusAIActiveTurnCenter.key(accountId: accountId, conversationId: conversation.id)
+        let controller = AorusAIActiveTurnCenter.shared.liveController(forKey: key)
+            ?? AorusAIChatController(context: context, conversation: conversation)
+        (self.navigationController as? NavigationController)?.pushViewController(controller)
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         let id = conversations[indexPath.row].id
         let action = UIContextualAction(style: .destructive, title: presentationData.strings.Common_Delete) { [weak self] _, _, done in
             guard let self else { done(false); return }
+            // A turn of this conversation may still be running off-screen; it is stopped
+            // first, otherwise its next save would bring the deleted chat back.
+            AorusAIActiveTurnCenter.shared.abortTurn(forKey: AorusAIActiveTurnCenter.key(accountId: self.accountId, conversationId: id))
             AorusAIStore.shared.delete(conversationId: id, accountId: self.accountId) { done($0) }
         }
         action.image = UIImage(systemName: "trash")
@@ -546,6 +618,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private var turnId: String?
     private var activeAssistantId: UUID?
     private var previewURL: URL?
+    /// Artifacts currently being fetched, by `artifactId`. Owned by the controller, not
+    /// by the card, because every reload builds new cards.
+    private var loadingArtifactIds: Set<String> = []
+    /// The cancel handle of each running download, so a second tap stops the transfer.
+    private var artifactDownloads: [String: AorusAIDownloadHandle] = [:]
     private var quotaTimer: Foundation.Timer?
     private var keyboardHeight: CGFloat = 0
     private var lastLayout: ContainerViewLayout?
@@ -561,7 +638,75 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// The transport handle only exists once the request is on the wire, so a turn that
     /// is still being prepared is tracked separately — otherwise the stop button falls
     /// back to a disabled send button over an already-cleared input.
+    ///
+    /// It covers three windows of one logical turn: the profile lookup before the first
+    /// request, and — after `done(ok: true, state: awaiting_*)` closed the immediate
+    /// stream — the tool execution and the permission dialog that precede a
+    /// continuation. In all of them the turn is alive without a socket.
     private var isPreparingRequest = false
+    // MARK: Agent tool workflow (§13 state machine)
+    /// The explicit turn state. `awaitingTool`/`awaitingPermission` are successful
+    /// intermediate states: they may never be turned into a failed turn (§13).
+    private enum TurnState: Equatable {
+        case idle
+        case streaming
+        case awaitingTool(AorusAIToolRequest)
+        case submittingToolResult
+        case awaitingPermission(AorusAIPermissionRequest)
+        case executingHistoryTool(AorusAIPermissionRequest)
+    }
+    private var turnState: TurnState = .idle {
+        didSet { updateBackgroundPresence() }
+    }
+    /// True while one logical turn is alive, whether or not a socket is open right now: the
+    /// profile lookup before the first request, the stream itself, and every tool or
+    /// permission step in between all belong to the same unfinished answer.
+    private var isTurnLive: Bool {
+        if case .idle = turnState {
+            return streamHandle != nil || isPreparingRequest
+        }
+        return true
+    }
+    /// The extra runtime asked from the OS so a turn is not frozen mid-answer when the app
+    /// leaves the foreground. `.invalid` means no task is held.
+    private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+    /// The window this screen was last shown in. After the screen is closed `view.window`
+    /// is nil, and the floating indicator still needs somewhere to live.
+    private weak var lastKnownWindow: UIWindow?
+    /// The stack this screen was pushed on, remembered while it is still on it: after the
+    /// pop `navigationController` is nil, and the indicator has to be able to push it back.
+    private weak var lastNavigationController: NavigationController?
+    /// A dialog the running turn is waiting on that could not be shown because the screen
+    /// was closed. It is presented again the moment the screen comes back.
+    private var deferredUserPrompt: (() -> Void)?
+    /// Set when the conversation this controller works on was deleted underneath it. From
+    /// then on it writes nothing back to the store.
+    private var isDiscarded = false
+    /// Every tool result of the current logical request, in order. It is resent with
+    /// each continuation because the backend re-reads the whole array and would ask for
+    /// the profile again if the history continuation dropped it (§14).
+    private var turnToolResults: [AorusAIToolResult] = []
+    /// The exact transport text of the running turn: a continuation repeats the same
+    /// conversation and prompt and only adds `aorus_tool_results` (§6).
+    private var turnTransportText: String?
+    /// The context turns the running request was built from, frozen when the turn
+    /// started so a continuation cannot accidentally replay the half-written answer.
+    private var turnHistory: [AorusAIMessage] = []
+    /// How many continuations this turn has already sent. The ceiling is what makes an
+    /// infinite tool loop impossible (§31).
+    private var turnContinuationCount = 0
+    /// The tool the backend asked for, executed once its `done(awaiting_tool)` arrives.
+    private var pendingToolRequest: AorusAIToolRequest?
+    /// The permission the backend asked for, shown once `done(awaiting_permission)`
+    /// arrives, so the whole immediate stream is consumed before a modal appears.
+    private var pendingPermissionRequest: AorusAIPermissionRequest?
+    /// Local Telegram work of the current tool step (peer resolution, history read).
+    private let toolExecutionDisposable = MetaDisposable()
+    /// The backend keeps the last 8 tool results, so there is no point in carrying more.
+    private static let maxAccumulatedToolResults = 8
+    /// Two tools per turn are enough for the documented flow (profile, then history);
+    /// the ceiling leaves room for a retry without ever looping forever.
+    private static let maxToolContinuations = 6
     private let dictation = AorusAIDictation()
     /// What the input held before the current dictation run, so partial results replace
     /// only the spoken part instead of the whole draft.
@@ -583,9 +728,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         self.initialRequest = initialRequest
         self.pendingReference = reference
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
-        // The header is a real chat header: gradient badge, name and a live status line.
-        // `title` stays unset because Telegram's navigation bar draws either the string or
-        // the custom view, never both.
+        // The header is a real chat header: a native glass capsule with the name and a
+        // live status line. `title` stays unset because Telegram's navigation bar draws
+        // either the string or the custom view, never both.
         let titleView = AorusAINavigationTitleView(theme: self.presentationData.theme)
         self.headerView = titleView
         self.navigationItem.titleView = titleView
@@ -599,6 +744,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         pendingPersistWork?.cancel()
         pendingRenderWork?.cancel()
         quotaTimer?.invalidate()
+        if backgroundTaskId != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskId)
+            backgroundTaskId = .invalid
+        }
         streamHandle?.cancelTransport()
         if let turnId {
             AorusAIClient.shared.cancelTurn(turnId) { _ in }
@@ -606,6 +755,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         draftEntityResolutionDisposables.forEach { $0.dispose() }
         messageEntityResolutionDisposables.values.flatMap { $0 }.forEach { $0.dispose() }
         profileContextDisposable.dispose()
+        toolExecutionDisposable.dispose()
+        artifactDownloads.values.forEach { $0.cancel() }
         removePreviewArtifact()
     }
 
@@ -637,6 +788,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         self.displayNode.view.addSubview(composer)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
         if let initialPrompt, !initialPrompt.isEmpty { composer.text = initialPrompt }
         scheduleQuotaResetIfNeeded()
         updateComposer()
@@ -646,6 +798,17 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        lastKnownWindow = self.view.window
+        lastNavigationController = self.navigationController as? NavigationController
+        // The screen is back on top: the navigation stack owns this controller again, so the
+        // off-screen hold and its floating indicator are no longer needed.
+        AorusAIActiveTurnCenter.shared.release(key: activeTurnKey, controller: self)
+        // A question that arrived while the screen was closed is asked now, not lost: the
+        // turn was waiting for it and would otherwise never be answered.
+        if let prompt = deferredUserPrompt {
+            deferredUserPrompt = nil
+            DispatchQueue.main.async { prompt() }
+        }
         if let initialPrompt, !initialPrompt.isEmpty, !initialRequestStarted {
             initialRequestStarted = true
             let requestText = initialRequest ?? initialPrompt
@@ -659,6 +822,85 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         super.viewWillDisappear(animated)
         conversation.draft = composer.text
         persist(force: true)
+        // The window is still attached at this point, which is the only moment the floating
+        // indicator can be installed — and a running turn has to be kept alive before this
+        // controller leaves the stack and its `deinit` cancels the stream.
+        lastKnownWindow = self.view.window ?? lastKnownWindow
+        lastNavigationController = (self.navigationController as? NavigationController) ?? lastNavigationController
+        if isTurnLive { holdForBackgroundTurn() }
+    }
+
+    /// The key one conversation of one account is held under.
+    private var activeTurnKey: String {
+        return AorusAIActiveTurnCenter.key(accountId: accountId, conversationId: conversation.id)
+    }
+
+    private var isOnScreen: Bool {
+        return self.view.window != nil
+    }
+
+    /// Holds back a dialog the turn cannot continue without until the screen is visible.
+    ///
+    /// Presenting a sheet from a controller that is not in the hierarchy does nothing at
+    /// all, and the turn would then wait for an answer to a question nobody ever saw. The
+    /// question is stored instead, the indicator says an answer is expected, and one tap on
+    /// it brings the sheet up.
+    private func deferUserPrompt(_ prompt: @escaping () -> Void) {
+        deferredUserPrompt = prompt
+        AorusAIActiveTurnCenter.shared.setNeedsAttention(true, key: activeTurnKey)
+    }
+
+    /// Hands this controller to the turn center so the answer keeps arriving after the
+    /// screen is gone.
+    ///
+    /// Nothing else retains it once it is popped: the stream would be cancelled in `deinit`
+    /// and the half-written answer would stay half-written, which is exactly the truncation
+    /// the brief rules out. The center holds it instead, shows the working indicator, and
+    /// the indicator's tap pushes this very instance back — never a second controller over
+    /// the same messages.
+    private func holdForBackgroundTurn() {
+        AorusAIActiveTurnCenter.shared.hold(
+            self,
+            key: activeTurnKey,
+            window: self.view.window ?? lastKnownWindow,
+            theme: presentationData.theme,
+            reopen: { [weak self] controller in
+                // `navigationController` is UIKit's and is nil once this screen is popped,
+                // so the stack it was pushed on is remembered while it is still on screen.
+                self?.lastNavigationController?.pushViewController(controller)
+            }
+        )
+    }
+
+    /// Stops a turn whose conversation no longer exists.
+    ///
+    /// `isDiscarded` is set first, so nothing this teardown touches can write the deleted
+    /// conversation back into the store.
+    fileprivate func abortHeldTurn() {
+        isDiscarded = true
+        deferredUserPrompt = nil
+        endBackgroundGrace(cancelTurn: false)
+        stopGeneration()
+    }
+
+    /// The one place the turn state is acted upon outside the chat itself.
+
+    ///
+    /// A finished turn releases the hold, the background runtime and the indicator; a turn
+    /// still running with no window on screen re-installs the hold, so a state change that
+    /// happens while the user is elsewhere cannot leave the stream unowned.
+    private func updateBackgroundPresence() {
+        guard isTurnLive else {
+            endBackgroundGrace(cancelTurn: false)
+            // The hold may be the last reference to this controller, so it is dropped one
+            // runloop later: releasing it here would deallocate `self` mid-method.
+            let key = activeTurnKey
+            DispatchQueue.main.async { [weak self] in
+                AorusAIActiveTurnCenter.shared.release(key: key, controller: self)
+            }
+            return
+        }
+        if self.view.window == nil, lastKnownWindow != nil { holdForBackgroundTurn() }
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
@@ -694,12 +936,42 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         conversation.draft = composer.text
         persist(force: true)
         if dictation.isRunning { dictation.stop() }
-        if streamHandle != nil {
+        // The turn is no longer killed on the way out. The app is given the documented
+        // extra runtime instead, so an answer that is a second away from finishing does
+        // finish, and only an expiring background task ends it — with its text kept.
+        beginBackgroundGraceIfNeeded()
+    }
+
+    @objc private func appWillEnterForeground() {
+        endBackgroundGrace(cancelTurn: false)
+    }
+
+    /// Buys a running turn the OS background allowance so the socket is not suspended
+    /// mid-answer the moment the app leaves the foreground.
+    private func beginBackgroundGraceIfNeeded() {
+        guard isTurnLive, backgroundTaskId == .invalid else { return }
+        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "AorusAI turn") { [weak self] in
+            // The expiration handler can run on any thread, and everything it touches is
+            // main-thread state.
+            DispatchQueue.main.async {
+                self?.endBackgroundGrace(cancelTurn: true)
+            }
+        }
+    }
+
+    /// Gives the background allowance back. `cancelTurn` is true only when the OS is about
+    /// to take it away regardless — then the turn is closed with everything that already
+    /// arrived preserved, never wiped.
+    private func endBackgroundGrace(cancelTurn: Bool) {
+        if cancelTurn, isTurnLive {
             if let turnId {
                 AorusAIClient.shared.cancelTurn(turnId) { _ in }
             }
             finishStreaming(error: .offline, preserveText: true)
         }
+        guard backgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskId)
+        backgroundTaskId = .invalid
     }
 
     func textViewDidChange(_ textView: UITextView) {
@@ -712,13 +984,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         persist(force: false)
     }
 
-    func textViewDidBeginEditing(_ textView: UITextView) {
-        composer.setInputActive(true)
-    }
-
-    func textViewDidEndEditing(_ textView: UITextView) {
-        composer.setInputActive(false)
-    }
+    // The composer carries no brand row: the header already says AorusAI, and a second
+    // badge inside the input only stole a line from the text, so there is nothing to
+    // toggle when the input takes or loses focus.
 
     private func sendOrStop() {
         if streamHandle != nil || isPreparingRequest {
@@ -767,6 +1035,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         conversation.updatedAt = Date()
         activeAssistantId = assistant.id
         isPreparingRequest = true
+        // A new logical request starts with an empty tool ledger: results of the
+        // previous turn must never travel with it.
+        turnToolResults = []
+        turnContinuationCount = 0
+        pendingToolRequest = nil
+        pendingPermissionRequest = nil
+        toolExecutionDisposable.set(nil)
+        turnState = .streaming
         composer.text = ""
         resolveDraftEntities(in: "")
         composer.reference = nil
@@ -816,8 +1092,26 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             conversation.messages[index].statusLabel = aorusAILocalized("Подключение...", "Connecting...")
         }
         // Everything before the two turns just appended is replayed context; the
-        // payload itself trims it to the transport budget.
-        let payload = AorusAIAgentPayload(history: Array(conversation.messages.dropLast(2)), text: text)
+        // payload itself trims it to the transport budget. It is frozen here so every
+        // continuation of this logical request sends the identical conversation (§6).
+        turnHistory = Array(conversation.messages.dropLast(2))
+        turnTransportText = text
+        dispatchTransport()
+    }
+
+    /// Sends the turn — the first request and every continuation go through here, so the
+    /// accumulated `aorus_tool_results` are always attached and the body stays the
+    /// documented one: same `messages`, one extra field (§6, §14).
+    private func dispatchTransport() {
+        // There is no path that reaches a continuation without a frozen request text, but a
+        // silent return here would leave the turn live with no socket — a spinner and a
+        // floating indicator that never end. Fail the turn instead of stalling it.
+        guard let text = turnTransportText else {
+            finishStreaming(error: .serverUnavailable, preserveText: true)
+            return
+        }
+        let payload = AorusAIAgentPayload(history: turnHistory, text: text, toolResults: turnToolResults)
+        turnState = .streaming
         streamHandle = AorusAIClient.shared.start(payload: payload, event: { [weak self] event in
             self?.handle(event)
         }, completion: { [weak self] result in
@@ -826,7 +1120,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 self.finishStreaming(error: error, preserveText: true)
             } else if self.streamHandle != nil {
                 // A successful HTTP EOF is not a successful agent turn by itself.
-                // Only the protocol's explicit `done ok=true` event completes it.
+                // Only the protocol's explicit `done` event completes it — and when that
+                // `done` announced a tool or a permission, the handle was already
+                // released, so a legitimate immediate-stream EOF never lands here (§23).
                 self.finishStreaming(error: .serverUnavailable, preserveText: true)
             }
         })
@@ -859,8 +1155,28 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             if !conversation.messages[index].artifacts.contains(where: { $0.artifactId == artifact.artifactId }) {
                 conversation.messages[index].artifacts.append(artifact)
             }
+        case let .toolRequest(request):
+            // §13: the tool is only executed once the immediate stream has closed with
+            // `done(awaiting_tool)`, so a modal can never appear over a live socket.
+            pendingToolRequest = request
+            turnState = .awaitingTool(request)
+            let label = request.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(
+                (label?.isEmpty == false) ? (label ?? "") : Self.toolStatusLabel(for: request)
+            )
+        case let .toolResult(_, ok, label):
+            // §8/§15: the backend's own bookkeeping is a transient status line, never a
+            // chat message of its own.
+            let visible = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ok, let visible, !visible.isEmpty {
+                conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(visible)
+            }
         case let .permissionRequest(request):
-            presentPermission(request)
+            pendingPermissionRequest = request
+            turnState = .awaitingPermission(request)
+            conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(
+                aorusAILocalized("Нужно разрешение", "Permission needed")
+            )
         case .responseDone:
             conversation.messages[index].statusLabel = nil
         case let .quota(quota):
@@ -868,7 +1184,23 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             scheduleQuotaResetIfNeeded()
             finishStreaming(error: .quota(quota), preserveText: true)
             return
-        case let .done(ok):
+        case let .done(ok, state):
+            // §17: `ok` comes first, and `awaiting_tool` / `awaiting_permission` are
+            // successful intermediate stops. A pending request counts as one too, so a
+            // `done` without a `state` field can never strand a permission dialog.
+            let awaiting = state == AorusAIAgentState.awaitingTool
+                || state == AorusAIAgentState.awaitingPermission
+                || pendingToolRequest != nil
+                || pendingPermissionRequest != nil
+            if ok, awaiting {
+                suspendStreamForContinuation()
+                conversation.updatedAt = Date()
+                scheduleRender(messageId: id)
+                beginPendingToolWork()
+                return
+            }
+            pendingToolRequest = nil
+            pendingPermissionRequest = nil
             if ok { completeStreaming(cancelled: false) }
             else { finishStreaming(error: .serverUnavailable, preserveText: true) }
             return
@@ -884,8 +1216,13 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         streamHandle = nil
         isPreparingRequest = false
         // Stopping during the profile lookup must abort it too, otherwise the request
-        // would still be dispatched a moment later.
+        // would still be dispatched a moment later. The same holds for a tool step: a
+        // half-finished history read must not trigger a continuation.
         profileContextDisposable.set(nil)
+        toolExecutionDisposable.set(nil)
+        pendingToolRequest = nil
+        pendingPermissionRequest = nil
+        turnState = .idle
         handle?.cancelTransport()
         if let turnId {
             AorusAIClient.shared.cancelTurn(turnId) { _ in }
@@ -919,6 +1256,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         isPreparingRequest = false
         turnId = nil
         activeAssistantId = nil
+        turnState = .idle
+        pendingToolRequest = nil
+        pendingPermissionRequest = nil
+        toolExecutionDisposable.set(nil)
         pendingRenderWork?.cancel()
         pendingRenderWork = nil
         conversation.updatedAt = Date()
@@ -938,6 +1279,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         isPreparingRequest = false
         turnId = nil
         activeAssistantId = nil
+        turnState = .idle
+        pendingToolRequest = nil
+        pendingPermissionRequest = nil
+        toolExecutionDisposable.set(nil)
         pendingRenderWork?.cancel()
         pendingRenderWork = nil
         updateComposer()
@@ -945,121 +1290,351 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         persist(force: true)
     }
 
-    private func presentPermission(_ request: AorusAIPermissionRequest) {
-        let show: (String?) -> Void = { [weak self] peerName in
-            self?.presentPermission(request, peerName: peerName)
+    // MARK: - Agent tool workflow
+
+    /// Releases the socket of a finished immediate stream while keeping the turn alive.
+    ///
+    /// The backend closes the stream on purpose after `done(awaiting_*)` (§23), so the
+    /// handle is dropped before the transport completion runs — otherwise that EOF would
+    /// be reported as "server unavailable". `isPreparingRequest` keeps the composer in
+    /// its stop state, so the user can abort the whole workflow at any point, and the
+    /// server turn id is cleared because a continuation is a new agent invocation (§16).
+    private func suspendStreamForContinuation() {
+        streamHandle = nil
+        isPreparingRequest = true
+        turnId = nil
+        turnState = .submittingToolResult
+        updateComposer()
+    }
+
+    /// The transient status shown while a tool runs. Never a chat message (§15, §18).
+    private static func toolStatusLabel(for request: AorusAIToolRequest) -> String {
+        let handle = request.username.map { "@\($0)" } ?? ""
+        if request.tool == AorusAITool.profileGet {
+            return handle.isEmpty
+                ? aorusAILocalized("Смотрю профиль...", "Reading the profile...")
+                : aorusAILocalized("Смотрю профиль \(handle)...", "Reading the profile of \(handle)...")
         }
-        guard let peerId = request.peerId else {
-            show(nil)
+        if request.tool == AorusAITool.chatHistory {
+            return aorusAILocalized("Читаю переписку...", "Reading the chat...")
+        }
+        return aorusAILocalized("Выполняю...", "Working...")
+    }
+
+    private func setTurnStatus(_ text: String) {
+        guard let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
+        conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(text)
+        conversation.updatedAt = Date()
+        reloadMessage(id: id)
+        updateComposer()
+    }
+
+    /// Answers whatever the closed immediate stream asked for.
+    private func beginPendingToolWork() {
+        guard activeAssistantId != nil else { return }
+        if let request = pendingToolRequest {
+            pendingToolRequest = nil
+            pendingPermissionRequest = nil
+            execute(toolRequest: request)
             return
         }
+        if let request = pendingPermissionRequest {
+            pendingPermissionRequest = nil
+            presentPermission(request)
+            return
+        }
+        // `awaiting_*` without anything to answer. Not a network failure, so it never
+        // shows the generic card (§22) — the turn ends with a truthful explanation.
+        failTurn(
+            text: aorusAILocalized(
+                "Запрос не завершён: сервер не прислал ни инструмент, ни разрешение.",
+                "The request was left unfinished: the server sent neither a tool nor a permission."
+            ),
+            code: "agent_awaiting_without_request"
+        )
+    }
+
+    /// Runs one `tool.request` and submits its result, whatever the outcome (§4, §12).
+    private func execute(toolRequest request: AorusAIToolRequest) {
+        turnState = .awaitingTool(request)
+        setTurnStatus(Self.toolStatusLabel(for: request))
+        guard request.tool == AorusAITool.profileGet else {
+            // A tool this build does not implement is reported truthfully rather than
+            // guessed at, so the model knows it never ran and cannot invent its output.
+            submit(toolResult: .failure(
+                tool: request.tool,
+                requestId: request.requestId,
+                username: request.username,
+                reason: "unsupported_tool"
+            ))
+            return
+        }
+        // §4: `telegram.profile.get` arrives with `requires_user_approval == false` and
+        // must therefore run without any extra dialog. The flag is still honoured
+        // literally, so the day the backend flips it the client asks first.
+        if request.requiresUserApproval {
+            presentToolApproval(request)
+            return
+        }
+        executeProfileTool(request)
+    }
+
+    private func presentToolApproval(_ request: AorusAIToolRequest) {
+        guard isOnScreen else {
+            deferUserPrompt { [weak self] in self?.presentToolApproval(request) }
+            return
+        }
+        let handle = request.username.map { "@\($0)" } ?? ""
+        let label = request.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = (label?.isEmpty == false)
+            ? (label ?? "")
+            : (handle.isEmpty
+                ? aorusAILocalized("AorusAI запрашивает данные профиля.", "AorusAI requests profile data.")
+                : aorusAILocalized("AorusAI запрашивает данные профиля \(handle).", "AorusAI requests the profile data of \(handle)."))
+        let sheet = UIAlertController(title: aorusAILocalized("Разрешить доступ?", "Allow access?"), message: message, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: aorusAILocalized("Разрешить", "Allow"), style: .default, handler: { [weak self] _ in
+            self?.executeProfileTool(request)
+        }))
+        sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel, handler: { [weak self] _ in
+            self?.submit(toolResult: .denied(tool: request.tool, requestId: request.requestId, username: request.username))
+        }))
+        aorusAIPresentActionSheet(sheet, from: self)
+    }
+
+    /// §4: resolves the handle through the already authenticated Telegram session — no
+    /// `t.me` request, no Safari, no server-side account — and builds the tool result
+    /// from the fields the device actually has (§20).
+    private func executeProfileTool(_ request: AorusAIToolRequest) {
+        guard let username = request.username, !username.isEmpty else {
+            submit(toolResult: .failure(tool: request.tool, requestId: request.requestId, username: request.username, reason: "missing_username"))
+            return
+        }
+        setTurnStatus(Self.toolStatusLabel(for: request))
+        let signal = profileFieldsSignal(username: username)
+        |> timeout(6.0, queue: Queue.mainQueue(), alternate: .single(nil))
+        |> deliverOnMainQueue
+        toolExecutionDisposable.set(signal.start(next: { [weak self] fields in
+            guard let self else { return }
+            guard let fields else {
+                // §12: a Telegram resolution failure is a tool failure, never a server
+                // outage. The model is told, and the turn continues.
+                self.setTurnStatus(aorusAILocalized("Не удалось найти профиль @\(username)", "Could not find the profile of @\(username)"))
+                self.submit(toolResult: .failure(
+                    tool: AorusAITool.profileGet,
+                    requestId: request.requestId,
+                    username: username,
+                    reason: "telegram_profile_not_found"
+                ))
+                return
+            }
+            self.submit(toolResult: fields.toolResult(requestId: request.requestId, username: username))
+        }))
+    }
+
+    /// §9: the buttons are exactly the server's `options`, in the server's order. The
+    /// client never invents them, and Cancel is a real supported answer, not an error.
+    private func presentPermission(_ request: AorusAIPermissionRequest) {
+        turnState = .awaitingPermission(request)
+        setTurnStatus(aorusAILocalized("Нужно разрешение", "Permission needed"))
+        guard isOnScreen else {
+            deferUserPrompt { [weak self] in self?.presentPermission(request) }
+            return
+        }
+        let handle = request.username.map { "@\($0)" } ?? ""
+        let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = request.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sheet = UIAlertController(
+            title: (title?.isEmpty == false)
+                ? title
+                : (handle.isEmpty
+                    ? aorusAILocalized("Посмотреть переписку?", "Look at the chat?")
+                    : aorusAILocalized("Посмотреть переписку с \(handle)?", "Look at the chat with \(handle)?")),
+            message: (text?.isEmpty == false)
+                ? text
+                : aorusAILocalized(
+                    "AorusAI получит только выбранный тобой объём сообщений для этого запроса.",
+                    "AorusAI will only receive the amount of messages you choose for this request."
+                ),
+            preferredStyle: .actionSheet
+        )
+        for option in request.options {
+            sheet.addAction(UIAlertAction(title: option.label, style: .default, handler: { [weak self] _ in
+                self?.select(option: option, for: request)
+            }))
+        }
+        if request.options.isEmpty {
+            // A payload without options would leave a dialog the user cannot answer, so
+            // the only safe reading of it is "nothing was offered": decline and let the
+            // model continue with the data it already has.
+            sheet.addAction(UIAlertAction(title: aorusAILocalized("Не передавать переписку", "Do not share the chat"), style: .default, handler: { [weak self] _ in
+                self?.denyPermission(request)
+            }))
+        }
+        // Cancel is added even when `allow_cancel` is false: an action sheet is
+        // dismissible by tapping outside anyway, and a dismissal that answered nothing
+        // would strand the turn forever.
+        sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel, handler: { [weak self] _ in
+            self?.denyPermission(request)
+        }))
+        aorusAIPresentActionSheet(sheet, from: self)
+    }
+
+    private func select(option: AorusAIPermissionOption, for request: AorusAIPermissionRequest) {
+        if option.isPeriod {
+            presentPeriodPicker(for: request)
+            return
+        }
+        executeHistoryTool(request: request, limit: option.limit, fromDate: nil, toDate: nil)
+    }
+
+    /// `mode == "period"` opens the native iOS date selection and turns it into the
+    /// `from_date` / `to_date` tool arguments (§9).
+    private func presentPeriodPicker(for request: AorusAIPermissionRequest) {
+        let picker = AorusAIPeriodPickerController(
+            theme: presentationData.theme,
+            strings: presentationData.strings,
+            onCancel: { [weak self] in
+                self?.denyPermission(request)
+            },
+            onSelect: { [weak self] from, to in
+                self?.executeHistoryTool(
+                    request: request,
+                    limit: AorusAIRequestLimits.chatHistoryMessageCount,
+                    fromDate: Int64(from.timeIntervalSince1970),
+                    toDate: Int64(to.timeIntervalSince1970)
+                )
+            }
+        )
+        present(picker, animated: true)
+    }
+
+    /// §11: a refusal is a normal continuation with `ok: false, denied: true`, never a
+    /// network error and never a cancelled turn.
+    private func denyPermission(_ request: AorusAIPermissionRequest) {
+        setTurnStatus(aorusAILocalized("Переписка не передана", "The chat was not shared"))
+        submit(toolResult: .denied(tool: request.tool, requestId: request.requestId, username: request.username))
+    }
+
+    /// Reads the approved slice of the conversation from the local Postbox and submits
+    /// it in the shape the backend reads: `result.messages[].sender_name/.text` (§10).
+    private func executeHistoryTool(request: AorusAIPermissionRequest, limit: Int?, fromDate: Int64?, toDate: Int64?) {
+        turnState = .executingHistoryTool(request)
+        setTurnStatus(aorusAILocalized("Читаю переписку...", "Reading the chat..."))
+        guard let username = request.username, !username.isEmpty else {
+            submit(toolResult: .failure(tool: request.tool, requestId: request.requestId, username: request.username, reason: "missing_username"))
+            return
+        }
+        let requested = min(AorusAIRequestLimits.chatHistoryMessageCount, max(1, limit ?? 50))
+        let context = self.context
         let strings = presentationData.strings
         let nameOrder = presentationData.nameDisplayOrder
-        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(peerId))) |> deliverOnMainQueue).start(next: { peer in
-            show(peer?.displayTitle(strings: strings, displayOrder: nameOrder))
-        })
+        let unknownAuthor = aorusAILocalized("Сообщение", "Message")
+        let signal = peerSignal(username: username)
+        |> mapToSignal { peer -> Signal<[AorusAIHistoryLine]?, NoError> in
+            guard let peer else {
+                return .single(nil)
+            }
+            return aorusAIChatHistoryLines(
+                context: context,
+                peerId: peer.id,
+                limit: requested,
+                fromDate: fromDate,
+                toDate: toDate,
+                strings: strings,
+                nameOrder: nameOrder,
+                unknownAuthor: unknownAuthor
+            )
+            |> map { Optional($0) }
+        }
+        |> timeout(10.0, queue: Queue.mainQueue(), alternate: .single(nil))
+        |> deliverOnMainQueue
+        toolExecutionDisposable.set(signal.start(next: { [weak self] lines in
+            guard let self else { return }
+            guard let lines else {
+                // §12: the chat could not be read on the device. Reported as a tool
+                // failure so the model does not pretend it saw messages.
+                self.submit(toolResult: .failure(
+                    tool: AorusAITool.chatHistory,
+                    requestId: request.requestId,
+                    username: username,
+                    reason: "telegram_chat_unavailable"
+                ))
+                return
+            }
+            self.submit(toolResult: .history(
+                requestId: request.requestId,
+                username: username,
+                limit: requested,
+                fromDate: fromDate,
+                toDate: toDate,
+                messages: lines.map { (sender: $0.sender, text: $0.text) }
+            ))
+        }))
     }
 
-    private func presentPermission(_ request: AorusAIPermissionRequest, peerName: String?) {
-        let kind = request.kind.lowercased()
-        if kind.contains("send"), let peerId = request.peerId, let text = request.previewText, !text.isEmpty {
-            presentSendConfirmation(peerId: PeerId(peerId), peerName: peerName, text: text)
+    /// §14: results accumulate for the whole logical request. The same tool answered
+    /// twice replaces its earlier entry instead of duplicating it, and only the newest
+    /// eight survive because that is all the backend reads.
+    private func submit(toolResult result: AorusAIToolResult) {
+        guard activeAssistantId != nil else { return }
+        turnState = .submittingToolResult
+        if let index = turnToolResults.firstIndex(where: { $0.tool == result.tool && $0.requestId == result.requestId }) {
+            turnToolResults[index] = result
+        } else {
+            turnToolResults.append(result)
+        }
+        if turnToolResults.count > Self.maxAccumulatedToolResults {
+            turnToolResults.removeFirst(turnToolResults.count - Self.maxAccumulatedToolResults)
+        }
+        continueTurn()
+    }
+
+    /// Re-posts the same request with the accumulated tool results (§6). The counter is
+    /// what makes an infinite tool loop impossible (§31).
+    private func continueTurn() {
+        guard let id = activeAssistantId, conversation.messages.contains(where: { $0.id == id }) else { return }
+        turnContinuationCount += 1
+        guard turnContinuationCount <= Self.maxToolContinuations else {
+            failTurn(
+                text: aorusAILocalized(
+                    "Запрос прерван: слишком много обращений к инструментам.",
+                    "The request was stopped: too many tool round trips."
+                ),
+                code: "agent_tool_loop"
+            )
             return
         }
+        setTurnStatus(aorusAILocalized("Думаю...", "Thinking..."))
+        dispatchTransport()
+    }
 
-        var message: String
-        if kind.contains("history") {
-            let count = min(200, max(1, request.count ?? 20))
-            let target = peerName.map { " \($0)" } ?? ""
-            message = aorusAILocalized(
-                "AorusAI запрашивает последние \(count) сообщений из переписки\(target). Данные будут переданы только после подтверждения.",
-                "AorusAI requests the latest \(count) messages from\(target.isEmpty ? " this chat" : target). Data is shared only after confirmation."
-            )
-        } else {
-            let target = peerName.map { "\n\($0)" } ?? ""
-            message = (request.previewText ?? aorusAILocalized("AorusAI запрашивает доступ к данным Telegram.", "AorusAI requests access to Telegram data.")) + target
+    /// Ends the turn with a specific explanation instead of the generic unavailable card
+    /// (§22). Anything the assistant already wrote is kept as a finished answer.
+    private func failTurn(text: String, code: String) {
+        guard let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
+        let produced = !conversation.messages[index].rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !conversation.messages[index].artifacts.isEmpty
+        if produced {
+            completeStreaming(cancelled: false)
+            return
         }
-        let alert = UIAlertController(title: aorusAILocalized("Разрешить доступ?", "Allow access?"), message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel, handler: { [weak self] _ in
-            self?.denyPermission()
-        }))
-        alert.addAction(UIAlertAction(title: aorusAILocalized("Разрешить", "Allow"), style: .default, handler: { [weak self] _ in
-            self?.fulfillPermission(request)
-        }))
-        present(alert, animated: true)
-    }
-
-    private func presentSendConfirmation(peerId: PeerId, peerName: String?, text: String) {
-        let recipient = peerName.map { aorusAILocalized("Получатель: \($0)\n\n", "Recipient: \($0)\n\n") } ?? ""
-        let alert = UIAlertController(
-            title: aorusAILocalized("Отправить ответ?", "Send reply?"),
-            message: recipient + text,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel, handler: { [weak self] _ in
-            self?.denyPermission()
-        }))
-        alert.addAction(UIAlertAction(title: aorusAILocalized("Изменить", "Edit"), style: .default, handler: { [weak self] _ in
-            self?.presentSendEditor(peerId: peerId, peerName: peerName, text: text)
-        }))
-        alert.addAction(UIAlertAction(title: aorusAILocalized("Отправить", "Send"), style: .default, handler: { [weak self] _ in
-            self?.sendConfirmedMessage(peerId: peerId, text: text)
-        }))
-        present(alert, animated: true)
-    }
-
-    private func presentSendEditor(peerId: PeerId, peerName: String?, text: String) {
-        let alert = UIAlertController(title: aorusAILocalized("Изменить ответ", "Edit reply"), message: peerName, preferredStyle: .alert)
-        alert.addTextField { field in
-            field.text = text
-            field.clearButtonMode = .whileEditing
-        }
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel, handler: { [weak self] _ in
-            self?.denyPermission()
-        }))
-        alert.addAction(UIAlertAction(title: aorusAILocalized("Продолжить", "Continue"), style: .default, handler: { [weak self, weak alert] _ in
-            guard let self, let updated = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), !updated.isEmpty else { return }
-            self.presentSendConfirmation(peerId: peerId, peerName: peerName, text: updated)
-        }))
-        present(alert, animated: true)
-    }
-
-    private func sendConfirmedMessage(peerId: PeerId, text: String) {
-        let _ = enqueueMessages(account: context.account, peerId: peerId, messages: [
-            .message(text: text, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])
-        ]).startStandalone()
-        denyPermission()
-        appendLocalNotice(aorusAILocalized("Сообщение отправлено", "Message sent"))
-    }
-
-    private func fulfillPermission(_ request: AorusAIPermissionRequest) {
-        // The public backend specification does not define a response endpoint or a
-        // request-body schema for resuming a suspended permission request. Never send
-        // Telegram data through a guessed contract: it could leak history or execute a
-        // tool against the wrong turn. Keep the current partial response and terminate
-        // the turn fail-closed until the signed backend contract is available.
-        denyPermission()
-        appendLocalNotice(aorusAILocalized(
-            "Действие не выполнено: сервер не предоставил безопасный контракт продолжения.",
-            "The action was not performed because the server did not provide a secure continuation contract."
-        ))
-    }
-
-    private func denyPermission() {
-        let handle = streamHandle
+        conversation.messages[index].state = .failed
+        conversation.messages[index].statusLabel = text
+        conversation.messages[index].errorCode = code
+        streamHandle?.cancelTransport()
         streamHandle = nil
-        handle?.cancelTransport()
-        if let turnId {
-            AorusAIClient.shared.cancelTurn(turnId) { _ in }
-        }
-        completeStreaming(cancelled: true)
-    }
-
-    private func appendLocalNotice(_ text: String) {
-        conversation.messages.append(AorusAIMessage(role: .notice, rawText: text))
+        isPreparingRequest = false
+        turnId = nil
+        activeAssistantId = nil
+        turnState = .idle
+        pendingToolRequest = nil
+        pendingPermissionRequest = nil
+        toolExecutionDisposable.set(nil)
+        pendingRenderWork?.cancel()
+        pendingRenderWork = nil
         conversation.updatedAt = Date()
-        tableView.reloadData()
-        scrollToBottom(animated: true)
+        updateComposer()
+        reloadMessage(id: id)
         persist(force: true)
     }
 
@@ -1076,6 +1651,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         composer.isGenerating = streamHandle != nil || isPreparingRequest
         composer.canSend = !quotaBlocked && !composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         updateHeaderStatus(quotaBlocked: quotaBlocked)
+        // `isPreparingRequest` changes without going through `turnState`, and it is part of
+        // what makes a turn live, so the off-screen presence is re-checked here too. Both
+        // paths are idempotent.
+        updateBackgroundPresence()
     }
 
     /// The header carries the state of the turn, so the user can tell a working assistant
@@ -1261,6 +1840,92 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         }
     }
 
+    /// The peer behind `@name`, resolved through the authenticated Telegram session.
+    ///
+    /// §21: when this conversation already resolved the same handle into a peer id — the
+    /// decorative entity in the user's own bubble — the peer is fetched by id instead of
+    /// resolving the username a second time. `then(.single(nil))` guarantees exactly one
+    /// value, so a tool step can never hang waiting for a signal that only completed.
+    private func peerSignal(username: String) -> Signal<EnginePeer?, NoError> {
+        let resolved: Signal<EnginePeer?, NoError>
+        if let peerId = resolvedPeerId(forUsername: username) {
+            resolved = context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+        } else {
+            resolved = context.engine.peers.resolvePeerByName(name: username, referrer: nil)
+            |> mapToSignal { result -> Signal<EnginePeer?, NoError> in
+                if case let .result(peer) = result {
+                    return .single(peer)
+                }
+                return .complete()
+            }
+        }
+        let fallback: Signal<EnginePeer?, NoError> = .single(nil)
+        return resolved |> take(1) |> then(fallback) |> take(1)
+    }
+
+    private func resolvedPeerId(forUsername username: String) -> PeerId? {
+        let needle = username.lowercased()
+        for message in conversation.messages.reversed() {
+            for entity in message.telegramEntities {
+                guard let raw = entity.username?.trimmingCharacters(in: CharacterSet(charactersIn: "@ ")),
+                      raw.lowercased() == needle,
+                      let peerId = entity.peerId else { continue }
+                return PeerId(peerId)
+            }
+        }
+        return nil
+    }
+
+    /// The `telegram.profile.get` result source: only fields this device really has
+    /// (§20). The about text and the member count are read the same way the mention
+    /// context does it, so no new Telegram API surface is introduced.
+    private func profileFieldsSignal(username: String) -> Signal<AorusAIProfileSummaryFields?, NoError> {
+        let context = self.context
+        let strings = self.presentationData.strings
+        let nameOrder = self.presentationData.nameDisplayOrder
+        return peerSignal(username: username)
+        |> mapToSignal { peer -> Signal<AorusAIProfileSummaryFields?, NoError> in
+            guard let peer = peer else {
+                return .single(nil)
+            }
+            let basic = AorusAIProfileSummaryFields(
+                displayName: peer.displayTitle(strings: strings, displayOrder: nameOrder),
+                username: peer.addressName,
+                kind: AorusAIChatController.profileKind(peer),
+                about: nil,
+                participantCount: nil,
+                isVerified: peer.isVerified,
+                isPremium: peer.isPremium,
+                isScam: peer.isScam
+            )
+            let fallback: Signal<AorusAIProfileSummaryFields?, NoError> = .single(basic)
+            let details: Signal<AorusAIProfileSummaryFields?, NoError> = combineLatest(
+                context.account.viewTracker.peerView(peer.id, updateData: true) |> map { _ -> Bool in true },
+                context.engine.data.subscribe(
+                    TelegramEngine.EngineData.Item.Peer.AboutText(id: peer.id),
+                    TelegramEngine.EngineData.Item.Peer.ParticipantCount(id: peer.id)
+                )
+            )
+            |> map { $0.1 }
+            |> filter { data -> Bool in
+                if case .known = data.0 {
+                    return true
+                }
+                return false
+            }
+            |> take(1)
+            |> map { data -> AorusAIProfileSummaryFields? in
+                var fields = basic
+                if case let .known(value) = data.0 {
+                    fields.about = value
+                }
+                fields.participantCount = data.1
+                return fields
+            }
+            return details |> timeout(2.5, queue: Queue.mainQueue(), alternate: fallback)
+        }
+    }
+
     /// Only patterns with a green precedent in this module are used: the channel case
     /// plus namespace checks, so no unverified `EnginePeer` case is referenced.
     private static func profileKind(_ peer: EnginePeer) -> String {
@@ -1302,6 +1967,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     }
 
     private func persist(force: Bool) {
+        // A conversation the user deleted while its turn was still running must not be
+        // written back: the store is the source of truth and the deletion wins.
+        guard !isDiscarded else { return }
         if force {
             pendingPersistWork?.cancel()
             pendingPersistWork = nil
@@ -1347,7 +2015,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // whole cell drops the text selection and flickers, so try to push only the changed
         // text into the live views and let the table re-measure the height.
         if let cell = tableView.cellForRow(at: indexPath) as? AorusAIMessageCell,
-           cell.applyIncremental(message: message, theme: presentationData.theme, canRetry: canRetry) {
+           cell.applyIncremental(message: message, theme: presentationData.theme, canRetry: canRetry, loadingArtifactIds: loadingArtifactIds) {
             tableView.beginUpdates()
             tableView.endUpdates()
         } else {
@@ -1373,10 +2041,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             message: message,
             context: context,
             theme: presentationData.theme,
-            canRetry: message.state == .failed && indexPath.row == conversation.messages.count - 1
+            canRetry: message.state == .failed && indexPath.row == conversation.messages.count - 1,
+            loadingArtifactIds: loadingArtifactIds
         )
         cell.onOpenLink = { [weak self] url in self?.open(url: url) }
-        cell.onArtifact = { [weak self] artifact, card in self?.open(artifact: artifact, card: card) }
+        cell.onArtifact = { [weak self] artifact in self?.toggleArtifact(artifact) }
         cell.onCopy = { [weak self] in self?.presentCopiedFeedback() }
         cell.onRetry = { [weak self] in self?.retry(messageId: message.id) }
         return cell
@@ -1419,29 +2088,66 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         })
     }
 
-    private func open(artifact: AorusAIArtifact, card: AorusAIArtifactCard) {
+    /// Opens one artifact, or stops it when it is already being fetched.
+    ///
+    /// The loading state belongs to the controller, keyed by `artifactId`, because a cell
+    /// is rebuilt on every reload — a streaming turn reloads its bubble several times a
+    /// second — and each rebuild creates a brand new card. Per-card state could not
+    /// survive that, which is exactly what used to leave a card spinning forever with no
+    /// way out. Keeping the cancel handle here turns the second tap into a real stop.
+    private func toggleArtifact(_ artifact: AorusAIArtifact) {
         if artifact.isExpired {
             presentError(AorusAIFormat.errorText(.artifactExpired))
             return
         }
-        card.isLoading = true
-        AorusAIClient.shared.downloadArtifact(artifact) { [weak self] result in
-            card.isLoading = false
+        let id = artifact.artifactId
+        if loadingArtifactIds.contains(id) {
+            artifactDownloads.removeValue(forKey: id)?.cancel()
+            setArtifactLoading(false, artifactId: id)
+            return
+        }
+        setArtifactLoading(true, artifactId: id)
+        let handle = AorusAIClient.shared.downloadArtifact(artifact) { [weak self] result in
+            guard let self else { return }
+            // A transfer the user stopped already cleared its own state, and a rejected
+            // path answered before the handle was even stored: in both cases this id is
+            // no longer loading and the answer is stale.
+            guard self.loadingArtifactIds.contains(id) else { return }
+            self.artifactDownloads.removeValue(forKey: id)
+            self.setArtifactLoading(false, artifactId: id)
             switch result {
             case let .success(url):
-                self?.removePreviewArtifact()
-                self?.previewURL = url
+                self.removePreviewArtifact()
+                self.previewURL = url
                 let preview = QLPreviewController()
                 preview.dataSource = self
                 preview.delegate = self
-                self?.present(preview, animated: true)
+                self.present(preview, animated: true)
             case let .failure(error):
-                self?.presentArtifactError(error, artifact: artifact, card: card)
+                guard error != .cancelled else { return }
+                self.presentArtifactError(error, artifact: artifact)
             }
+        }
+        // A path the client refuses answers synchronously, before this line runs: the
+        // completion has then already cleared the flag, so storing the handle would leave
+        // a dead entry that turns the next tap into a cancel.
+        if loadingArtifactIds.contains(id) {
+            artifactDownloads[id] = handle
         }
     }
 
-    private func presentArtifactError(_ error: AorusAIClientError, artifact: AorusAIArtifact, card: AorusAIArtifactCard) {
+    private func setArtifactLoading(_ loading: Bool, artifactId: String) {
+        if loading {
+            loadingArtifactIds.insert(artifactId)
+        } else {
+            loadingArtifactIds.remove(artifactId)
+        }
+        for message in conversation.messages where message.artifacts.contains(where: { $0.artifactId == artifactId }) {
+            reloadMessage(id: message.id)
+        }
+    }
+
+    private func presentArtifactError(_ error: AorusAIClientError, artifact: AorusAIArtifact) {
         // A file the vault will never serve again is recorded as expired locally, so the
         // card stops offering a download it cannot deliver.
         if error == .artifactExpired || error == .artifactGone {
@@ -1451,9 +2157,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
         let isPermanent = error == .artifactExpired || error == .artifactGone || error == .artifactNotOwned
         if !isPermanent {
-            alert.addAction(UIAlertAction(title: aorusAILocalized("Повторить", "Retry"), style: .default, handler: { [weak self, weak card] _ in
-                guard let self, let card else { return }
-                self.open(artifact: artifact, card: card)
+            alert.addAction(UIAlertAction(title: aorusAILocalized("Повторить", "Retry"), style: .default, handler: { [weak self] _ in
+                self?.toggleArtifact(artifact)
             }))
         }
         present(alert, animated: true)
@@ -1477,6 +2182,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     }
 
     private func presentError(_ message: String) {
+        // A turn can finish while its screen is closed. There is nothing to present into
+        // then, and the same text is already on the bubble, so the alert is simply skipped
+        // instead of being thrown at a detached controller.
+        guard self.view.window != nil else { return }
         let alert = UIAlertController(title: "AorusAI", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default))
         present(alert, animated: true)
@@ -1512,9 +2221,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 private final class AorusAIComposerView: UIView {
     let textView = UITextView()
     private let container = UIView()
-    private let brandView = UIView()
-    private let brandIcon = UIImageView()
-    private let brandLabel = UILabel()
     private let placeholder = UILabel()
     private let referenceView = UIView()
     private let referenceLabel = UILabel()
@@ -1556,19 +2262,10 @@ private final class AorusAIComposerView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         addSubview(container)
-        [brandView, referenceView, dictationButton, textView, sendButton].forEach { container.addSubview($0) }
-        brandView.addSubview(brandIcon)
-        brandView.addSubview(brandLabel)
+        [referenceView, dictationButton, textView, sendButton].forEach { container.addSubview($0) }
         referenceView.addSubview(referenceLabel)
         referenceView.addSubview(referenceClose)
         textView.addSubview(placeholder)
-        brandIcon.contentMode = .scaleAspectFit
-        brandIcon.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
-        brandLabel.text = "AorusAI"
-        brandLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        // §4: the brand row belongs to the active input, not to the resting composer.
-        brandView.isHidden = true
-        brandView.alpha = 0.0
         placeholder.text = aorusAILocalized("Сообщение AorusAI", "Message AorusAI")
         placeholder.font = .systemFont(ofSize: 16)
         textView.font = .systemFont(ofSize: 16)
@@ -1600,8 +2297,6 @@ private final class AorusAIComposerView: UIView {
         textView.textColor = theme.list.itemPrimaryTextColor
         textView.tintColor = theme.list.itemAccentColor
         placeholder.textColor = theme.list.itemSecondaryTextColor
-        brandIcon.tintColor = theme.list.itemAccentColor
-        brandLabel.textColor = theme.list.itemAccentColor
         referenceLabel.textColor = theme.list.itemSecondaryTextColor
         referenceView.backgroundColor = theme.list.blocksBackgroundColor.withAlphaComponent(0.75)
         referenceClose.tintColor = theme.list.itemSecondaryTextColor
@@ -1615,14 +2310,10 @@ private final class AorusAIComposerView: UIView {
         super.layoutSubviews()
         let side: CGFloat = 10
         container.frame = CGRect(x: side, y: 5, width: bounds.width - side * 2, height: bounds.height - 10)
-        let brandHeight = self.brandHeight
-        brandView.frame = CGRect(x: 12, y: 7, width: max(0, container.bounds.width - 24), height: brandHeight)
-        brandIcon.frame = CGRect(x: 0, y: 1, width: 14, height: 14)
-        brandLabel.frame = CGRect(x: 18, y: 0, width: max(0, brandView.bounds.width - 18), height: 16)
         let buttonSize: CGFloat = 38
         sendButton.frame = CGRect(x: container.bounds.width - buttonSize - 7, y: container.bounds.height - buttonSize - 6, width: buttonSize, height: buttonSize)
         dictationButton.frame = CGRect(x: 5, y: container.bounds.height - buttonSize - 6, width: buttonSize, height: buttonSize)
-        let stackTop: CGFloat = brandHeight > 0 ? 7 + brandHeight + 3 : 8
+        let stackTop: CGFloat = 8
         let refHeight: CGFloat = reference == nil ? 0 : 42
         referenceView.frame = CGRect(x: 10, y: stackTop, width: container.bounds.width - 20, height: refHeight)
         referenceView.layer.cornerRadius = 8
@@ -1634,23 +2325,10 @@ private final class AorusAIComposerView: UIView {
         placeholder.frame = CGRect(x: 5, y: 5, width: max(0, textView.bounds.width - 10), height: 24)
     }
 
-    private var brandHeight: CGFloat { brandView.isHidden ? 0 : 16 }
-
-    /// §4: while the keyboard is up the composer identifies the assistant. Collapsing
-    /// the row again when the input goes idle keeps the resting composer plain.
-    func setInputActive(_ active: Bool) {
-        guard brandView.isHidden == active else { return }
-        brandView.isHidden = !active
-        onHeightChanged?()
-        UIView.animate(withDuration: 0.18, delay: 0.0, options: [.beginFromCurrentState, .curveEaseInOut]) {
-            self.brandView.alpha = active ? 1.0 : 0.0
-        }
-    }
-
     func requiredHeight(width: CGFloat) -> CGFloat {
         let available = max(100, width - 20 - 38 - 38 - 20)
         let measured = textView.sizeThatFits(CGSize(width: available, height: 120)).height
-        let extras = brandHeight + (reference == nil ? 0 : 42)
+        let extras: CGFloat = reference == nil ? 0 : 42
         return min(196, max(52, measured + 20 + extras)) + 10
     }
 
@@ -1747,7 +2425,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private var configuredTextColor: UIColor = .white
     private var configuredAccent: UIColor = .white
     private var configuredTheme: PresentationTheme?
-    var onArtifact: ((AorusAIArtifact, AorusAIArtifactCard) -> Void)?
+    var onArtifact: ((AorusAIArtifact) -> Void)?
     var onCopy: (() -> Void)?
     var onRetry: (() -> Void)?
 
@@ -1802,12 +2480,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     /// Streaming path (§27): keeps the existing view tree and only pushes the text that
     /// actually changed. Returns false when the block structure moved and the caller has
     /// to fall back to a full rebuild.
-    func applyIncremental(message: AorusAIMessage, theme: PresentationTheme, canRetry: Bool) -> Bool {
+    func applyIncremental(message: AorusAIMessage, theme: PresentationTheme, canRetry: Bool, loadingArtifactIds: Set<String>) -> Bool {
         guard configuredMessageId == message.id, configuredTheme === theme else { return false }
         let resolvedEntities = message.telegramEntities.filter { $0.peerId != nil }
         let displayText = AorusAIFormat.removingResolvedEntitySources(from: message.rawText, entities: resolvedEntities)
         let blocks = AorusAIMarkdown.blocks(displayText)
-        guard Self.signature(blocks: blocks, message: message, entities: resolvedEntities) == structureSignature,
+        guard Self.signature(blocks: blocks, message: message, entities: resolvedEntities, loadingArtifactIds: loadingArtifactIds) == structureSignature,
               blocks.count == slots.count, blocks.count == slotValues.count else {
             return false
         }
@@ -1849,7 +2527,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         return blocks.isEmpty && message.artifacts.isEmpty
     }
 
-    private static func signature(blocks: [AorusAIMarkdownBlock], message: AorusAIMessage, entities: [AorusAITelegramEntity]) -> String {
+    private static func signature(blocks: [AorusAIMarkdownBlock], message: AorusAIMessage, entities: [AorusAITelegramEntity], loadingArtifactIds: Set<String>) -> String {
         var parts: [String] = [message.referencedMessage == nil ? "r0" : "r1"]
         parts.append(showsTyping(blocks: blocks, message: message) ? "y1" : "y0")
         parts.append("n:" + (notice(for: message)?.rawValue ?? ""))
@@ -1862,11 +2540,14 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             case .separator: parts.append("s")
             }
         }
-        parts.append("a:" + message.artifacts.map { "\($0.artifactId)/\($0.isExpired ? 1 : 0)" }.joined(separator: ","))
+        // The loading flag is part of the structure: a card that started or stopped
+        // downloading has to be rebuilt, otherwise the incremental path would keep the
+        // old spinner on screen.
+        parts.append("a:" + message.artifacts.map { "\($0.artifactId)/\($0.isExpired ? 1 : 0)/\(loadingArtifactIds.contains($0.artifactId) ? 1 : 0)" }.joined(separator: ","))
         return parts.joined(separator: "|")
     }
 
-    func configure(message: AorusAIMessage, context: AccountContext, theme: PresentationTheme, canRetry: Bool) {
+    func configure(message: AorusAIMessage, context: AccountContext, theme: PresentationTheme, canRetry: Bool, loadingArtifactIds: Set<String>) {
         backgroundColor = theme.list.blocksBackgroundColor
         contentView.backgroundColor = theme.list.blocksBackgroundColor
         bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1915,7 +2596,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         configuredMessageId = message.id
         let displayText = AorusAIFormat.removingResolvedEntitySources(from: message.rawText, entities: resolvedEntities)
         let blocks = AorusAIMarkdown.blocks(displayText)
-        structureSignature = Self.signature(blocks: blocks, message: message, entities: resolvedEntities)
+        structureSignature = Self.signature(blocks: blocks, message: message, entities: resolvedEntities, loadingArtifactIds: loadingArtifactIds)
         if Self.showsTyping(blocks: blocks, message: message) {
             typingIndicator.configure(theme: theme)
             bodyStack.addArrangedSubview(typingIndicator)
@@ -1960,10 +2641,9 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
 
         for artifact in message.artifacts {
             let card = AorusAIArtifactCard()
-            card.configure(artifact: artifact, theme: theme)
-            card.onOpen = { [weak self, weak card] in
-                guard let self, let card else { return }
-                self.onArtifact?(artifact, card)
+            card.configure(artifact: artifact, theme: theme, isLoading: loadingArtifactIds.contains(artifact.artifactId))
+            card.onOpen = { [weak self] in
+                self?.onArtifact?(artifact)
             }
             bodyStack.addArrangedSubview(card)
         }
@@ -2061,36 +2741,31 @@ private final class AorusAITypingIndicatorView: UIView {
 
 /// The chat header. Telegram gives a `titleView` the full width between the bar buttons
 /// and expects it to centre its own content, so everything here is laid out by hand.
-/// It carries the same gradient badge as the settings row plus a live status line, which
-/// is what turns the screen from a plain title into a real chat header.
+///
+/// The content sits in a native glass capsule, the way the system navigation bars group
+/// their items: the plain blocks background, a hairline separator border, a fully rounded
+/// shape and no tint fill, no gradient and no white. The glyph and the text carry the
+/// theme's own navigation-bar colours, so the header stays native in every theme.
 private final class AorusAINavigationTitleView: UIView {
-    private let badge = UIView()
+    private let capsule = UIView()
     private let badgeGlyph = UIImageView()
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
-    private let gradient = CAGradientLayer()
     private var accentColor: UIColor = .white
     private var secondaryColor: UIColor = .gray
 
     init(theme: PresentationTheme) {
         super.init(frame: .zero)
-        gradient.colors = [UIColor(rgb: 0xA95CE3).cgColor, UIColor(rgb: 0x5B7CFA).cgColor]
-        gradient.startPoint = CGPoint(x: 0.0, y: 0.0)
-        gradient.endPoint = CGPoint(x: 1.0, y: 1.0)
-        badge.layer.addSublayer(gradient)
-        badge.layer.cornerRadius = 15
-        badge.layer.cornerCurve = .continuous
-        badge.layer.masksToBounds = true
+        capsule.layer.cornerCurve = .continuous
+        capsule.layer.masksToBounds = true
         badgeGlyph.contentMode = .center
-        badgeGlyph.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))?
-            .withTintColor(.white, renderingMode: .alwaysOriginal)
-        badge.addSubview(badgeGlyph)
         titleLabel.text = "AorusAI"
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        statusLabel.font = .systemFont(ofSize: 13)
-        addSubview(badge)
-        addSubview(titleLabel)
-        addSubview(statusLabel)
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        statusLabel.font = .systemFont(ofSize: 11)
+        addSubview(capsule)
+        capsule.addSubview(badgeGlyph)
+        capsule.addSubview(titleLabel)
+        capsule.addSubview(statusLabel)
         isAccessibilityElement = true
         accessibilityLabel = "AorusAI"
         update(theme: theme)
@@ -2103,6 +2778,12 @@ private final class AorusAINavigationTitleView: UIView {
         secondaryColor = theme.rootController.navigationBar.secondaryTextColor
         accentColor = theme.rootController.navigationBar.accentTextColor
         statusLabel.textColor = secondaryColor
+        capsule.backgroundColor = theme.list.itemBlocksBackgroundColor
+        capsule.layer.borderWidth = UIScreenPixel
+        capsule.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+        badgeGlyph.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))?
+            .withTintColor(theme.rootController.navigationBar.primaryTextColor, renderingMode: .alwaysOriginal)
+        setNeedsLayout()
     }
 
     /// `active` renders the line in the accent colour, the way a native header marks a
@@ -2119,23 +2800,32 @@ private final class AorusAINavigationTitleView: UIView {
         super.layoutSubviews()
         guard bounds.width > 0 else { return }
         let hasStatus = (statusLabel.text?.isEmpty == false)
-        let badgeSize: CGFloat = 30
-        let spacing: CGFloat = 9
-        let titleSize = titleLabel.sizeThatFits(CGSize(width: bounds.width, height: 22))
-        let statusSize = hasStatus ? statusLabel.sizeThatFits(CGSize(width: bounds.width, height: 18)) : .zero
-        let textWidth = min(max(titleSize.width, statusSize.width), max(0, bounds.width - badgeSize - spacing))
-        let totalWidth = badgeSize + spacing + textWidth
-        let originX = floor((bounds.width - totalWidth) / 2.0)
+        let glyphSize: CGFloat = 18
+        let leftInset: CGFloat = 10
+        let rightInset: CGFloat = 13
+        let glyphSpacing: CGFloat = 6
+        let capsuleHeight = min(bounds.height - 4.0, hasStatus ? 36.0 : 32.0)
+        let available = max(0, bounds.width - leftInset - rightInset - glyphSize - glyphSpacing)
+        let titleSize = titleLabel.sizeThatFits(CGSize(width: available, height: 20))
+        let statusSize = hasStatus ? statusLabel.sizeThatFits(CGSize(width: available, height: 14)) : .zero
+        let textWidth = min(max(titleSize.width, statusSize.width), available)
+        let capsuleWidth = leftInset + glyphSize + glyphSpacing + ceil(textWidth) + rightInset
         let centerY = bounds.height / 2.0
-        badge.frame = CGRect(x: originX, y: floor(centerY - badgeSize / 2.0), width: badgeSize, height: badgeSize)
-        gradient.frame = badge.bounds
-        badgeGlyph.frame = badge.bounds
-        let textX = originX + badgeSize + spacing
+        capsule.frame = CGRect(
+            x: floor((bounds.width - capsuleWidth) / 2.0),
+            y: floor(centerY - capsuleHeight / 2.0),
+            width: capsuleWidth,
+            height: capsuleHeight
+        )
+        capsule.layer.cornerRadius = capsuleHeight / 2.0
+        let innerCenterY = capsuleHeight / 2.0
+        badgeGlyph.frame = CGRect(x: leftInset, y: floor(innerCenterY - glyphSize / 2.0), width: glyphSize, height: glyphSize)
+        let textX = leftInset + glyphSize + glyphSpacing
         if hasStatus {
-            titleLabel.frame = CGRect(x: textX, y: floor(centerY - 18.0), width: textWidth, height: 20)
-            statusLabel.frame = CGRect(x: textX, y: floor(centerY + 1.0), width: textWidth, height: 16)
+            titleLabel.frame = CGRect(x: textX, y: floor(innerCenterY - 16.0), width: textWidth, height: 18)
+            statusLabel.frame = CGRect(x: textX, y: floor(innerCenterY + 1.0), width: textWidth, height: 14)
         } else {
-            titleLabel.frame = CGRect(x: textX, y: floor(centerY - 11.0), width: textWidth, height: 22)
+            titleLabel.frame = CGRect(x: textX, y: floor(innerCenterY - 10.0), width: textWidth, height: 20)
             statusLabel.frame = .zero
         }
     }
@@ -2563,13 +3253,6 @@ private final class AorusAIArtifactCard: UIControl {
     private let detailLabel = UILabel()
     private let activity = UIActivityIndicatorView(style: .medium)
     var onOpen: (() -> Void)?
-    var isLoading = false {
-        didSet {
-            isUserInteractionEnabled = !isLoading
-            icon.isHidden = isLoading
-            if isLoading { activity.startAnimating() } else { activity.stopAnimating() }
-        }
-    }
     override init(frame: CGRect) {
         super.init(frame: frame)
         layer.cornerRadius = 10; layer.cornerCurve = .continuous
@@ -2587,24 +3270,37 @@ private final class AorusAIArtifactCard: UIControl {
         addTarget(self, action: #selector(open), for: .touchUpInside)
     }
     required init?(coder: NSCoder) { fatalError() }
-    func configure(artifact: AorusAIArtifact, theme: PresentationTheme) {
+    /// Fully declarative: the card owns no state of its own, so it can be thrown away and
+    /// rebuilt on every reload without ever stranding a spinner. While the transfer runs
+    /// the card stays tappable and says so — that tap is the stop button.
+    func configure(artifact: AorusAIArtifact, theme: PresentationTheme, isLoading: Bool) {
         backgroundColor = theme.list.itemBlocksBackgroundColor
         layer.borderWidth = UIScreenPixel; layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
         // Icon and detail line come from the shared artifact flow, so the card, the
         // download path and the tests all agree on one description of a file.
         icon.image = UIImage(systemName: artifact.isExpired ? "clock.badge.xmark" : AorusAIArtifactFlow.iconName(for: artifact))
         icon.tintColor = artifact.isExpired ? theme.list.itemSecondaryTextColor : theme.list.itemAccentColor
+        icon.isHidden = isLoading
         activity.color = theme.list.itemAccentColor
+        if isLoading { activity.startAnimating() } else { activity.stopAnimating() }
         titleLabel.textColor = theme.list.itemPrimaryTextColor; titleLabel.text = artifact.filename
         detailLabel.textColor = theme.list.itemSecondaryTextColor
-        detailLabel.text = artifact.isExpired
-            ? aorusAILocalized("Срок хранения файла истёк", "The file is no longer stored")
-            : AorusAIArtifactFlow.cardDetail(for: artifact)
+        if isLoading {
+            detailLabel.text = aorusAILocalized("Загрузка... нажмите, чтобы остановить", "Downloading... tap to stop")
+        } else if artifact.isExpired {
+            detailLabel.text = aorusAILocalized("Срок хранения файла истёк", "The file is no longer stored")
+        } else {
+            detailLabel.text = AorusAIArtifactFlow.cardDetail(for: artifact)
+        }
         isAccessibilityElement = true
-        accessibilityTraits = artifact.isExpired ? .staticText : .button
+        accessibilityTraits = (artifact.isExpired && !isLoading) ? .staticText : .button
         accessibilityLabel = artifact.filename
         accessibilityValue = detailLabel.text
-        accessibilityHint = artifact.isExpired ? nil : aorusAILocalized("Открывает файл", "Opens the file")
+        if isLoading {
+            accessibilityHint = aorusAILocalized("Останавливает загрузку", "Stops the download")
+        } else {
+            accessibilityHint = artifact.isExpired ? nil : aorusAILocalized("Открывает файл", "Opens the file")
+        }
     }
     @objc private func open() { onOpen?() }
 }
@@ -2921,3 +3617,405 @@ private enum AorusAIFormat {
         }
     }
 }
+
+/// `mode == "period"` of a `permission.request`: two native date pickers in a glass
+/// sheet.
+///
+/// Pure UIKit, so nothing new is pulled into this module, and it always answers: Done,
+/// Cancel and a tap on the dimming each call exactly one callback exactly once, so a
+/// suspended turn can never be stranded by a dismissed sheet.
+private final class AorusAIPeriodPickerController: UIViewController {
+    private let theme: PresentationTheme
+    private let strings: PresentationStrings
+    private let onCancel: () -> Void
+    private let onSelect: (Date, Date) -> Void
+    private var didAnswer = false
+
+    private let dimView = UIView()
+    private let card = UIView()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let fromRow = UIStackView()
+    private let toRow = UIStackView()
+    private let fromLabel = UILabel()
+    private let toLabel = UILabel()
+    private let fromPicker = UIDatePicker()
+    private let toPicker = UIDatePicker()
+    private let cancelButton = UIButton(type: .system)
+    private let doneButton = UIButton(type: .system)
+
+    init(theme: PresentationTheme, strings: PresentationStrings, onCancel: @escaping () -> Void, onSelect: @escaping (Date, Date) -> Void) {
+        self.theme = theme
+        self.strings = strings
+        self.onCancel = onCancel
+        self.onSelect = onSelect
+        super.init(nibName: nil, bundle: nil)
+        self.modalPresentationStyle = .overFullScreen
+        self.modalTransitionStyle = .crossDissolve
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        dimView.backgroundColor = UIColor(white: 0.0, alpha: 0.35)
+        dimView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(cancelTapped)))
+
+        // Native glass, the same recipe every other AorusAI block uses: the blocks
+        // background plus a hairline separator border, no tint fills and no white.
+        card.backgroundColor = theme.list.itemBlocksBackgroundColor
+        card.layer.cornerRadius = 16.0
+        card.layer.cornerCurve = .continuous
+        card.layer.borderWidth = UIScreenPixel
+        card.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+
+        titleLabel.text = aorusAILocalized("Выберите период", "Choose a period")
+        titleLabel.font = .systemFont(ofSize: 17.0, weight: .semibold)
+        titleLabel.textColor = theme.list.itemPrimaryTextColor
+        titleLabel.textAlignment = .center
+        subtitleLabel.text = aorusAILocalized(
+            "AorusAI получит сообщения только за эти даты.",
+            "AorusAI will only receive messages from these dates."
+        )
+        subtitleLabel.font = .systemFont(ofSize: 13.0)
+        subtitleLabel.textColor = theme.list.itemSecondaryTextColor
+        subtitleLabel.textAlignment = .center
+        subtitleLabel.numberOfLines = 0
+
+        let now = Date()
+        configure(picker: fromPicker, date: Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now, maximum: now)
+        configure(picker: toPicker, date: now, maximum: now)
+        configure(row: fromRow, label: fromLabel, title: aorusAILocalized("С", "From"), picker: fromPicker)
+        configure(row: toRow, label: toLabel, title: aorusAILocalized("По", "To"), picker: toPicker)
+
+        cancelButton.setTitle(strings.Common_Cancel, for: .normal)
+        cancelButton.titleLabel?.font = .systemFont(ofSize: 17.0)
+        cancelButton.tintColor = theme.list.itemAccentColor
+        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        doneButton.setTitle(aorusAILocalized("Готово", "Done"), for: .normal)
+        doneButton.titleLabel?.font = .systemFont(ofSize: 17.0, weight: .semibold)
+        doneButton.tintColor = theme.list.itemAccentColor
+        doneButton.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
+
+        layout()
+    }
+
+    private func configure(picker: UIDatePicker, date: Date, maximum: Date) {
+        picker.datePickerMode = .date
+        picker.date = date
+        picker.maximumDate = maximum
+        picker.tintColor = theme.list.itemAccentColor
+        // `.compact` keeps the sheet the height of two rows; on anything older the
+        // system default (a wheel) is used and the row simply grows.
+        if #available(iOS 13.4, *) {
+            picker.preferredDatePickerStyle = .compact
+        }
+        picker.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func configure(row: UIStackView, label: UILabel, title: String, picker: UIDatePicker) {
+        label.text = title
+        label.font = .systemFont(ofSize: 16.0)
+        label.textColor = theme.list.itemPrimaryTextColor
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 12.0
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(UIView())
+        row.addArrangedSubview(picker)
+    }
+
+    private func layout() {
+        let buttons = UIStackView(arrangedSubviews: [cancelButton, doneButton])
+        buttons.axis = .horizontal
+        buttons.distribution = .fillEqually
+        buttons.spacing = 12.0
+        let content = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, fromRow, toRow, buttons])
+        content.axis = .vertical
+        content.spacing = 14.0
+        content.setCustomSpacing(6.0, after: titleLabel)
+
+        view.addSubview(dimView)
+        view.addSubview(card)
+        card.addSubview(content)
+        [dimView, card, content].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            dimView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            dimView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            dimView.topAnchor.constraint(equalTo: view.topAnchor),
+            dimView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            card.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16.0),
+            card.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16.0),
+            card.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12.0),
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16.0),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16.0),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 16.0),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12.0)
+        ])
+    }
+
+    @objc private func cancelTapped() {
+        answer { [weak self] in
+            self?.onCancel()
+        }
+    }
+
+    @objc private func doneTapped() {
+        // The order of the two pickers is not enforced while editing, so an inverted
+        // range is normalised instead of rejected, and the upper bound covers the whole
+        // chosen day — the user picked days, not seconds.
+        let calendar = Calendar.current
+        let first = min(fromPicker.date, toPicker.date)
+        let last = max(fromPicker.date, toPicker.date)
+        let from = calendar.startOfDay(for: first)
+        let endOfDay = calendar.date(byAdding: DateComponents(day: 1, second: -1), to: calendar.startOfDay(for: last)) ?? last
+        let to = min(endOfDay, Date())
+        answer { [weak self] in
+            self?.onSelect(from, to)
+        }
+    }
+
+    /// Exactly one answer per sheet: whichever way the user leaves, the suspended turn
+    /// gets its tool result and never hangs.
+    private func answer(_ action: @escaping () -> Void) {
+        guard !didAnswer else { return }
+        didAnswer = true
+        if presentingViewController != nil {
+            dismiss(animated: true, completion: {
+                action()
+            })
+        } else {
+            action()
+        }
+    }
+}
+
+// MARK: - Turns that outlive their screen
+
+/// Keeps a running AorusAI turn alive after its screen is closed.
+///
+/// The chat controller owns the transport, and a controller that leaves the navigation stack
+/// is released — its `deinit` cancels the stream, which is exactly why an answer used to be
+/// cut off the moment the user swiped back. While a turn is in flight the controller is
+/// retained here instead, off the stack: deltas keep arriving, every one of them is still
+/// persisted, and the finished answer is complete in the store when the user comes back.
+/// Re-entering the same conversation re-uses this instance rather than building a second
+/// controller over the same messages.
+private final class AorusAIActiveTurnCenter {
+    static let shared = AorusAIActiveTurnCenter()
+
+    private struct Entry {
+        let controller: AorusAIChatController
+        let reopen: (AorusAIChatController) -> Void
+    }
+
+    private var entries: [String: Entry] = [:]
+    /// Newest hold last: the indicator speaks for the most recent turn.
+    private var order: [String] = []
+    private let indicator = AorusAIWorkingIndicator()
+    private var attentionKeys: Set<String> = []
+
+    private init() {}
+
+    static func key(accountId: Int64, conversationId: UUID) -> String {
+        return "\(accountId)/\(conversationId.uuidString)"
+    }
+
+    func liveController(forKey key: String) -> AorusAIChatController? {
+        return entries[key]?.controller
+    }
+
+    /// Retains `controller` for as long as its turn runs and shows the working indicator.
+    func hold(
+        _ controller: AorusAIChatController,
+        key: String,
+        window: UIWindow?,
+        theme: PresentationTheme,
+        reopen: @escaping (AorusAIChatController) -> Void
+    ) {
+        entries[key] = Entry(controller: controller, reopen: reopen)
+        order.removeAll(where: { $0 == key })
+        order.append(key)
+        indicator.present(in: window, theme: theme, text: text(forKey: key), onTap: { [weak self] in
+            self?.reopenLatest()
+        })
+    }
+
+    /// Drops the hold: the turn finished, or its screen is back on top and the navigation
+    /// stack owns the controller again.
+    ///
+    /// `controller` guards against a stale release: a turn that ended schedules its release
+    /// for the next runloop pass, and by then the same conversation may already be holding
+    /// a newer turn that must not be dropped.
+    func release(key: String, controller: AorusAIChatController?) {
+        if let controller, let entry = entries[key], entry.controller !== controller { return }
+        guard entries.removeValue(forKey: key) != nil else { return }
+        order.removeAll(where: { $0 == key })
+        attentionKeys.remove(key)
+        if let latest = order.last {
+            indicator.setText(text(forKey: latest))
+        } else {
+            indicator.dismiss()
+        }
+    }
+
+    /// Stops the turn of a conversation the user deleted, so nothing writes it back into
+    /// the store afterwards.
+    func abortTurn(forKey key: String) {
+        guard let entry = entries[key] else { return }
+        entry.controller.abortHeldTurn()
+        release(key: key, controller: entry.controller)
+    }
+
+    /// Marks a turn that is waiting for the user, so the indicator invites a tap instead of
+    /// only spinning.
+    func setNeedsAttention(_ needsAttention: Bool, key: String) {
+        guard entries[key] != nil else { return }
+        if needsAttention {
+            attentionKeys.insert(key)
+        } else {
+            attentionKeys.remove(key)
+        }
+        if let latest = order.last {
+            indicator.setText(text(forKey: latest))
+        }
+    }
+
+    private func text(forKey key: String) -> String {
+        if attentionKeys.contains(key) {
+            return aorusAILocalized("AorusAI ждёт ответа", "AorusAI is waiting for you")
+        }
+        return aorusAILocalized("AorusAI отвечает...", "AorusAI is working...")
+    }
+
+    private func reopenLatest() {
+        guard let key = order.last, let entry = entries[key] else {
+            indicator.dismiss()
+            return
+        }
+        entry.reopen(entry.controller)
+    }
+}
+
+/// The floating "AorusAI is working" capsule.
+///
+/// It lives in the window, above whatever screen the user moved on to, and is the icon the
+/// brief asks for: proof that the assistant is still working, plus one tap back to the
+/// answer. Native glass only — the blocks background, a hairline border, no tint, no blur
+/// and no white.
+private final class AorusAIWorkingIndicator: NSObject {
+    private let container = UIButton(type: .custom)
+    private let activity = UIActivityIndicatorView(style: .medium)
+    private let label = UILabel()
+    private var onTap: (() -> Void)?
+    /// A fade-out is in flight. A turn can end and the next one start inside those 0.2 s, so
+    /// the removal at the end of the animation only runs if it was not cancelled meanwhile.
+    private var isDismissing = false
+
+    override init() {
+        super.init()
+        container.layer.cornerRadius = 18.0
+        container.layer.cornerCurve = .continuous
+        container.layer.borderWidth = UIScreenPixel
+        container.accessibilityTraits = .button
+        label.font = .systemFont(ofSize: 13.0, weight: .medium)
+        label.isUserInteractionEnabled = false
+        activity.isUserInteractionEnabled = false
+        activity.hidesWhenStopped = false
+        [activity, label].forEach { container.addSubview($0); $0.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            container.heightAnchor.constraint(equalToConstant: 36.0),
+            activity.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12.0),
+            activity.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: activity.trailingAnchor, constant: 8.0),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14.0),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+        ])
+        container.addTarget(self, action: #selector(tapped), for: .touchUpInside)
+    }
+
+    /// Installs the capsule in `window`, or just refreshes it when it is already there.
+    func present(in window: UIWindow?, theme: PresentationTheme, text: String, onTap: @escaping () -> Void) {
+        self.onTap = onTap
+        self.isDismissing = false
+        setText(text)
+        container.backgroundColor = theme.list.itemBlocksBackgroundColor
+        container.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+        label.textColor = theme.list.itemPrimaryTextColor
+        activity.color = theme.list.itemAccentColor
+        activity.startAnimating()
+        guard let host = window ?? AorusAIWorkingIndicator.keyWindow() else { return }
+        guard container.superview !== host else {
+            container.isHidden = false
+            // A cancelled fade-out can leave the capsule half-transparent and shifted down.
+            UIView.animate(withDuration: 0.2, delay: 0.0, options: [.beginFromCurrentState, .curveEaseOut], animations: {
+                self.container.alpha = 1.0
+                self.container.transform = .identity
+            })
+            host.bringSubviewToFront(container)
+            return
+        }
+        container.removeFromSuperview()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            container.leadingAnchor.constraint(greaterThanOrEqualTo: host.leadingAnchor, constant: 16.0),
+            container.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -16.0),
+            // Above the tab bar on the root screen, and comfortably clear of the composer
+            // and the home indicator everywhere else.
+            container.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -66.0)
+        ])
+        container.isHidden = false
+        container.alpha = 0.0
+        container.transform = CGAffineTransform(translationX: 0.0, y: 12.0)
+        host.layoutIfNeeded()
+        UIView.animate(withDuration: 0.25, delay: 0.0, options: [.beginFromCurrentState, .curveEaseOut], animations: {
+            self.container.alpha = 1.0
+            self.container.transform = .identity
+        })
+    }
+
+    func setText(_ text: String) {
+        label.text = text
+        container.accessibilityLabel = text
+    }
+
+    func dismiss() {
+        guard container.superview != nil, !isDismissing else { return }
+        isDismissing = true
+        UIView.animate(withDuration: 0.2, delay: 0.0, options: [.beginFromCurrentState, .curveEaseIn], animations: {
+            self.container.alpha = 0.0
+            self.container.transform = CGAffineTransform(translationX: 0.0, y: 12.0)
+        }, completion: { _ in
+            // A new turn may have re-presented the capsule while this fade-out ran.
+            guard self.isDismissing else { return }
+            self.isDismissing = false
+            self.activity.stopAnimating()
+            self.container.removeFromSuperview()
+            self.container.transform = .identity
+            self.container.alpha = 1.0
+        })
+    }
+
+    @objc private func tapped() {
+        onTap?()
+    }
+
+    /// The same window lookup the rest of the app uses for its overlays.
+    private static func keyWindow() -> UIWindow? {
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene, windowScene.activationState == .foregroundActive else { continue }
+            if let key = windowScene.windows.first(where: { $0.isKeyWindow }) {
+                return key
+            }
+            if let first = windowScene.windows.first {
+                return first
+            }
+        }
+        return nil
+    }
+}
+

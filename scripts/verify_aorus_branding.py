@@ -3463,7 +3463,7 @@ def main() -> None:
         err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift")
     else:
         ai_ui_text = ai_ui.read_text(encoding="utf-8")
-        for exported in ("public func aorusAIMessageMenuTitle()", "public func aorusAIMessageMenuSections()", "public func aorusAIRunMessageMenuAction("):
+        for exported in ("public func aorusAIMessageMenuTitle()", "public func aorusAIMessageMenuIconName()", "public func aorusAIMessageMenuSections()", "public func aorusAIRunMessageMenuAction("):
             if exported not in ai_ui_text:
                 err.append(f"AorusAI: message menu export missing — {exported}")
         if "import ContextUI" in ai_ui_text:
@@ -3478,19 +3478,35 @@ def main() -> None:
         err.append("AorusAI: missing ChatInterfaceStateContextMenus.swift")
     else:
         ai_menu_text = ai_menu_host.read_text(encoding="utf-8")
-        if "// AorusGram: AorusAI message action v3" not in ai_menu_text:
-            err.append("AorusAI: nested message menu (v3) was not integrated")
-        for legacy in ("v1", "v2"):
+        if "// AorusGram: AorusAI message action v4" not in ai_menu_text:
+            err.append("AorusAI: nested message menu (v4) was not integrated")
+        for legacy in ("v1", "v2", "v3"):
             if f"// AorusGram: AorusAI message action {legacy}" in ai_menu_text:
                 err.append(f"AorusAI: legacy message action ({legacy}) is still present")
         if "aorusAIOpenMessageActions" in ai_menu_text:
             err.append("AorusAI: message menu calls the removed aorusAIOpenMessageActions")
         if "aorusAIMessageMenuSections()" not in ai_menu_text or "c?.pushItems(" not in ai_menu_text:
             err.append("AorusAI: message menu does not push a nested native submenu")
-        # A titled section must open its own level, otherwise the whole prompt list is
-        # back on the first page and runs off the bottom of the screen.
-        if ai_menu_text.count("c?.pushItems(") < 2:
-            err.append("AorusAI: message menu is not two levels deep")
+        # The generated block, bounded by its sentinel and the native anchor it precedes.
+        # Everything below is asserted inside it: the file's own native menu code also
+        # pushes a level, and that one must not be touched.
+        ai_menu_index = ai_menu_text.find("// AorusGram: AorusAI message action v4")
+        if ai_menu_index >= 0:
+            ai_menu_end = ai_menu_text.find("if !isReplyThreadHead, (!data.messageActions.options", ai_menu_index)
+            ai_menu_block = ai_menu_text[ai_menu_index:ai_menu_end if ai_menu_end > ai_menu_index else ai_menu_index + 6000]
+            # Exactly one pushed level. ContextControllerActionsStackNode only positions
+            # the top two containers of its stack, so a second push leaves the chat menu
+            # visible under the AorusAI list behind a 20 % dim — the reported overlay.
+            if ai_menu_block.count("c?.pushItems(") != 1:
+                err.append("AorusAI: message menu must push exactly one native level")
+            # Icons have to be native bundle assets tinted like every other row; SF Symbols
+            # went through withTintColor and rendered black inside the menu.
+            if "UIImage(systemName:" in ai_menu_block or "withTintColor" in ai_menu_block:
+                err.append("AorusAI: message menu icons must be tinted bundle images, not SF Symbols")
+            if "generateTintedImage(image: UIImage(bundleImageName: name)" not in ai_menu_block:
+                err.append("AorusAI: message menu icons are not tinted through generateTintedImage")
+            if "aorusAIMessageMenuIconName()" not in ai_menu_block:
+                err.append("AorusAI: message menu row does not use the native AorusAI bundle icon")
 
     # BGTask identifier in plist
     bgtask_key = "BGTaskSchedulerPermittedIdentifiers"
