@@ -60,6 +60,8 @@ jobs:
           swiftc -frontend -parse \
             aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift
           swiftc -frontend -parse \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIDesign.swift
+          swiftc -frontend -parse \
             aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIDictation.swift
 
       # Cache only an immutable, unmodified upstream checkout. The working copy is

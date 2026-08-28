@@ -133,8 +133,10 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
     /// Reset moment reported by the backend's quota event. Purely presentational:
     /// the client never invents it and never sends it back.
     public var quotaResetAt: Date?
+    /// Pinned conversations are listed above the recent ones. Local only.
+    public var pinned: Bool
 
-    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", quotaResetAt: Date? = nil) {
+    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", quotaResetAt: Date? = nil, pinned: Bool = false) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -142,6 +144,30 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
         self.messages = messages
         self.draft = draft
         self.quotaResetAt = quotaResetAt
+        self.pinned = pinned
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, createdAt, updatedAt, messages, draft, quotaResetAt, pinned
+    }
+
+    /// Hand-written because the history file has to survive gaining a field.
+    ///
+    /// The synthesized decoder throws on a key that is absent, even when the property
+    /// has a default value — and `AorusAIStore.read` answers any decode failure by
+    /// treating the file as corrupt and deleting it. A store written before pinning
+    /// existed carries no `pinned` key, so it is decoded as "not pinned" instead of
+    /// costing the user every conversation they had.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        self.messages = try container.decode([AorusAIMessage].self, forKey: .messages)
+        self.draft = try container.decodeIfPresent(String.self, forKey: .draft) ?? ""
+        self.quotaResetAt = try container.decodeIfPresent(Date.self, forKey: .quotaResetAt)
+        self.pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
     }
 }
 

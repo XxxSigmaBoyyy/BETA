@@ -33,41 +33,6 @@ public func aorusAIConversationListController(context: AccountContext) -> ViewCo
     return AorusAIConversationListController(context: context)
 }
 
-/// One row of the AorusAI message menu.
-///
-/// The host renders these rows with Telegram's own context menu, so a descriptor
-/// deliberately carries no UI: a stable identifier, a localized title and the name
-/// of a native bundle image the host tints with the current theme. That keeps
-/// ContextUI out of this module and the menu contents out of the generated host patch.
-public struct AorusAIMenuEntry {
-    public var id: String
-    public var title: String
-    public var iconName: String?
-
-    public init(id: String, title: String, iconName: String? = nil) {
-        self.id = id
-        self.title = title
-        self.iconName = iconName
-    }
-}
-
-/// A group of rows of the AorusAI message menu.
-///
-/// A section with a `title` is rendered as a headed group inside the single pushed
-/// level, exactly like a native titled group. A section without one is rendered
-/// inline, separated from its neighbours.
-public struct AorusAIMenuSection {
-    public var title: String?
-    public var iconName: String?
-    public var entries: [AorusAIMenuEntry]
-
-    public init(title: String? = nil, iconName: String? = nil, entries: [AorusAIMenuEntry]) {
-        self.title = title
-        self.iconName = iconName
-        self.entries = entries
-    }
-}
-
 public func aorusAIMessageMenuTitle() -> String {
     return aorusAILocalized("ИИ-компаньон", "AI Companion")
 }
@@ -81,113 +46,224 @@ public func aorusAIMessageMenuIconName() -> String {
     return "Chat/Input/Text/InputAIIcon"
 }
 
-public func aorusAIMessageMenuSections() -> [AorusAIMenuSection] {
-    return AorusAIMessageMenu.sections()
-}
-
-/// Runs the menu row `id` against the message the context menu was opened on.
+/// Resolves the display name of a message author, or nil when there is none.
 ///
-/// The author's display name is resolved here, inside the module that owns the
-/// AorusAI presentation layer, so the host patch never has to reach for a debug
-/// description of a peer.
-public func aorusAIRunMessageMenuAction(
-    id: String,
-    context: AccountContext,
-    navigationController: NavigationController?,
-    peerId: Int64,
-    messageNamespace: Int32,
-    messageId: Int32,
-    authorPeerId: Int64?,
-    text: String
-) {
-    guard let navigationController else { return }
-    let start: (String?) -> Void = { authorName in
-        let reference = AorusAIReferencedMessage(
-            peerId: peerId,
-            messageNamespace: messageNamespace,
-            messageId: messageId,
-            authorPeerId: authorPeerId,
-            authorName: authorName,
-            text: text
-        )
-        AorusAIMessageMenu.run(id: id, context: context, navigationController: navigationController, reference: reference)
-    }
+/// The action sheet puts it in its subtitle and a started conversation quotes the
+/// message under that name; neither may show a debug description of a peer, so the
+/// lookup lives in one place.
+func aorusAIResolveAuthorName(context: AccountContext, authorPeerId: Int64?, completion: @escaping (String?) -> Void) {
     guard let authorPeerId else {
-        start(nil)
+        completion(nil)
         return
     }
     let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-    var started = false
+    var delivered = false
     let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(authorPeerId)))
     |> deliverOnMainQueue).start(next: { peer in
-        guard !started else { return }
-        started = true
-        start(peer?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder))
+        guard !delivered else { return }
+        delivered = true
+        completion(peer?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder))
     })
 }
 
-private enum AorusAIMessageMenu {
+enum AorusAIMessageMenu {
     static let analyzeChatId = "chat.analyze"
     static let newChatId = "chat.new"
+    static let translateId = "text.translate"
+    static let toneId = "tone.change"
 
-    private struct Item {
+    struct Item {
         var id: String
         var title: String
         var icon: String
         var prompt: String
+        /// Right-aligned detail in the sheet: a language, a count of variants.
+        var hint: String?
+        /// A row with children opens another level of the sheet instead of running.
+        var children: [Item]
+
+        init(id: String, title: String, icon: String, prompt: String, hint: String? = nil, children: [Item] = []) {
+            self.id = id
+            self.title = title
+            self.icon = icon
+            self.prompt = prompt
+            self.hint = hint
+            self.children = children
+        }
     }
 
-    /// A titled group becomes a headed section inside the single pushed menu level;
-    /// an untitled one is just separated from the section above it.
+    /// A titled group is one of the design's four sections; the sheet draws the title
+    /// as a small header above a rounded card of rows.
     private struct Group {
         var title: String?
-        var icon: String?
         var items: [Item]
     }
 
-    /// Every icon is a native `Chat/Context Menu/*` bundle asset: the host patch tints
-    /// it with `generateTintedImage`, exactly like Telegram's own rows.
-    private static var groups: [Group] {
+    /// Languages offered by "Перевести". The interface language is moved to the front,
+    /// so the row's hint and the first option always agree with the app.
+    private static let translationLanguages: [(code: String, name: String)] = [
+        ("ru", "Русский"),
+        ("en", "English"),
+        ("uk", "Українська"),
+        ("es", "Español"),
+        ("de", "Deutsch"),
+        ("fr", "Français"),
+        ("it", "Italiano"),
+        ("pt", "Português"),
+        ("tr", "Türkçe"),
+        ("pl", "Polski"),
+        ("ar", "العربية"),
+        ("zh", "中文"),
+        ("ja", "日本語"),
+        ("ko", "한국어"),
+        ("kk", "Қазақша"),
+        ("uz", "Oʻzbekcha")
+    ]
+
+    private static func orderedLanguages(for languageCode: String) -> [(code: String, name: String)] {
+        let base = languageCode.lowercased().prefix(2)
+        var ordered = translationLanguages
+        if let index = ordered.firstIndex(where: { $0.code == base }) {
+            let current = ordered.remove(at: index)
+            ordered.insert(current, at: 0)
+        }
+        return ordered
+    }
+
+    private static func currentLanguageName(for languageCode: String) -> String {
+        return orderedLanguages(for: languageCode).first?.name ?? "English"
+    }
+
+    private static func translationItems(for languageCode: String) -> [Item] {
+        return orderedLanguages(for: languageCode).map { language in
+            Item(
+                id: "\(translateId).\(language.code)",
+                title: language.name,
+                icon: "Chat/Context Menu/Translate",
+                prompt: aorusAILocalized(
+                    "Переведи это сообщение на язык: \(language.name). Дай только перевод.",
+                    "Translate this message into \(language.name). Reply with the translation only."
+                )
+            )
+        }
+    }
+
+    private static var toneItems: [Item] {
         return [
-            Group(title: aorusAILocalized("Текст", "Text"), icon: "Chat/Context Menu/FormatText", items: [
+            Item(id: "tone.formal", title: aorusAILocalized("Официальнее", "More formal"), icon: "Chat/Context Menu/FormatQuote", prompt: aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
+            Item(id: "tone.polite", title: aorusAILocalized("Вежливее", "More polite"), icon: "Chat/Context Menu/ThumbsUp", prompt: aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
+            Item(id: "tone.confident", title: aorusAILocalized("Увереннее", "More confident"), icon: "Chat/Context Menu/Boost", prompt: aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
+            Item(id: "tone.simple", title: aorusAILocalized("Проще", "Simpler"), icon: "Chat/Context Menu/Smile", prompt: aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language")),
+            Item(id: "tone.detailed", title: aorusAILocalized("Подробнее", "More detailed"), icon: "Chat/Context Menu/Expand", prompt: aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
+            Item(id: "tone.rewrite", title: aorusAILocalized("Переформулировать", "Rewrite"), icon: "Chat/Context Menu/Reload", prompt: aorusAILocalized("Переформулируй это сообщение", "Rewrite this message"))
+        ]
+    }
+
+    /// Every icon is a native `Chat/Context Menu/*` bundle asset, tinted with the
+    /// AorusAI accent inside its tile.
+    private static func groups(languageCode: String) -> [Group] {
+        let tones = toneItems
+        return [
+            Group(title: aorusAILocalized("Текст", "Text"), items: [
                 Item(id: "text.improve", title: aorusAILocalized("Улучшить текст", "Improve writing"), icon: "Chat/Context Menu/Edit", prompt: aorusAILocalized("Улучши текст, сохранив смысл", "Improve the writing while preserving its meaning")),
                 Item(id: "text.fix", title: aorusAILocalized("Исправить ошибки", "Fix mistakes"), icon: "Chat/Context Menu/Check", prompt: aorusAILocalized("Исправь ошибки в этом сообщении", "Fix mistakes in this message")),
                 Item(id: "text.shorten", title: aorusAILocalized("Сделать короче", "Make shorter"), icon: "Chat/Context Menu/Collapse", prompt: aorusAILocalized("Сделай это сообщение короче", "Make this message shorter")),
-                Item(id: "text.summarize", title: aorusAILocalized("Кратко пересказать", "Summarize"), icon: "Chat/Context Menu/List", prompt: aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
-                Item(id: "text.translate", title: aorusAILocalized("Перевести", "Translate"), icon: "Chat/Context Menu/Translate", prompt: aorusAILocalized("Переведи это сообщение на мой язык", "Translate this message into my language")),
+                Item(
+                    id: translateId,
+                    title: aorusAILocalized("Перевести", "Translate"),
+                    icon: "Chat/Context Menu/Translate",
+                    prompt: "",
+                    hint: currentLanguageName(for: languageCode),
+                    children: translationItems(for: languageCode)
+                )
+            ]),
+            Group(title: aorusAILocalized("Тон", "Tone"), items: [
+                Item(
+                    id: toneId,
+                    title: aorusAILocalized("Сменить тон", "Change tone"),
+                    icon: "Chat/Context Menu/Customize",
+                    prompt: "",
+                    hint: aorusAILocalized("\(tones.count) вариантов", "\(tones.count) options"),
+                    children: tones
+                ),
                 Item(id: "text.reply", title: aorusAILocalized("Ответить на сообщение", "Draft a reply"), icon: "Chat/Context Menu/Reply", prompt: aorusAILocalized("Подготовь уместный ответ на это сообщение", "Draft an appropriate reply to this message"))
             ]),
-            Group(title: aorusAILocalized("Тон", "Tone"), icon: "Chat/Context Menu/Customize", items: [
-                Item(id: "tone.detailed", title: aorusAILocalized("Сделать подробнее", "Make more detailed"), icon: "Chat/Context Menu/Expand", prompt: aorusAILocalized("Сделай это сообщение подробнее, не меняя смысл", "Make this message more detailed without changing its meaning")),
-                Item(id: "tone.rewrite", title: aorusAILocalized("Переформулировать", "Rewrite"), icon: "Chat/Context Menu/Reload", prompt: aorusAILocalized("Переформулируй это сообщение", "Rewrite this message")),
-                Item(id: "tone.polite", title: aorusAILocalized("Сделать вежливее", "Make more polite"), icon: "Chat/Context Menu/ThumbsUp", prompt: aorusAILocalized("Сделай это сообщение вежливее", "Make this message more polite")),
-                Item(id: "tone.confident", title: aorusAILocalized("Сделать увереннее", "Make more confident"), icon: "Chat/Context Menu/Boost", prompt: aorusAILocalized("Сделай тон этого сообщения увереннее", "Make this message sound more confident")),
-                Item(id: "tone.formal", title: aorusAILocalized("Сделать официальнее", "Make more formal"), icon: "Chat/Context Menu/FormatQuote", prompt: aorusAILocalized("Сделай это сообщение более официальным", "Make this message more formal")),
-                Item(id: "tone.simple", title: aorusAILocalized("Сделать проще", "Simplify"), icon: "Chat/Context Menu/Smile", prompt: aorusAILocalized("Перепиши это сообщение проще и понятнее", "Rewrite this message in simpler, clearer language"))
-            ]),
-            Group(title: aorusAILocalized("Разобрать", "Break down"), icon: "Chat/Context Menu/Search", items: [
+            Group(title: aorusAILocalized("Разобрать", "Break down"), items: [
+                Item(id: "text.summarize", title: aorusAILocalized("Кратко пересказать", "Summarize"), icon: "Chat/Context Menu/List", prompt: aorusAILocalized("Кратко перескажи это сообщение", "Summarize this message")),
                 Item(id: "review.explain", title: aorusAILocalized("Объяснить", "Explain"), icon: "Chat/Context Menu/Help", prompt: aorusAILocalized("Объясни это сообщение", "Explain this message")),
                 Item(id: "review.key", title: aorusAILocalized("Выделить главное", "Key points"), icon: "Chat/Context Menu/Fave", prompt: aorusAILocalized("Выдели главное в этом сообщении", "Extract the key points from this message")),
-                Item(id: "review.variants", title: aorusAILocalized("Несколько ответов", "Several replies"), icon: "Chat/Context Menu/Replies", prompt: aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message"))
+                Item(id: "review.variants", title: aorusAILocalized("Несколько ответов", "Several replies"), icon: "Chat/Context Menu/Replies", prompt: aorusAILocalized("Предложи несколько вариантов ответа на это сообщение", "Suggest several replies to this message")),
+                Item(
+                    id: analyzeChatId,
+                    title: aorusAILocalized("Анализ переписки", "Analyze chat"),
+                    icon: "Chat/Context Menu/Statistics",
+                    prompt: "",
+                    hint: aorusAILocalized(
+                        "до \(AorusAIRequestLimits.chatHistoryMessageCount) сообщений",
+                        "up to \(AorusAIRequestLimits.chatHistoryMessageCount) messages"
+                    )
+                )
             ]),
-            Group(title: aorusAILocalized("Создать", "Create"), icon: "Chat/Context Menu/Pencil", items: [
+            Group(title: aorusAILocalized("Создать", "Create"), items: [
                 Item(id: "create.telegram", title: aorusAILocalized("Telegram-пост", "Telegram post"), icon: "Chat/Context Menu/Telegram", prompt: aorusAILocalized("Сделай из этого профессиональный Telegram-пост", "Turn this into a professional Telegram post")),
                 Item(id: "create.instagram", title: aorusAILocalized("Instagram-пост", "Instagram post"), icon: "Chat/Context Menu/Camera", prompt: aorusAILocalized("Сделай из этого профессиональный Instagram-пост", "Turn this into a professional Instagram post")),
                 Item(id: "create.title", title: aorusAILocalized("Заголовок", "Title"), icon: "Chat/Context Menu/FormatHeading", prompt: aorusAILocalized("Придумай сильный заголовок для этого текста", "Create a strong title for this text")),
                 Item(id: "create.description", title: aorusAILocalized("Описание", "Description"), icon: "Chat/Context Menu/Caption", prompt: aorusAILocalized("Создай краткое и точное описание для этого текста", "Create a concise, accurate description for this text")),
                 Item(id: "create.continue", title: aorusAILocalized("Продолжить текст", "Continue writing"), icon: "Chat/Context Menu/AddCaption", prompt: aorusAILocalized("Естественно продолжи этот текст в том же стиле", "Continue this text naturally in the same style"))
-            ]),
-            Group(title: nil, icon: nil, items: [
-                Item(id: analyzeChatId, title: aorusAILocalized("Анализ переписки", "Analyze chat"), icon: "Chat/Context Menu/Statistics", prompt: ""),
-                Item(id: newChatId, title: aorusAILocalized("Новый диалог", "New chat"), icon: "Chat/Context Menu/MessageBubble", prompt: "")
             ])
         ]
     }
 
-    static func sections() -> [AorusAIMenuSection] {
-        return groups.map { group in
-            AorusAIMenuSection(title: group.title, iconName: group.icon, entries: group.items.map { AorusAIMenuEntry(id: $0.id, title: $0.title, iconName: $0.icon) })
+    private static var footerItem: Item {
+        return Item(
+            id: newChatId,
+            title: aorusAILocalized("Новый диалог с текстом", "New chat with this text"),
+            icon: "Chat/Context Menu/MessageBubble",
+            prompt: ""
+        )
+    }
+
+    private static func row(for item: Item) -> AorusAIActionSheetRow {
+        return AorusAIActionSheetRow(
+            id: item.id,
+            title: item.title,
+            iconName: item.icon,
+            hint: item.hint,
+            opensPage: !item.children.isEmpty
+        )
+    }
+
+    /// The level the context-menu row opens: the four titled sections of the design
+    /// and the wide "new chat" button under them.
+    static func rootSheetPage(authorName: String?, languageCode: String) -> AorusAIActionSheetPage {
+        let subtitle: String
+        if let authorName, !authorName.isEmpty {
+            subtitle = aorusAILocalized("Действия с сообщением \(authorName)", "Actions for the message from \(authorName)")
+        } else {
+            subtitle = aorusAILocalized("Действия с сообщением", "Message actions")
         }
+        return AorusAIActionSheetPage(
+            title: aorusAIMessageMenuTitle(),
+            subtitle: subtitle,
+            sections: groups(languageCode: languageCode).map { group in
+                AorusAIActionSheetSection(title: group.title, rows: group.items.map(row(for:)))
+            },
+            footer: row(for: footerItem)
+        )
+    }
+
+    /// The nested level of a row that has children — inside the sheet, never as a
+    /// second native context-menu container.
+    static func sheetPage(forRowId id: String, languageCode: String) -> AorusAIActionSheetPage? {
+        guard let item = groups(languageCode: languageCode).flatMap({ $0.items }).first(where: { $0.id == id }), !item.children.isEmpty else {
+            return nil
+        }
+        return AorusAIActionSheetPage(
+            title: item.title,
+            subtitle: nil,
+            sections: [AorusAIActionSheetSection(title: nil, rows: item.children.map(row(for:)))],
+            footer: nil
+        )
     }
 
     static func run(id: String, context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
@@ -197,7 +273,9 @@ private enum AorusAIMessageMenu {
         case newChatId:
             navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), reference: reference))
         default:
-            guard let prompt = groups.flatMap({ $0.items }).first(where: { $0.id == id })?.prompt, !prompt.isEmpty else { return }
+            let languageCode = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode
+            let all = groups(languageCode: languageCode).flatMap { $0.items }.flatMap { [$0] + $0.children }
+            guard let prompt = all.first(where: { $0.id == id })?.prompt, !prompt.isEmpty else { return }
             navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), initialPrompt: prompt, reference: reference))
         }
     }
@@ -219,7 +297,7 @@ private func aorusAIPresentHistoryCount(context: AccountContext, navigationContr
             aorusAIPrepareHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: count)
         }))
     }
-    sheet.addAction(UIAlertAction(title: aorusAILocalized("Другое...", "Other..."), style: .default, handler: { _ in
+    sheet.addAction(UIAlertAction(title: aorusAILocalized("Другое…", "Other…"), style: .default, handler: { _ in
         aorusAIPresentCustomHistoryCount(context: context, navigationController: navigationController, reference: reference)
     }))
     sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
@@ -391,17 +469,29 @@ private func aorusAIPrepareHistoryAnalysis(context: AccountContext, navigationCo
     })
 }
 
-private final class AorusAIConversationListController: ViewController, UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate {
+private final class AorusAIConversationListController: ViewController, UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate {
+    private struct Section {
+        var title: String
+        var rows: [AorusAIConversation]
+    }
+
     private let context: AccountContext
     private let presentationData: PresentationData
+    private let palette: AorusAIPalette
     private let accountId: Int64
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    // A plain table, not `.insetGrouped`: the cards are drawn by
+    // `AorusAIGroupBackgroundView` so their radius, hairline and separator inset are
+    // the design's own instead of the fixed 10pt UIKit gives grouped sections.
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let searchField = AorusAISearchFieldView()
     private let listHeader = AorusAIConversationListHeaderView()
     private let emptyView = AorusAIConversationListEmptyView()
+    private let footerView = AorusAIConversationPrivacyFooterView()
     private let bottomBar = UIView()
     private let newChatButton = UIButton(type: .system)
     private let profileNameDisposable = MetaDisposable()
     private var conversations: [AorusAIConversation] = []
+    private var sections: [Section] = []
     private var searchQuery = ""
     private var observer: NSObjectProtocol?
 
@@ -414,20 +504,67 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         }
     }
 
+    private func rebuildSections() {
+        let visible = visibleConversations
+        if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections = visible.isEmpty ? [] : [Section(title: aorusAILocalized("Результаты", "Results"), rows: visible)]
+            return
+        }
+        var result: [Section] = []
+        let pinned = visible.filter { $0.pinned }
+        if !pinned.isEmpty {
+            result.append(Section(title: aorusAILocalized("Закреплённые", "Pinned"), rows: pinned))
+        }
+        let recent = visible.filter { !$0.pinned }
+        if !recent.isEmpty {
+            result.append(Section(title: aorusAILocalized("Недавние", "Recent"), rows: recent))
+        }
+        sections = result
+    }
+
     init(context: AccountContext) {
         self.context = context
-        self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        self.presentationData = presentationData
+        self.palette = AorusAIPalette.resolve(presentationData.theme)
         self.accountId = context.account.id.int64
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
+        let palette = self.palette
+        // The design draws one flat surface from the status bar down, so the navigation
+        // bar takes the page background, drops its blur and hides its separator instead
+        // of keeping Telegram's own bar colour above a #0E0E12 page.
+        let base = NavigationBarPresentationData(presentationData: presentationData)
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(
+            theme: NavigationBarTheme(
+                overallDarkAppearance: palette.isDark,
+                buttonColor: palette.accent,
+                disabledButtonColor: palette.tertiary,
+                primaryTextColor: palette.label,
+                backgroundColor: palette.background,
+                opaqueBackgroundColor: palette.background,
+                enableBackgroundBlur: false,
+                separatorColor: .clear,
+                badgeBackgroundColor: palette.accent,
+                badgeStrokeColor: palette.accent,
+                badgeTextColor: palette.onAccent,
+                accentButtonColor: palette.accent,
+                accentDisabledButtonColor: palette.tertiary,
+                accentForegroundColor: palette.onAccent
+            ),
+            strings: base.strings
+        ))
         self.title = "AorusAI"
-        self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
+        self.statusBar.statusBarStyle = palette.isDark ? .White : .Black
         // Telegram's navigation bar draws only `image` and `title` of a bar button item, so a
         // system item such as `.add` renders as an empty tap area — which is why the button
-        // looked missing. The compose glyph is the one the chat list itself uses.
-        let composeImage = PresentationResourcesRootController.navigationComposeIcon(self.presentationData.theme)
-            ?? UIImage(systemName: "square.and.pencil")?.withTintColor(self.presentationData.theme.rootController.navigationBar.accentTextColor, renderingMode: .alwaysOriginal)
+        // looked missing. The compose glyph is the one the chat list itself uses, retinted
+        // to the AorusAI palette.
+        let composeImage = generateTintedImage(
+            image: PresentationResourcesRootController.navigationComposeIcon(presentationData.theme)
+                ?? UIImage(systemName: "square.and.pencil"),
+            color: palette.secondary
+        )
         let composeItem = UIBarButtonItem(image: composeImage, style: .plain, target: self, action: #selector(createConversation))
-        composeItem.tintColor = self.presentationData.theme.rootController.navigationBar.accentTextColor
+        composeItem.tintColor = palette.secondary
         composeItem.accessibilityLabel = aorusAILocalized("Новый диалог", "New chat")
         self.navigationItem.rightBarButtonItem = composeItem
     }
@@ -441,34 +578,40 @@ private final class AorusAIConversationListController: ViewController, UITableVi
 
     override func loadDisplayNode() {
         self.displayNode = ViewControllerTracingNode()
-        self.displayNode.backgroundColor = self.presentationData.theme.list.blocksBackgroundColor
-        tableView.backgroundColor = self.presentationData.theme.list.blocksBackgroundColor
-        tableView.separatorColor = self.presentationData.theme.list.itemBlocksSeparatorColor
-        tableView.indicatorStyle = self.presentationData.theme.overallDarkAppearance ? .white : .black
-        tableView.rowHeight = 72
-        tableView.sectionHeaderHeight = 34
-        tableView.sectionFooterHeight = 62
+        self.displayNode.backgroundColor = palette.background
+        tableView.backgroundColor = palette.background
+        // The cards carry their own hairline, so the table's own separators would double it.
+        tableView.separatorStyle = .none
+        tableView.indicatorStyle = palette.isDark ? .white : .black
+        tableView.rowHeight = AorusAIConversationCell.preferredHeight
         tableView.keyboardDismissMode = .onDrag
+        tableView.contentInsetAdjustmentBehavior = .never
         tableView.dataSource = self
         tableView.delegate = self
         tableView.register(AorusAIConversationCell.self, forCellReuseIdentifier: "conversation")
-        listHeader.configure(theme: presentationData.theme)
-        listHeader.searchBar.delegate = self
+        listHeader.configure(palette: palette)
         tableView.tableHeaderView = listHeader
-        emptyView.configure(theme: presentationData.theme)
+        footerView.configure(palette: palette)
+        tableView.tableFooterView = footerView
+        emptyView.configure(palette: palette)
         tableView.backgroundView = emptyView
         self.displayNode.view.addSubview(tableView)
 
-        bottomBar.backgroundColor = presentationData.theme.list.blocksBackgroundColor
-        newChatButton.backgroundColor = presentationData.theme.list.itemAccentColor
-        newChatButton.tintColor = .white
-        newChatButton.setTitleColor(.white, for: .normal)
-        newChatButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        searchField.configure(palette: palette, placeholder: aorusAILocalized("Поиск по диалогам", "Search chats"))
+        searchField.textField.delegate = self
+        searchField.textField.addTarget(self, action: #selector(searchTextChanged), for: .editingChanged)
+        self.displayNode.view.addSubview(searchField)
+
+        bottomBar.backgroundColor = palette.background
+        newChatButton.backgroundColor = palette.accent
+        newChatButton.tintColor = palette.onAccent
+        newChatButton.setTitleColor(palette.onAccent, for: .normal)
+        newChatButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         newChatButton.setTitle(aorusAILocalized("Новый диалог", "New chat"), for: .normal)
-        newChatButton.setImage(UIImage(systemName: "square.and.pencil")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+        newChatButton.setImage(UIImage(systemName: "square.and.pencil")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)), for: .normal)
         newChatButton.semanticContentAttribute = .forceLeftToRight
-        newChatButton.imageEdgeInsets = UIEdgeInsets(top: 0, left: -5, bottom: 0, right: 5)
-        newChatButton.layer.cornerRadius = 25
+        newChatButton.imageEdgeInsets = UIEdgeInsets(top: 0.0, left: -4.0, bottom: 0.0, right: 4.0)
+        newChatButton.layer.cornerRadius = 24.0
         newChatButton.layer.cornerCurve = .continuous
         newChatButton.addTarget(self, action: #selector(createConversation), for: .touchUpInside)
         newChatButton.accessibilityLabel = aorusAILocalized("Новый диалог", "New chat")
@@ -493,30 +636,38 @@ private final class AorusAIConversationListController: ViewController, UITableVi
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         let top = self.navigationLayout(layout: layout).navigationFrame.maxY
-        let barHeight: CGFloat = 70 + layout.intrinsicInsets.bottom
-        let bottomFrame = CGRect(x: 0, y: layout.size.height - barHeight, width: layout.size.width, height: barHeight)
+        let searchFrame = CGRect(x: 16.0, y: top, width: max(0.0, layout.size.width - 32.0), height: 38.0)
+        transition.updateFrame(view: searchField, frame: searchFrame)
+        let barHeight: CGFloat = 60.0 + layout.intrinsicInsets.bottom
+        let bottomFrame = CGRect(x: 0.0, y: layout.size.height - barHeight, width: layout.size.width, height: barHeight)
         transition.updateFrame(view: bottomBar, frame: bottomFrame)
-        transition.updateFrame(view: newChatButton, frame: CGRect(x: 16, y: 9, width: max(0, layout.size.width - 32), height: 50))
-        transition.updateFrame(view: tableView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: max(0, bottomFrame.minY - top)))
+        transition.updateFrame(view: newChatButton, frame: CGRect(x: 16.0, y: 8.0, width: max(0.0, layout.size.width - 32.0), height: 48.0))
+        let tableTop = searchFrame.maxY + 12.0
+        transition.updateFrame(view: tableView, frame: CGRect(x: 0.0, y: tableTop, width: layout.size.width, height: max(0.0, bottomFrame.minY - tableTop)))
         if listHeader.frame.width != layout.size.width {
-            listHeader.frame = CGRect(x: 0, y: 0, width: layout.size.width, height: AorusAIConversationListHeaderView.preferredHeight)
+            listHeader.frame = CGRect(x: 0.0, y: 0.0, width: layout.size.width, height: AorusAIConversationListHeaderView.preferredHeight)
             tableView.tableHeaderView = listHeader
+            footerView.frame = CGRect(x: 0.0, y: 0.0, width: layout.size.width, height: AorusAIConversationPrivacyFooterView.preferredHeight)
+            tableView.tableFooterView = footerView
         }
     }
 
     private func reload() {
         AorusAIStore.shared.load(accountId: accountId) { [weak self] conversations in
-            self?.conversations = conversations
-            self?.tableView.reloadData()
-            self?.updateEmptyState()
+            guard let self else { return }
+            self.conversations = conversations
+            self.rebuildSections()
+            self.tableView.reloadData()
+            self.updateEmptyState()
         }
     }
 
     private func updateEmptyState() {
-        let isEmpty = visibleConversations.isEmpty
+        let isEmpty = sections.isEmpty
         emptyView.isHidden = !isEmpty
         emptyView.accessibilityElementsHidden = !isEmpty
-        emptyView.setSearching(!searchQuery.isEmpty)
+        emptyView.setSearching(!searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        footerView.isHidden = isEmpty
     }
 
     @objc private func createConversation() {
@@ -525,18 +676,40 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         (self.navigationController as? NavigationController)?.pushViewController(AorusAIChatController(context: context, conversation: conversation))
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int { 1 }
+    @objc private func searchTextChanged() {
+        searchQuery = searchField.textField.text ?? ""
+        rebuildSections()
+        tableView.reloadData()
+        updateEmptyState()
+    }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { visibleConversations.count }
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        textField.resignFirstResponder()
+        return true
+    }
 
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return aorusAILocalized("Недавние", "Recent")
+    func numberOfSections(in tableView: UITableView) -> Int { sections.count }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return sections[section].rows.count
+    }
+
+    func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        return AorusAISectionHeaderView.preferredHeight
+    }
+
+    func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        let header = AorusAISectionHeaderView()
+        header.configure(palette: palette, title: sections[section].title)
+        return header
+    }
+
+    func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
+        return 0.01
     }
 
     func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
-        let footer = AorusAIConversationPrivacyFooterView()
-        footer.configure(theme: presentationData.theme)
-        return footer
+        return nil
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -544,13 +717,18 @@ private final class AorusAIConversationListController: ViewController, UITableVi
             assertionFailure("Unexpected AorusAI conversation cell type")
             return UITableViewCell(style: .default, reuseIdentifier: nil)
         }
-        cell.configure(conversation: visibleConversations[indexPath.row], theme: presentationData.theme)
+        let rows = sections[indexPath.section].rows
+        cell.configure(
+            conversation: rows[indexPath.row],
+            palette: palette,
+            position: AorusAIGroupPosition.of(index: indexPath.row, count: rows.count)
+        )
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let conversation = visibleConversations[indexPath.row]
+        let conversation = sections[indexPath.section].rows[indexPath.row]
         // A turn that outlived its screen is still running inside its own controller, so the
         // row re-opens that instance. A second controller over the same conversation would
         // fight it for the same messages and the live answer would look frozen.
@@ -560,8 +738,27 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         (self.navigationController as? NavigationController)?.pushViewController(controller)
     }
 
+    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        var conversation = sections[indexPath.section].rows[indexPath.row]
+        let pin = UIContextualAction(
+            style: .normal,
+            title: conversation.pinned ? aorusAILocalized("Открепить", "Unpin") : aorusAILocalized("Закрепить", "Pin")
+        ) { [weak self] _, _, done in
+            guard let self else { done(false); return }
+            // `upsert` keeps `updatedAt` as given, so pinning never bumps a chat to the
+            // top of "Недавние" — it only moves it into its own group.
+            conversation.pinned = !conversation.pinned
+            AorusAIStore.shared.upsert(conversation, accountId: self.accountId) { done($0) }
+        }
+        pin.image = UIImage(systemName: conversation.pinned ? "pin.slash" : "pin")
+        pin.backgroundColor = palette.accent
+        let configuration = UISwipeActionsConfiguration(actions: [pin])
+        configuration.performsFirstActionWithFullSwipe = true
+        return configuration
+    }
+
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let id = visibleConversations[indexPath.row].id
+        let id = sections[indexPath.section].rows[indexPath.row].id
         let action = UIContextualAction(style: .destructive, title: presentationData.strings.Common_Delete) { [weak self] _, _, done in
             guard let self else { done(false); return }
             // A turn of this conversation may still be running off-screen; it is stopped
@@ -574,53 +771,108 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         configuration.performsFirstActionWithFullSwipe = true
         return configuration
     }
+}
 
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-        searchQuery = searchText
-        tableView.reloadData()
-        updateEmptyState()
+/// The 38pt search pill of the design: a hairline capsule on the elevated surface with a
+/// leading magnifier, in place of `UISearchBar` whose own chrome cannot be brought to
+/// this shape without fighting its internals.
+private final class AorusAISearchFieldView: UIView {
+    let textField = UITextField()
+    private let iconView = UIImageView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        self.layer.cornerRadius = 19.0
+        self.layer.cornerCurve = .continuous
+        self.layer.borderWidth = UIScreenPixel
+        self.clipsToBounds = true
+        iconView.contentMode = .scaleAspectFit
+        iconView.image = UIImage(systemName: "magnifyingglass")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 14.0, weight: .medium))
+        textField.font = .systemFont(ofSize: 15.0)
+        textField.autocapitalizationType = .none
+        textField.autocorrectionType = .no
+        textField.returnKeyType = .search
+        textField.clearButtonMode = .whileEditing
+        addSubview(iconView)
+        addSubview(textField)
     }
 
-    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        searchBar.resignFirstResponder()
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(palette: AorusAIPalette, placeholder: String) {
+        backgroundColor = palette.elevated
+        layer.borderColor = palette.separator.cgColor
+        iconView.tintColor = palette.tertiary
+        textField.textColor = palette.label
+        textField.tintColor = palette.accent
+        textField.keyboardAppearance = palette.isDark ? .dark : .light
+        textField.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: palette.tertiary, .font: UIFont.systemFont(ofSize: 15.0)]
+        )
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        iconView.frame = CGRect(x: 12.0, y: floor((bounds.height - 16.0) / 2.0), width: 16.0, height: 16.0)
+        textField.frame = CGRect(x: 36.0, y: 0.0, width: max(0.0, bounds.width - 48.0), height: bounds.height)
+    }
+}
+
+/// A 13pt group label — "Закреплённые", "Недавние" — with the design's spacing above the
+/// card it introduces.
+private final class AorusAISectionHeaderView: UIView {
+    static let preferredHeight: CGFloat = 46.0
+
+    private let label = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        label.font = .systemFont(ofSize: 13.0, weight: .medium)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(palette: AorusAIPalette, title: String) {
+        backgroundColor = palette.background
+        label.textColor = palette.tertiary
+        label.text = title
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        label.frame = CGRect(x: 20.0, y: 20.0, width: max(0.0, bounds.width - 40.0), height: 18.0)
     }
 }
 
 private final class AorusAIConversationListHeaderView: UIView {
-    static let preferredHeight: CGFloat = 142
+    static let preferredHeight: CGFloat = 68.0
 
-    let searchBar = UISearchBar()
     private let greetingLabel = UILabel()
     private let subtitleLabel = UILabel()
     private var displayName: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        greetingLabel.font = .systemFont(ofSize: 27, weight: .bold)
+        // The design sets the greeting in the system serif, the one place on the screen
+        // where the type turns editorial.
+        greetingLabel.font = aorusAISerifFont(size: 26.0, weight: .semibold)
         greetingLabel.numberOfLines = 1
         greetingLabel.adjustsFontSizeToFitWidth = true
         greetingLabel.minimumScaleFactor = 0.8
-        subtitleLabel.font = .systemFont(ofSize: 15, weight: .regular)
-        subtitleLabel.text = aorusAILocalized("Чем я могу помочь?", "How can I help?")
-        searchBar.searchBarStyle = .minimal
-        searchBar.placeholder = aorusAILocalized("Поиск", "Search")
-        searchBar.autocapitalizationType = .none
-        [searchBar, greetingLabel, subtitleLabel].forEach { addSubview($0) }
+        subtitleLabel.font = .systemFont(ofSize: 15.0, weight: .regular)
+        subtitleLabel.text = aorusAILocalized("Чем займёмся сегодня?", "What are we doing today?")
+        [greetingLabel, subtitleLabel].forEach { addSubview($0) }
         refreshGreeting()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(theme: PresentationTheme) {
-        backgroundColor = theme.list.blocksBackgroundColor
-        greetingLabel.textColor = theme.list.itemPrimaryTextColor
-        subtitleLabel.textColor = theme.list.itemSecondaryTextColor
-        searchBar.tintColor = theme.list.itemAccentColor
-        searchBar.searchTextField.backgroundColor = theme.list.itemBlocksBackgroundColor
-        searchBar.searchTextField.textColor = theme.list.itemPrimaryTextColor
-        searchBar.searchTextField.layer.cornerRadius = 13
-        searchBar.searchTextField.layer.cornerCurve = .continuous
-        searchBar.searchTextField.clipsToBounds = true
+    func configure(palette: AorusAIPalette) {
+        backgroundColor = palette.background
+        greetingLabel.textColor = palette.label
+        subtitleLabel.textColor = palette.secondary
     }
 
     func setDisplayName(_ name: String?) {
@@ -631,9 +883,8 @@ private final class AorusAIConversationListHeaderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        searchBar.frame = CGRect(x: 8, y: 7, width: max(0, bounds.width - 16), height: 50)
-        greetingLabel.frame = CGRect(x: 20, y: 70, width: max(0, bounds.width - 40), height: 34)
-        subtitleLabel.frame = CGRect(x: 20, y: 108, width: max(0, bounds.width - 40), height: 22)
+        greetingLabel.frame = CGRect(x: 20.0, y: 12.0, width: max(0.0, bounds.width - 40.0), height: 32.0)
+        subtitleLabel.frame = CGRect(x: 20.0, y: 48.0, width: max(0.0, bounds.width - 40.0), height: 20.0)
     }
 
     private func refreshGreeting() {
@@ -652,46 +903,82 @@ private final class AorusAIConversationListHeaderView: UIView {
 }
 
 private final class AorusAIConversationCell: UITableViewCell {
+    static let preferredHeight: CGFloat = 66.0
+    private static let cardInset: CGFloat = 16.0
+    private static let contentInset: CGFloat = 16.0
+
+    private let cardView = AorusAIGroupBackgroundView()
+    private let highlightView = UIView()
     private let titleLabel = UILabel()
     private let previewLabel = UILabel()
     private let dateLabel = UILabel()
+    private let chevronView = UIImageView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        previewLabel.font = .systemFont(ofSize: 14)
-        dateLabel.font = .systemFont(ofSize: 13)
+        self.selectionStyle = .none
+        titleLabel.font = .systemFont(ofSize: 16.0, weight: .medium)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        previewLabel.font = .systemFont(ofSize: 14.0)
         previewLabel.lineBreakMode = .byTruncatingTail
+        dateLabel.font = .systemFont(ofSize: 12.0)
         dateLabel.textAlignment = .right
-        [titleLabel, previewLabel, dateLabel].forEach { contentView.addSubview($0); $0.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 13),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: dateLabel.leadingAnchor, constant: -10),
-            dateLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            dateLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            previewLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            previewLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            previewLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6)
-        ])
-        accessoryType = .disclosureIndicator
+        chevronView.contentMode = .scaleAspectFit
+        chevronView.image = UIImage(systemName: "chevron.right")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 13.0, weight: .semibold))
+        highlightView.alpha = 0.0
+        contentView.addSubview(cardView)
+        cardView.addSubview(highlightView)
+        [titleLabel, dateLabel, previewLabel, chevronView].forEach { cardView.addSubview($0) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(conversation: AorusAIConversation, theme: PresentationTheme) {
-        backgroundColor = theme.list.itemBlocksBackgroundColor
-        contentView.backgroundColor = theme.list.itemBlocksBackgroundColor
-        titleLabel.textColor = theme.list.itemPrimaryTextColor
-        previewLabel.textColor = theme.list.itemSecondaryTextColor
-        dateLabel.textColor = theme.list.itemSecondaryTextColor
+    func configure(conversation: AorusAIConversation, palette: AorusAIPalette, position: AorusAIGroupPosition) {
+        self.backgroundColor = .clear
+        self.contentView.backgroundColor = .clear
+        cardView.configure(palette: palette, position: position, radius: 18.0, separatorInset: Self.contentInset)
+        highlightView.backgroundColor = palette.fill
+        titleLabel.textColor = palette.label
+        previewLabel.textColor = palette.secondary
+        dateLabel.textColor = palette.tertiary
+        chevronView.tintColor = palette.tertiary.withAlphaComponent(0.7)
         titleLabel.text = conversation.title.isEmpty ? aorusAILocalized("Новый диалог", "New chat") : conversation.title
-        previewLabel.text = conversation.messages.last(where: { !$0.rawText.isEmpty })?.rawText ?? aorusAILocalized("Начните разговор с AorusAI", "Start a conversation with AorusAI")
+        previewLabel.text = conversation.messages.last(where: { !$0.rawText.isEmpty })?.rawText
+            ?? aorusAILocalized("Начните разговор с AorusAI", "Start a conversation with AorusAI")
         dateLabel.text = AorusAIFormat.relativeDate(conversation.updatedAt)
         isAccessibilityElement = true
         accessibilityTraits = .button
         accessibilityLabel = titleLabel.text
         accessibilityValue = [previewLabel.text, dateLabel.text].compactMap { $0 }.joined(separator: ", ")
+        setNeedsLayout()
+    }
+
+    override func setHighlighted(_ highlighted: Bool, animated: Bool) {
+        super.setHighlighted(highlighted, animated: animated)
+        // The card is drawn inside the cell, so a `selectedBackgroundView` would paint a
+        // full-width rectangle behind it instead of tinting the row.
+        let alpha: CGFloat = highlighted ? 1.0 : 0.0
+        if animated && !highlighted {
+            UIView.animate(withDuration: 0.2) { self.highlightView.alpha = alpha }
+        } else {
+            highlightView.alpha = alpha
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let width = contentView.bounds.width
+        cardView.frame = CGRect(x: Self.cardInset, y: 0.0, width: max(0.0, width - Self.cardInset * 2.0), height: contentView.bounds.height)
+        highlightView.frame = cardView.bounds
+        let inset = Self.contentInset
+        let cardWidth = cardView.bounds.width
+        let chevronSize: CGFloat = 15.0
+        chevronView.frame = CGRect(x: max(0.0, cardWidth - inset - chevronSize), y: floor((cardView.bounds.height - chevronSize) / 2.0), width: chevronSize, height: chevronSize)
+        let contentRight = chevronView.frame.minX - 8.0
+        let dateWidth = min(70.0, ceil((dateLabel.text ?? "").size(withAttributes: [.font: UIFont.systemFont(ofSize: 12.0)]).width) + 1.0)
+        dateLabel.frame = CGRect(x: max(inset, contentRight - dateWidth), y: 13.0, width: dateWidth, height: 18.0)
+        titleLabel.frame = CGRect(x: inset, y: 12.0, width: max(0.0, dateLabel.frame.minX - 8.0 - inset), height: 20.0)
+        previewLabel.frame = CGRect(x: inset, y: 35.0, width: max(0.0, contentRight - inset), height: 19.0)
     }
 }
 
@@ -703,7 +990,7 @@ private final class AorusAIConversationListEmptyView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         iconView.contentMode = .scaleAspectFit
-        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        titleLabel.font = aorusAISerifFont(size: 20.0, weight: .semibold)
         titleLabel.textAlignment = .center
         titleLabel.text = aorusAILocalized("Начните новый диалог", "Start a new chat")
         detailLabel.font = .systemFont(ofSize: 14)
@@ -724,12 +1011,12 @@ private final class AorusAIConversationListEmptyView: UIView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(theme: PresentationTheme) {
-        backgroundColor = theme.list.blocksBackgroundColor
+    func configure(palette: AorusAIPalette) {
+        backgroundColor = palette.background
         iconView.image = UIImage(systemName: "bubble.left.and.bubble.right.fill")?.withRenderingMode(.alwaysTemplate)
-        iconView.tintColor = theme.list.itemAccentColor
-        titleLabel.textColor = theme.list.itemPrimaryTextColor
-        detailLabel.textColor = theme.list.itemSecondaryTextColor
+        iconView.tintColor = palette.accent
+        titleLabel.textColor = palette.label
+        detailLabel.textColor = palette.secondary
     }
 
     func setSearching(_ searching: Bool) {
@@ -744,42 +1031,39 @@ private final class AorusAIConversationListEmptyView: UIView {
 }
 
 private final class AorusAIConversationPrivacyFooterView: UIView {
-    private let iconView = UIImageView()
+    static let preferredHeight: CGFloat = 114.0
+
     private let label = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        iconView.contentMode = .scaleAspectFit
-        label.font = .systemFont(ofSize: 12)
-        label.numberOfLines = 2
+        label.font = .systemFont(ofSize: 13.0)
+        label.numberOfLines = 0
         label.textAlignment = .center
-        label.text = aorusAILocalized("Диалоги хранятся безопасно и доступны только вам", "Chats are stored securely and are visible only to you")
-        addSubview(iconView)
+        label.text = aorusAILocalized(
+            "Диалоги хранятся на устройстве. Ничего не уходит в чат Telegram без вашего подтверждения.",
+            "Chats stay on this device. Nothing is sent to a Telegram chat without your confirmation."
+        )
         addSubview(label)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(theme: PresentationTheme) {
-        backgroundColor = .clear
-        iconView.image = UIImage(systemName: "lock.fill")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 11, weight: .medium))
-        iconView.tintColor = theme.list.itemSecondaryTextColor
-        label.textColor = theme.list.itemSecondaryTextColor
+    func configure(palette: AorusAIPalette) {
+        backgroundColor = palette.background
+        label.textColor = palette.tertiary
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let totalWidth = min(bounds.width - 32, 330)
-        let iconWidth: CGFloat = 18
-        let originX = floor((bounds.width - totalWidth) / 2)
-        iconView.frame = CGRect(x: originX, y: 18, width: iconWidth, height: 18)
-        label.frame = CGRect(x: originX + iconWidth + 4, y: 10, width: totalWidth - iconWidth - 4, height: 36)
+        label.frame = CGRect(x: 32.0, y: 28.0, width: max(0.0, bounds.width - 64.0), height: 54.0)
     }
 }
 
 private final class AorusAIChatController: ViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
     private let context: AccountContext
     private let presentationData: PresentationData
+    private let palette: AorusAIPalette
     private let accountId: Int64
     private var conversation: AorusAIConversation
     private let initialPrompt: String?
@@ -894,20 +1178,45 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// instruction but transports the confirmed transcript with it.
     init(context: AccountContext, conversation: AorusAIConversation, initialPrompt: String? = nil, initialRequest: String? = nil, reference: AorusAIReferencedMessage? = nil) {
         self.context = context
-        self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        self.presentationData = presentationData
+        let palette = AorusAIPalette.resolve(presentationData.theme)
+        self.palette = palette
         self.accountId = context.account.id.int64
         self.conversation = conversation
         self.initialPrompt = initialPrompt
         self.initialRequest = initialRequest
         self.pendingReference = reference
-        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: self.presentationData))
-        // The header is a real chat header: a native glass capsule with the name and a
-        // live status line. `title` stays unset because Telegram's navigation bar draws
-        // either the string or the custom view, never both.
-        let titleView = AorusAINavigationTitleView(theme: self.presentationData.theme)
+        // The same flat bar as the conversation list: no blur, no separator, the screen's
+        // own background continued behind the status bar. `NavigationBarTheme` is spelled
+        // out because the shared presentation theme would bring back Telegram's chat bar
+        // colours and blur, which the design does not have.
+        let base = NavigationBarPresentationData(presentationData: presentationData)
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(
+            theme: NavigationBarTheme(
+                overallDarkAppearance: palette.isDark,
+                buttonColor: palette.accent,
+                disabledButtonColor: palette.tertiary,
+                primaryTextColor: palette.label,
+                backgroundColor: palette.background,
+                opaqueBackgroundColor: palette.background,
+                enableBackgroundBlur: false,
+                separatorColor: .clear,
+                badgeBackgroundColor: palette.accent,
+                badgeStrokeColor: palette.accent,
+                badgeTextColor: palette.onAccent,
+                accentButtonColor: palette.accent,
+                accentDisabledButtonColor: palette.tertiary,
+                accentForegroundColor: palette.onAccent
+            ),
+            strings: base.strings
+        ))
+        // `title` stays unset because Telegram's navigation bar draws either the string or
+        // the custom view, never both.
+        let titleView = AorusAINavigationTitleView(theme: presentationData.theme)
         self.headerView = titleView
         self.navigationItem.titleView = titleView
-        self.statusBar.statusBarStyle = self.presentationData.theme.rootController.statusBarStyle.style
+        self.statusBar.statusBarStyle = palette.isDark ? .White : .Black
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -935,8 +1244,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     override func loadDisplayNode() {
         self.displayNode = ViewControllerTracingNode()
-        self.displayNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
-        tableView.backgroundColor = presentationData.theme.list.blocksBackgroundColor
+        self.displayNode.backgroundColor = palette.background
+        tableView.backgroundColor = palette.background
         tableView.separatorStyle = .none
         tableView.keyboardDismissMode = .interactive
         tableView.estimatedRowHeight = 100
@@ -1218,7 +1527,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 transportText += "\n\n" + heading + "\n" + quoted
             }
         }
-        let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming, statusLabel: aorusAILocalized("Подключение...", "Connecting..."))
+        let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming, statusLabel: aorusAILocalized("Подключение…", "Connecting…"))
         conversation.messages.append(userMessage)
         conversation.messages.append(assistant)
         if conversation.title.isEmpty { conversation.title = AorusAIFormat.title(from: text) }
@@ -1242,7 +1551,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // is told who `@name` actually is instead of guessing from the handle.
         let mentioned = Self.mentionedUsernames(in: entities)
         if !mentioned.isEmpty, let index = conversation.messages.firstIndex(where: { $0.id == assistant.id }) {
-            conversation.messages[index].statusLabel = aorusAILocalized("Читаю профиль...", "Reading profile...")
+            conversation.messages[index].statusLabel = aorusAILocalized("Читаю профиль диалога…", "Reading the chat profile…")
         }
         updateComposer()
         tableView.reloadData()
@@ -1280,7 +1589,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     private func startTransport(text: String) {
         if let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) {
-            conversation.messages[index].statusLabel = aorusAILocalized("Подключение...", "Connecting...")
+            conversation.messages[index].statusLabel = aorusAILocalized("Подключение…", "Connecting…")
         }
         // Everything before the two turns just appended is replayed context; the
         // payload itself trims it to the transport budget. It is frozen here so every
@@ -1332,7 +1641,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             self.turnId = turnId
         case let .status(label, progress):
             let visibleLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? aorusAILocalized("Выполняю...", "Working...")
+                ? aorusAILocalized("Выполняю…", "Working…")
                 : label
             conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(visibleLabel, progress: progress)
         case let .reasoningSummary(value):
@@ -1503,13 +1812,13 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         let handle = request.username.map { "@\($0)" } ?? ""
         if request.tool == AorusAITool.profileGet {
             return handle.isEmpty
-                ? aorusAILocalized("Смотрю профиль...", "Reading the profile...")
-                : aorusAILocalized("Смотрю профиль \(handle)...", "Reading the profile of \(handle)...")
+                ? aorusAILocalized("Читаю профиль диалога…", "Reading the chat profile…")
+                : aorusAILocalized("Читаю профиль \(handle)…", "Reading the profile of \(handle)…")
         }
         if request.tool == AorusAITool.chatHistory {
-            return aorusAILocalized("Читаю переписку...", "Reading the chat...")
+            return aorusAILocalized("Читаю переписку…", "Reading the chat…")
         }
-        return aorusAILocalized("Выполняю...", "Working...")
+        return aorusAILocalized("Выполняю…", "Working…")
     }
 
     private func setTurnStatus(_ text: String) {
@@ -1710,7 +2019,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// it in the shape the backend reads: `result.messages[].sender_name/.text` (§10).
     private func executeHistoryTool(request: AorusAIPermissionRequest, limit: Int?, fromDate: Int64?, toDate: Int64?) {
         turnState = .executingHistoryTool(request)
-        setTurnStatus(aorusAILocalized("Читаю переписку...", "Reading the chat..."))
+        setTurnStatus(aorusAILocalized("Читаю переписку…", "Reading the chat…"))
         guard let username = request.username, !username.isEmpty else {
             submit(toolResult: .failure(tool: request.tool, requestId: request.requestId, username: request.username, reason: "missing_username"))
             return
@@ -1795,7 +2104,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             )
             return
         }
-        setTurnStatus(aorusAILocalized("Думаю...", "Thinking..."))
+        setTurnStatus(aorusAILocalized("Думаю…", "Thinking…"))
         dispatchTransport()
     }
 
@@ -1858,14 +2167,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// from an idle one without hunting for a spinner inside the last bubble.
     private func updateHeaderStatus(quotaBlocked: Bool) {
         if dictation.isRunning {
-            headerView?.setStatus(aorusAILocalized("слушаю...", "listening..."), active: true)
+            headerView?.setStatus(aorusAILocalized("слушаю…", "listening…"), active: true)
             return
         }
         if streamHandle != nil || isPreparingRequest {
             let label = activeAssistantId
                 .flatMap { id in conversation.messages.first(where: { $0.id == id })?.statusLabel }
                 .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-            headerView?.setStatus(label ?? aorusAILocalized("печатает...", "typing..."), active: true)
+            headerView?.setStatus(label ?? aorusAILocalized("печатает…", "typing…"), active: true)
             return
         }
         if quotaBlocked, let resetAt = conversation.quotaResetAt, resetAt > Date() {
@@ -2485,12 +2794,12 @@ private final class AorusAIComposerView: UIView {
         referenceView.addSubview(referenceLabel)
         referenceView.addSubview(referenceClose)
         textView.addSubview(placeholder)
-        placeholder.text = aorusAILocalized("Сообщение AorusAI", "Message AorusAI")
+        placeholder.text = aorusAILocalized("Спросите что-нибудь…", "Ask anything…")
         placeholder.font = .systemFont(ofSize: 16)
         textView.font = .systemFont(ofSize: 16)
         textView.backgroundColor = .clear
         textView.isScrollEnabled = true
-        textView.textContainerInset = UIEdgeInsets(top: 5, left: 1, bottom: 5, right: 1)
+        textView.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
         referenceLabel.font = .systemFont(ofSize: 12)
         referenceLabel.numberOfLines = 2
         referenceClose.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
@@ -2510,62 +2819,82 @@ private final class AorusAIComposerView: UIView {
     func configure(context: AccountContext, theme: PresentationTheme) {
         self.context = context
         self.theme = theme
-        backgroundColor = theme.list.blocksBackgroundColor
-        container.backgroundColor = theme.list.itemBlocksBackgroundColor
-        container.layer.cornerRadius = 20
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.background
+        // The design's input: a 24pt hairline card on the elevated surface. Nothing blurs
+        // and nothing floats — the composer is part of the page, not a bar over it.
+        container.backgroundColor = palette.elevated
+        container.layer.cornerRadius = 24
         container.layer.cornerCurve = .continuous
         container.layer.borderWidth = UIScreenPixel
-        container.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        textView.textColor = theme.list.itemPrimaryTextColor
-        textView.tintColor = theme.list.itemAccentColor
-        placeholder.textColor = theme.list.itemSecondaryTextColor
-        referenceLabel.textColor = theme.list.itemSecondaryTextColor
-        referenceView.backgroundColor = theme.list.blocksBackgroundColor.withAlphaComponent(0.75)
-        referenceClose.tintColor = theme.list.itemSecondaryTextColor
-        sendButton.tintColor = theme.list.itemAccentColor
-        for button in suggestionButtons {
-            button.backgroundColor = theme.list.itemBlocksBackgroundColor
-            button.setTitleColor(theme.list.itemPrimaryTextColor, for: .normal)
-            button.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        }
+        container.layer.borderColor = palette.separator.cgColor
+        textView.textColor = palette.label
+        textView.tintColor = palette.accent
+        textView.keyboardAppearance = palette.isDark ? .dark : .light
+        placeholder.textColor = palette.tertiary
+        referenceLabel.textColor = palette.secondary
+        referenceView.backgroundColor = palette.fill
+        referenceClose.tintColor = palette.tertiary
+        applySuggestionStyle(palette: palette)
         applyMentionStyling()
         refreshButton()
         refreshDictationButton()
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let side: CGFloat = 10
-        let suggestionsHeight: CGFloat = suggestionsVisible ? 40 : 0
-        suggestionsScrollView.frame = CGRect(x: 0, y: 1, width: bounds.width, height: suggestionsHeight)
-        var suggestionX: CGFloat = 12
+    private func applySuggestionStyle(palette: AorusAIPalette) {
         for button in suggestionButtons {
-            let width = max(72, ceil(button.sizeThatFits(CGSize(width: 240, height: 34)).width) + 24)
-            button.frame = CGRect(x: suggestionX, y: 3, width: width, height: 34)
-            suggestionX += width + 8
+            button.backgroundColor = palette.elevated
+            button.setTitleColor(palette.secondary, for: .normal)
+            button.layer.borderColor = palette.separator.cgColor
         }
-        suggestionsScrollView.contentSize = CGSize(width: suggestionX + 4, height: suggestionsHeight)
-        container.frame = CGRect(x: side, y: suggestionsHeight + 5, width: bounds.width - side * 2, height: bounds.height - suggestionsHeight - 10)
-        let buttonSize: CGFloat = 38
-        sendButton.frame = CGRect(x: container.bounds.width - buttonSize - 7, y: container.bounds.height - buttonSize - 6, width: buttonSize, height: buttonSize)
-        dictationButton.frame = CGRect(x: 5, y: container.bounds.height - buttonSize - 6, width: buttonSize, height: buttonSize)
-        let stackTop: CGFloat = 8
-        let refHeight: CGFloat = reference == nil ? 0 : 42
-        referenceView.frame = CGRect(x: 10, y: stackTop, width: container.bounds.width - 20, height: refHeight)
-        referenceView.layer.cornerRadius = 8
-        referenceLabel.frame = CGRect(x: 9, y: 4, width: referenceView.bounds.width - 38, height: 34)
-        referenceClose.frame = CGRect(x: referenceView.bounds.width - 32, y: 7, width: 28, height: 28)
-        let inputTop: CGFloat = stackTop + refHeight + 1
-        let inputLeft: CGFloat = dictationButton.frame.maxX + 2
-        textView.frame = CGRect(x: inputLeft, y: inputTop, width: max(0, container.bounds.width - inputLeft - buttonSize - 12), height: max(0, container.bounds.height - inputTop - 6))
-        placeholder.frame = CGRect(x: 5, y: 5, width: max(0, textView.bounds.width - 10), height: 24)
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // The design's composer sits 12pt from the screen edges and insets its text by a
+        // further 16, so the placeholder lines up with the chip row above it.
+        let side: CGFloat = 12
+        let textInset: CGFloat = 16
+        let suggestionsHeight: CGFloat = suggestionsVisible ? AorusAIComposerView.suggestionsRowHeight : 0
+        suggestionsScrollView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: suggestionsHeight)
+        var suggestionX: CGFloat = side
+        for button in suggestionButtons {
+            let width = ceil(button.sizeThatFits(CGSize(width: 240, height: 30)).width) + 24
+            button.frame = CGRect(x: suggestionX, y: 4, width: width, height: 30)
+            suggestionX += width + 8
+        }
+        suggestionsScrollView.contentSize = CGSize(width: suggestionX + side - 8, height: suggestionsHeight)
+        container.frame = CGRect(x: side, y: suggestionsHeight, width: bounds.width - side * 2, height: max(0, bounds.height - suggestionsHeight - 8))
+        // Both controls sit at the bottom right of the card, the way the design draws them,
+        // so the text runs the full width of the card above them.
+        let buttonSize = AorusAIComposerView.actionButtonSize
+        let buttonY = container.bounds.height - buttonSize - 8
+        sendButton.frame = CGRect(x: container.bounds.width - buttonSize - 12, y: buttonY, width: buttonSize, height: buttonSize)
+        sendButton.layer.cornerRadius = buttonSize / 2.0
+        dictationButton.frame = CGRect(x: sendButton.frame.minX - buttonSize - 8, y: buttonY, width: buttonSize, height: buttonSize)
+        let refHeight: CGFloat = reference == nil ? 0 : 42
+        referenceView.frame = CGRect(x: 12, y: 10, width: container.bounds.width - 24, height: refHeight)
+        referenceView.layer.cornerRadius = 12
+        referenceLabel.frame = CGRect(x: 10, y: 4, width: referenceView.bounds.width - 40, height: 34)
+        referenceClose.frame = CGRect(x: referenceView.bounds.width - 32, y: 7, width: 28, height: 28)
+        let inputTop: CGFloat = refHeight == 0 ? 12 : refHeight + 16
+        textView.frame = CGRect(x: textInset, y: inputTop, width: max(0, container.bounds.width - textInset * 2), height: max(0, buttonY - 6 - inputTop))
+        placeholder.frame = CGRect(x: 0, y: 2, width: max(0, textView.bounds.width), height: 21)
+    }
+
+    /// 30pt chips plus the 8pt the row breathes above the card.
+    private static let suggestionsRowHeight: CGFloat = 38
+    private static let actionButtonSize: CGFloat = 32
+
     func requiredHeight(width: CGFloat) -> CGFloat {
-        let available = max(100, width - 20 - 38 - 38 - 20)
-        let measured = textView.sizeThatFits(CGSize(width: available, height: 120)).height
-        let extras: CGFloat = reference == nil ? 0 : 42
-        return min(196, max(52, measured + 20 + extras)) + 10 + (suggestionsVisible ? 40 : 0)
+        // 12pt page inset on each side, then the card's own 16pt text inset on each side.
+        let available = max(100, width - 24 - 32)
+        let measured = textView.sizeThatFits(CGSize(width: available, height: 132)).height
+        let extras: CGFloat = reference == nil ? 0 : 46
+        // 12 above the text, 6 between it and the buttons, then the button row and 8 below.
+        let chrome: CGFloat = 12 + 6 + AorusAIComposerView.actionButtonSize + 8
+        let containerHeight = min(212, max(84, ceil(measured) + chrome + extras))
+        return containerHeight + 8 + (suggestionsVisible ? AorusAIComposerView.suggestionsRowHeight : 0)
     }
 
     func setSuggestions(_ suggestions: [String]) {
@@ -2573,8 +2902,8 @@ private final class AorusAIComposerView: UIView {
         suggestionButtons = suggestions.map { title in
             let button = UIButton(type: .system)
             button.setTitle(title, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
-            button.layer.cornerRadius = 17
+            button.titleLabel?.font = .systemFont(ofSize: 13)
+            button.layer.cornerRadius = 15
             button.layer.cornerCurve = .continuous
             button.layer.borderWidth = UIScreenPixel
             button.addTarget(self, action: #selector(selectSuggestion(_:)), for: .touchUpInside)
@@ -2583,11 +2912,7 @@ private final class AorusAIComposerView: UIView {
             return button
         }
         if let theme {
-            for button in suggestionButtons {
-                button.backgroundColor = theme.list.itemBlocksBackgroundColor
-                button.setTitleColor(theme.list.itemPrimaryTextColor, for: .normal)
-                button.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-            }
+            applySuggestionStyle(palette: AorusAIPalette.resolve(theme))
         }
         setNeedsLayout()
     }
@@ -2599,19 +2924,23 @@ private final class AorusAIComposerView: UIView {
     }
 
     private func refreshButton() {
-        // A round glyph, so stopping reads as the same control as sending instead of a
-        // bare square, and it stays tappable while the request is still being prepared.
-        let name = isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill"
-        sendButton.setImage(UIImage(systemName: name)?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 29, weight: .semibold)), for: .normal)
+        // A filled accent circle with a plain glyph, as in the design: the tint lives in the
+        // circle, so the same control reads as "send" and, mid-answer, as "stop".
+        let palette = theme.map { AorusAIPalette.resolve($0) }
+        let configuration = UIImage.SymbolConfiguration(pointSize: isGenerating ? 13 : 17, weight: .semibold)
+        sendButton.setImage(UIImage(systemName: isGenerating ? "stop.fill" : "arrow.up")?.withConfiguration(configuration), for: .normal)
+        sendButton.tintColor = palette?.onAccent ?? .white
+        sendButton.backgroundColor = palette?.accent
         sendButton.isEnabled = isGenerating || canSend
         sendButton.alpha = sendButton.isEnabled ? 1 : 0.42
         sendButton.accessibilityLabel = isGenerating ? aorusAILocalized("Остановить", "Stop") : aorusAILocalized("Отправить", "Send")
     }
 
     private func refreshDictationButton() {
-        let name = isDictating ? "waveform.circle.fill" : "mic"
-        dictationButton.setImage(UIImage(systemName: name)?.withConfiguration(UIImage.SymbolConfiguration(pointSize: isDictating ? 27 : 20, weight: .medium)), for: .normal)
-        dictationButton.tintColor = isDictating ? theme?.list.itemDestructiveColor : theme?.list.itemSecondaryTextColor
+        let palette = theme.map { AorusAIPalette.resolve($0) }
+        let name = isDictating ? "waveform" : "mic"
+        dictationButton.setImage(UIImage(systemName: name)?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)), for: .normal)
+        dictationButton.tintColor = isDictating ? palette?.accent : palette?.secondary
         dictationButton.accessibilityLabel = isDictating ? aorusAILocalized("Остановить диктовку", "Stop dictation") : aorusAILocalized("Диктовать", "Dictate")
     }
 
@@ -2620,10 +2949,11 @@ private final class AorusAIComposerView: UIView {
     /// the client has proved is a real peer is drawn in the accent colour.
     private func applyMentionStyling() {
         guard let theme else { return }
+        let palette = AorusAIPalette.resolve(theme)
         let plain = textView.text ?? ""
         let base: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 16),
-            .foregroundColor: theme.list.itemPrimaryTextColor
+            .foregroundColor: palette.label
         ]
         textView.typingAttributes = base
         guard !plain.isEmpty else { return }
@@ -2640,7 +2970,7 @@ private final class AorusAIComposerView: UIView {
         let attributed = NSMutableAttributedString(string: plain, attributes: base)
         let highlight: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 16, weight: .semibold),
-            .foregroundColor: theme.list.itemAccentColor
+            .foregroundColor: palette.accent
         ]
         for entity in resolved {
             let range = NSRange(location: entity.rangeLocation, length: entity.rangeLength)
@@ -2669,17 +2999,27 @@ private final class AorusAIComposerView: UIView {
 /// pipeline while giving it a first-class, native surface. The waveform is deliberately
 /// decorative: recognized text remains the source of truth and is written into the same
 /// composer draft as keyboard input.
+/// The dictation screen of the design: the nested accent circles with the microphone, the
+/// serif "Слушаю", the on-device notice, the growing transcript with its caret, and a
+/// bottom bar holding close, waveform, elapsed time and stop.
 private final class AorusAIDictationOverlayView: UIView {
     private let contentView = UIView()
-    private let microphoneBackground = UIView()
+    private let haloView = UIView()
+    private let micCircle = UIView()
     private let microphoneView = UIImageView()
     private let titleLabel = UILabel()
-    private let transcriptLabel = UILabel()
     private let hintLabel = UILabel()
+    private let transcriptView = UITextView()
+    private let transcriptCaret = UIView()
     private let bottomPanel = UIView()
     private let cancelButton = UIButton(type: .system)
     private let finishButton = UIButton(type: .system)
+    private let stopGlyph = UIView()
+    private let elapsedLabel = UILabel()
     private let waveform = AorusAIWaveformView()
+    private var startDate: Date?
+    /// Bare `Timer` is ambiguous inside this module, so the Foundation one is spelled out.
+    private var elapsedTimer: Foundation.Timer?
     var onCancel: (() -> Void)?
     var onFinish: (() -> Void)?
 
@@ -2687,61 +3027,101 @@ private final class AorusAIDictationOverlayView: UIView {
         super.init(frame: frame)
         isHidden = true
         alpha = 0
-        contentView.layer.cornerCurve = .continuous
-        microphoneBackground.layer.cornerCurve = .continuous
-        microphoneView.contentMode = .scaleAspectFit
-        titleLabel.font = .systemFont(ofSize: 28, weight: .bold)
+        haloView.layer.cornerCurve = .continuous
+        micCircle.layer.cornerCurve = .continuous
+        microphoneView.contentMode = .center
+        titleLabel.font = aorusAISerifFont(size: 24.0, weight: .regular)
         titleLabel.textAlignment = .center
         titleLabel.text = aorusAILocalized("Слушаю", "Listening")
-        transcriptLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-        transcriptLabel.textAlignment = .center
-        transcriptLabel.numberOfLines = 4
-        transcriptLabel.adjustsFontSizeToFitWidth = true
-        transcriptLabel.minimumScaleFactor = 0.78
-        hintLabel.font = .systemFont(ofSize: 13)
+        hintLabel.font = .systemFont(ofSize: 15)
         hintLabel.textAlignment = .center
-        hintLabel.numberOfLines = 2
-        hintLabel.text = aorusAILocalized("Говорите естественно — текст появится в сообщении", "Speak naturally — the text will appear in your message")
+        hintLabel.numberOfLines = 3
+        hintLabel.text = aorusAILocalized(
+            "Говорите — текст появится в поле ввода. Распознавание идёт на устройстве.",
+            "Speak — the text appears in the input field. Recognition runs on this device."
+        )
+        // A text view, not a label: the caret has to sit exactly after the last glyph of a
+        // centred, growing transcript, and `caretRect(for:)` is the only exact answer.
+        transcriptView.isEditable = false
+        transcriptView.isScrollEnabled = false
+        transcriptView.isSelectable = false
+        transcriptView.backgroundColor = .clear
+        transcriptView.textContainerInset = .zero
+        transcriptView.textContainer.lineFragmentPadding = 0
+        transcriptView.textAlignment = .center
+        transcriptView.font = .systemFont(ofSize: 17)
+        elapsedLabel.font = aorusAIMonoFont(size: 13.0, weight: .regular)
+        elapsedLabel.textAlignment = .right
+        elapsedLabel.text = "0:00"
         bottomPanel.layer.cornerCurve = .continuous
-        cancelButton.setImage(UIImage(systemName: "xmark")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)), for: .normal)
+        cancelButton.setImage(UIImage(systemName: "xmark")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)), for: .normal)
         cancelButton.accessibilityLabel = aorusAILocalized("Отменить диктовку", "Cancel dictation")
         cancelButton.addTarget(self, action: #selector(cancel), for: .touchUpInside)
-        finishButton.setImage(UIImage(systemName: "checkmark")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 17, weight: .bold)), for: .normal)
+        // The design's stop control is a rounded square, not a checkmark glyph.
+        stopGlyph.layer.cornerRadius = 3
+        stopGlyph.layer.cornerCurve = .continuous
+        stopGlyph.isUserInteractionEnabled = false
+        finishButton.addSubview(stopGlyph)
         finishButton.accessibilityLabel = aorusAILocalized("Завершить диктовку", "Finish dictation")
         finishButton.addTarget(self, action: #selector(finish), for: .touchUpInside)
         addSubview(contentView)
-        [microphoneBackground, titleLabel, transcriptLabel, hintLabel, bottomPanel].forEach { contentView.addSubview($0) }
-        microphoneBackground.addSubview(microphoneView)
-        [cancelButton, waveform, finishButton].forEach { bottomPanel.addSubview($0) }
+        [haloView, titleLabel, hintLabel, transcriptView, bottomPanel].forEach { contentView.addSubview($0) }
+        haloView.addSubview(micCircle)
+        micCircle.addSubview(microphoneView)
+        transcriptView.addSubview(transcriptCaret)
+        [cancelButton, waveform, elapsedLabel, finishButton].forEach { bottomPanel.addSubview($0) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit { elapsedTimer?.invalidate() }
+
     func configure(theme: PresentationTheme) {
-        backgroundColor = theme.list.blocksBackgroundColor
-        contentView.backgroundColor = theme.list.blocksBackgroundColor
-        microphoneBackground.backgroundColor = theme.list.itemAccentColor.withAlphaComponent(0.14)
-        microphoneView.image = UIImage(systemName: "mic.fill")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 38, weight: .medium))
-        microphoneView.tintColor = theme.list.itemAccentColor
-        titleLabel.textColor = theme.list.itemPrimaryTextColor
-        transcriptLabel.textColor = theme.list.itemPrimaryTextColor
-        hintLabel.textColor = theme.list.itemSecondaryTextColor
-        bottomPanel.backgroundColor = theme.list.itemBlocksBackgroundColor
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.background
+        contentView.backgroundColor = palette.background
+        haloView.backgroundColor = palette.accentSoft
+        micCircle.backgroundColor = palette.accent
+        microphoneView.image = UIImage(systemName: "mic.fill")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 26, weight: .medium))
+        microphoneView.tintColor = palette.onAccent
+        titleLabel.textColor = palette.label
+        hintLabel.textColor = palette.secondary
+        transcriptView.textColor = palette.label
+        transcriptCaret.backgroundColor = palette.accent
+        elapsedLabel.textColor = palette.secondary
+        bottomPanel.backgroundColor = palette.elevated
         bottomPanel.layer.borderWidth = UIScreenPixel
-        bottomPanel.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        cancelButton.tintColor = theme.list.itemSecondaryTextColor
-        cancelButton.backgroundColor = theme.list.blocksBackgroundColor
-        finishButton.tintColor = .white
-        finishButton.backgroundColor = theme.list.itemAccentColor
-        waveform.configure(accent: theme.list.itemAccentColor, secondary: theme.list.itemSecondaryTextColor)
+        bottomPanel.layer.borderColor = palette.separator.cgColor
+        cancelButton.tintColor = palette.secondary
+        cancelButton.backgroundColor = palette.fill
+        stopGlyph.backgroundColor = palette.onAccent
+        finishButton.backgroundColor = palette.accent
+        waveform.configure(accent: palette.accent)
+        applyTranscriptStyle()
+    }
+
+    /// 17/24 centred, the way the design sets the transcript.
+    private func applyTranscriptStyle() {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.minimumLineHeight = 24.0
+        paragraph.maximumLineHeight = 24.0
+        transcriptView.attributedText = NSAttributedString(string: transcriptView.text ?? "", attributes: [
+            .font: UIFont.systemFont(ofSize: 17.0),
+            .foregroundColor: transcriptView.textColor ?? UIColor.white,
+            .paragraphStyle: paragraph
+        ])
+        setNeedsLayout()
     }
 
     func present(initialText: String) {
-        transcriptLabel.text = initialText.trimmingCharacters(in: .whitespacesAndNewlines)
-        transcriptLabel.isHidden = transcriptLabel.text?.isEmpty ?? true
+        transcriptView.text = initialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyTranscriptStyle()
         isHidden = false
         transform = CGAffineTransform(translationX: 0, y: 12)
         waveform.setAnimating(true)
+        startElapsed()
+        startCaretBlink()
         UIView.animate(withDuration: 0.24, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
             self.alpha = 1
             self.transform = .identity
@@ -2749,12 +3129,44 @@ private final class AorusAIDictationOverlayView: UIView {
     }
 
     func setTranscript(_ text: String) {
-        transcriptLabel.text = text
-        transcriptLabel.isHidden = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        transcriptView.text = text
+        applyTranscriptStyle()
+    }
+
+    private func startElapsed() {
+        startDate = Date()
+        updateElapsed()
+        elapsedTimer?.invalidate()
+        let timer = Foundation.Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateElapsed()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        elapsedTimer = timer
+    }
+
+    private func updateElapsed() {
+        guard let startDate else { return }
+        let total = max(0, Int(Date().timeIntervalSince(startDate)))
+        elapsedLabel.text = "\(total / 60):" + String(format: "%02d", total % 60)
+    }
+
+    private func startCaretBlink() {
+        guard transcriptCaret.layer.animation(forKey: "blink") == nil else { return }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 1.0
+        animation.toValue = 0.1
+        animation.duration = 0.55
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        transcriptCaret.layer.add(animation, forKey: "blink")
     }
 
     func dismiss(animated: Bool) {
         waveform.setAnimating(false)
+        elapsedTimer?.invalidate()
+        elapsedTimer = nil
+        transcriptCaret.layer.removeAnimation(forKey: "blink")
         let changes = {
             self.alpha = 0
             self.transform = CGAffineTransform(translationX: 0, y: 10)
@@ -2775,31 +3187,59 @@ private final class AorusAIDictationOverlayView: UIView {
         super.layoutSubviews()
         contentView.frame = bounds
         let safeBottom = safeAreaInsets.bottom
-        let micSize: CGFloat = 104
-        let centerY = max(135, min(bounds.height * 0.31, 245))
-        microphoneBackground.frame = CGRect(x: floor((bounds.width - micSize) / 2), y: centerY - micSize / 2, width: micSize, height: micSize)
-        microphoneBackground.layer.cornerRadius = micSize / 2
-        microphoneView.frame = microphoneBackground.bounds.insetBy(dx: 25, dy: 25)
-        titleLabel.frame = CGRect(x: 24, y: microphoneBackground.frame.maxY + 22, width: max(0, bounds.width - 48), height: 38)
-        transcriptLabel.frame = CGRect(x: 28, y: titleLabel.frame.maxY + 14, width: max(0, bounds.width - 56), height: 112)
-        hintLabel.frame = CGRect(x: 34, y: transcriptLabel.frame.maxY + 8, width: max(0, bounds.width - 68), height: 42)
-        let panelHeight: CGFloat = 70
-        bottomPanel.frame = CGRect(x: 16, y: max(hintLabel.frame.maxY + 18, bounds.height - safeBottom - panelHeight - 18), width: max(0, bounds.width - 32), height: panelHeight)
-        bottomPanel.layer.cornerRadius = 25
-        let buttonSize: CGFloat = 46
-        cancelButton.frame = CGRect(x: 12, y: 12, width: buttonSize, height: buttonSize)
-        finishButton.frame = CGRect(x: bottomPanel.bounds.width - buttonSize - 12, y: 12, width: buttonSize, height: buttonSize)
-        cancelButton.layer.cornerRadius = buttonSize / 2
-        finishButton.layer.cornerRadius = buttonSize / 2
-        waveform.frame = CGRect(x: cancelButton.frame.maxX + 10, y: 15, width: max(0, finishButton.frame.minX - cancelButton.frame.maxX - 20), height: 40)
+        let haloSize: CGFloat = 76
+        let haloTop = max(24, min(bounds.height * 0.17, 150))
+        haloView.frame = CGRect(x: floor((bounds.width - haloSize) / 2), y: haloTop, width: haloSize, height: haloSize)
+        haloView.layer.cornerRadius = haloSize / 2
+        let innerSize: CGFloat = 56
+        micCircle.frame = CGRect(x: (haloSize - innerSize) / 2, y: (haloSize - innerSize) / 2, width: innerSize, height: innerSize)
+        micCircle.layer.cornerRadius = innerSize / 2
+        microphoneView.frame = micCircle.bounds
+        titleLabel.frame = CGRect(x: 24, y: haloView.frame.maxY + 24, width: max(0, bounds.width - 48), height: 32)
+        let hintWidth = max(0, min(bounds.width - 64, 320))
+        let hintHeight = ceil(hintLabel.sizeThatFits(CGSize(width: hintWidth, height: 80)).height)
+        hintLabel.frame = CGRect(x: floor((bounds.width - hintWidth) / 2), y: titleLabel.frame.maxY + 6, width: hintWidth, height: hintHeight)
+        let transcriptWidth = max(0, min(bounds.width - 48, 300))
+        let transcriptHeight = ceil(transcriptView.sizeThatFits(CGSize(width: transcriptWidth, height: 240)).height)
+        transcriptView.frame = CGRect(x: floor((bounds.width - transcriptWidth) / 2), y: hintLabel.frame.maxY + 24, width: transcriptWidth, height: max(24, transcriptHeight))
+        positionCaret()
+        let panelHeight: CGFloat = 54
+        bottomPanel.frame = CGRect(x: 16, y: max(transcriptView.frame.maxY + 20, bounds.height - safeBottom - panelHeight - 12), width: max(0, bounds.width - 32), height: panelHeight)
+        bottomPanel.layer.cornerRadius = 24
+        let closeSize: CGFloat = 34
+        cancelButton.frame = CGRect(x: 12, y: floor((panelHeight - closeSize) / 2), width: closeSize, height: closeSize)
+        cancelButton.layer.cornerRadius = closeSize / 2
+        let stopSize: CGFloat = 38
+        finishButton.frame = CGRect(x: bottomPanel.bounds.width - stopSize - 8, y: floor((panelHeight - stopSize) / 2), width: stopSize, height: stopSize)
+        finishButton.layer.cornerRadius = stopSize / 2
+        stopGlyph.frame = CGRect(x: (stopSize - 13) / 2, y: (stopSize - 13) / 2, width: 13, height: 13)
+        let elapsedWidth: CGFloat = 34
+        elapsedLabel.frame = CGRect(x: finishButton.frame.minX - 8 - elapsedWidth, y: floor((panelHeight - 18) / 2), width: elapsedWidth, height: 18)
+        let waveformX = cancelButton.frame.maxX + 10
+        waveform.frame = CGRect(x: waveformX, y: floor((panelHeight - closeSize) / 2), width: max(0, min(AorusAIWaveformView.intrinsicWidth, elapsedLabel.frame.minX - 10 - waveformX)), height: closeSize)
+    }
+
+    /// The 2pt accent caret of the design, kept on the last glyph as the transcript grows.
+    private func positionCaret() {
+        let rect = transcriptView.caretRect(for: transcriptView.endOfDocument)
+        guard rect.origin.x.isFinite, rect.origin.y.isFinite else {
+            transcriptCaret.isHidden = true
+            return
+        }
+        transcriptCaret.isHidden = false
+        transcriptCaret.frame = CGRect(x: rect.minX + 2.0, y: rect.midY - 8.5, width: 2.0, height: 17.0)
     }
 
     @objc private func cancel() { onCancel?() }
     @objc private func finish() { onFinish?() }
 }
 
+/// The design's waveform: twenty 3pt accent bars with fixed heights, animated with a
+/// staggered delay so it reads as a live meter instead of a random jitter.
 private final class AorusAIWaveformView: UIView {
-    private let bars: [UIView] = (0..<18).map { _ in UIView() }
+    private static let barHeights: [CGFloat] = [10, 22, 14, 30, 18, 34, 12, 26, 16, 30, 20, 12, 28, 18, 24, 14, 32, 16, 22, 10]
+    static let intrinsicWidth: CGFloat = CGFloat(AorusAIWaveformView.barHeights.count) * 3.0 + CGFloat(AorusAIWaveformView.barHeights.count - 1) * 3.0
+    private let bars: [UIView] = AorusAIWaveformView.barHeights.map { _ in UIView() }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2809,19 +3249,19 @@ private final class AorusAIWaveformView: UIView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(accent: UIColor, secondary: UIColor) {
-        for (index, bar) in bars.enumerated() {
-            bar.backgroundColor = index.isMultiple(of: 3) ? accent : secondary.withAlphaComponent(0.72)
-        }
+    func configure(accent: UIColor) {
+        bars.forEach { $0.backgroundColor = accent }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let spacing: CGFloat = 3
-        let barWidth = max(2, floor((bounds.width - spacing * CGFloat(bars.count - 1)) / CGFloat(bars.count)))
+        let barWidth: CGFloat = 3
+        let totalWidth = barWidth * CGFloat(bars.count) + spacing * CGFloat(bars.count - 1)
+        let originX = max(0, floor((bounds.width - totalWidth) / 2))
         for (index, bar) in bars.enumerated() {
-            let height = 8 + CGFloat((index * 7) % 19)
-            bar.frame = CGRect(x: CGFloat(index) * (barWidth + spacing), y: floor((bounds.height - height) / 2), width: barWidth, height: height)
+            let height = min(AorusAIWaveformView.barHeights[index], bounds.height)
+            bar.frame = CGRect(x: originX + CGFloat(index) * (barWidth + spacing), y: floor((bounds.height - height) / 2), width: barWidth, height: height)
             bar.layer.cornerRadius = barWidth / 2
         }
     }
@@ -2834,10 +3274,10 @@ private final class AorusAIWaveformView: UIView {
         for (index, bar) in bars.enumerated() {
             guard bar.layer.animation(forKey: "aorusWave") == nil else { continue }
             let animation = CAKeyframeAnimation(keyPath: "transform.scale.y")
-            animation.values = [0.45, 1.0, 0.62, 1.2, 0.45]
-            animation.keyTimes = [0, 0.24, 0.5, 0.76, 1]
-            animation.duration = 0.78 + Double(index % 5) * 0.055
-            animation.beginTime = CACurrentMediaTime() + Double(index) * 0.025
+            animation.values = [0.4, 1.0, 0.55, 1.0, 0.4]
+            animation.keyTimes = [0, 0.25, 0.5, 0.75, 1]
+            animation.duration = 1.1
+            animation.beginTime = CACurrentMediaTime() + Double(index % 7) * 0.09
             animation.repeatCount = .infinity
             animation.isRemovedOnCompletion = false
             bar.layer.add(animation, forKey: "aorusWave")
@@ -2863,8 +3303,16 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private let retryButton = UIButton(type: .system)
     private let typingIndicator = AorusAITypingIndicatorView()
     private let noticeCard = AorusAINoticeCard()
+    /// The 9pt round dot the design blinks at the tail of a streaming answer. It lives
+    /// inside the last text view so it can sit exactly after the last glyph.
+    private let streamCaret = UIView()
+    private weak var caretHost: UITextView?
     var onOpenLink: ((URL) -> Void)?
     private var bubbleWidthConstraint: NSLayoutConstraint?
+    private var bodyInsetConstraints: (top: NSLayoutConstraint, bottom: NSLayoutConstraint, leading: NSLayoutConstraint, trailing: NSLayoutConstraint)?
+    /// The quoted Telegram message. The design draws it as its own full-width block above
+    /// the bubble, not as a card nested inside one, so it lives in `contentStack`.
+    private var referenceCard: AorusAIReferenceCard?
     private var slots: [BodySlot] = []
     private var slotValues: [String] = []
     private var structureSignature: String?
@@ -2885,25 +3333,27 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         bodyStack.axis = .vertical
         bodyStack.spacing = 8
         bubble.addSubview(bodyStack)
+        // The design puts the progress line *above* the answer — "Читаю профиль диалога…"
+        // is what the turn is doing before the text it produces, not a footnote under it.
+        statusLabel.font = .systemFont(ofSize: 13.0)
+        statusLabel.numberOfLines = 0
+        contentStack.addArrangedSubview(statusLabel)
         contentStack.addArrangedSubview(bubble)
         noticeCard.isHidden = true
         noticeCard.onRetry = { [weak self] in self?.onRetry?() }
         contentStack.addArrangedSubview(noticeCard)
-        statusLabel.font = .systemFont(ofSize: 12)
-        statusLabel.numberOfLines = 0
-        contentStack.addArrangedSubview(statusLabel)
         assistantActions.axis = .horizontal
-        assistantActions.spacing = 8
+        assistantActions.spacing = 4
         assistantActions.alignment = .center
         copyButton.setTitle(aorusAILocalized("Копировать", "Copy"), for: .normal)
         copyButton.setImage(UIImage(systemName: "doc.on.doc"), for: .normal)
-        regenerateButton.setTitle(aorusAILocalized("Повторить", "Retry"), for: .normal)
+        regenerateButton.setTitle(aorusAILocalized("Ещё раз", "Again"), for: .normal)
         regenerateButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
         for button in [copyButton, regenerateButton] {
-            button.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
-            button.imageEdgeInsets = UIEdgeInsets(top: 0, left: -3, bottom: 0, right: 3)
-            button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
-            button.layer.cornerRadius = 14
+            button.titleLabel?.font = .systemFont(ofSize: 13.0)
+            button.imageEdgeInsets = UIEdgeInsets(top: 0.0, left: -4.0, bottom: 0.0, right: 4.0)
+            button.contentEdgeInsets = UIEdgeInsets(top: 6.0, left: 8.0, bottom: 6.0, right: 8.0)
+            button.layer.cornerRadius = 8.0
             button.layer.cornerCurve = .continuous
             assistantActions.addArrangedSubview(button)
         }
@@ -2918,25 +3368,97 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         contentView.addSubview(contentStack)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         bodyStack.translatesAutoresizingMaskIntoConstraints = false
+        // 20pt gutters and 12/12 vertical margins: the design's `px-5` body with `space-y-6`
+        // between turns, which two adjacent cells add up to.
+        let bodyTop = bodyStack.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 10)
+        let bodyBottom = bodyStack.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -10)
+        let bodyLeading = bodyStack.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 16)
+        let bodyTrailing = bodyStack.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -16)
+        bodyInsetConstraints = (top: bodyTop, bottom: bodyBottom, leading: bodyLeading, trailing: bodyTrailing)
         NSLayoutConstraint.activate([
-            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
-            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
-            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            bodyStack.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 10),
-            bodyStack.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -10),
-            bodyStack.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
-            bodyStack.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -12),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            bodyTop, bodyBottom, bodyLeading, bodyTrailing,
             noticeCard.widthAnchor.constraint(equalTo: contentStack.widthAnchor)
         ])
     }
 
+    /// The padding inside the bubble. A user turn is a real bubble and keeps the design's
+    /// `px-4 py-2.5`; an assistant turn has no bubble at all, so its text has to sit flush
+    /// with the 20pt body gutter instead of being indented by a second inset.
+    private func applyBodyInsets(isUser: Bool) {
+        guard let insets = bodyInsetConstraints else { return }
+        insets.top.constant = isUser ? 10.0 : 0.0
+        insets.bottom.constant = isUser ? -10.0 : 0.0
+        insets.leading.constant = isUser ? 16.0 : 0.0
+        insets.trailing.constant = isUser ? -16.0 : 0.0
+    }
+
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        positionStreamCaret()
+    }
+
+    /// Keeps the blinking dot on the last glyph of the answer while it grows.
+    private func applyStreamCaret(message: AorusAIMessage, palette: AorusAIPalette) {
+        var host: UITextView?
+        if message.role == .assistant, message.state == .streaming {
+            for slot in slots.reversed() {
+                if case let .text(view) = slot {
+                    host = view
+                    break
+                }
+            }
+        }
+        guard let host else {
+            streamCaret.isHidden = true
+            streamCaret.layer.removeAnimation(forKey: "blink")
+            streamCaret.removeFromSuperview()
+            caretHost = nil
+            return
+        }
+        streamCaret.backgroundColor = palette.label
+        if streamCaret.superview !== host {
+            streamCaret.removeFromSuperview()
+            host.addSubview(streamCaret)
+        }
+        streamCaret.isHidden = false
+        if streamCaret.layer.animation(forKey: "blink") == nil {
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 1.0
+            animation.toValue = 0.15
+            animation.duration = 0.55
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            streamCaret.layer.add(animation, forKey: "blink")
+        }
+        caretHost = host
+        positionStreamCaret()
+    }
+
+    private func positionStreamCaret() {
+        guard let host = caretHost, !streamCaret.isHidden else { return }
+        let rect = host.caretRect(for: host.endOfDocument)
+        guard rect.origin.x.isFinite, rect.origin.y.isFinite, rect.height > 0.0 else { return }
+        let size: CGFloat = 9.0
+        streamCaret.frame = CGRect(x: rect.maxX + 2.0, y: rect.midY - size / 2.0, width: size, height: size)
+        streamCaret.layer.cornerRadius = size / 2.0
+    }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         typingIndicator.setAnimating(false)
+        streamCaret.isHidden = true
+        streamCaret.layer.removeAnimation(forKey: "blink")
+        streamCaret.removeFromSuperview()
+        caretHost = nil
         bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        referenceCard?.removeFromSuperview()
+        referenceCard = nil
         slots.removeAll()
         slotValues.removeAll()
         structureSignature = nil
@@ -2967,7 +3489,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             case let (.code(card), .code(language, code)):
                 card.configure(language: language, code: code, theme: theme)
             case let (.quote(card), .quote(source)):
-                card.configure(text: source, theme: theme, textColor: configuredTextColor, accentOnColor: message.role == .user)
+                card.configure(text: source, theme: theme, textColor: configuredTextColor, accentOnColor: false)
             default:
                 return false
             }
@@ -2978,6 +3500,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         assistantActions.isHidden = !(message.role == .assistant && message.state == .complete && canRetry && !message.rawText.isEmpty)
         retryButton.isHidden = !(message.state == .failed && canRetry)
         applyNotice(message: message, theme: theme, canRetry: canRetry)
+        applyStreamCaret(message: message, palette: AorusAIPalette.resolve(theme))
         return true
     }
 
@@ -3018,9 +3541,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     }
 
     func configure(message: AorusAIMessage, context: AccountContext, theme: PresentationTheme, canRetry: Bool, loadingArtifactIds: Set<String>) {
-        backgroundColor = theme.list.blocksBackgroundColor
-        contentView.backgroundColor = theme.list.blocksBackgroundColor
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.background
+        contentView.backgroundColor = palette.background
         bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        referenceCard?.removeFromSuperview()
+        referenceCard = nil
         slots.removeAll()
         slotValues.removeAll()
         let isUser = message.role == .user
@@ -3029,28 +3555,35 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         // A user bubble hugs its text; an assistant turn takes the full column, so code
         // cards, tables and quotes run edge to edge instead of sitting in a narrow strip.
         let bubbleWidthConstraint = isUser
-            ? bubble.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.82, constant: -12)
-            : bubble.widthAnchor.constraint(equalTo: contentView.widthAnchor, constant: -24)
+            ? bubble.widthAnchor.constraint(lessThanOrEqualTo: contentStack.widthAnchor, multiplier: 0.85)
+            : bubble.widthAnchor.constraint(equalTo: contentStack.widthAnchor)
         bubbleWidthConstraint.isActive = true
         self.bubbleWidthConstraint = bubbleWidthConstraint
-        bubble.backgroundColor = isUser ? theme.list.itemAccentColor : .clear
-        bubble.layer.cornerRadius = isUser ? 16 : 0
+        // The design's own bubble: a neutral raised surface, not an accent-filled one, so
+        // the violet is spent on actions instead of on every line the user typed.
+        bubble.backgroundColor = isUser ? palette.fillStrong : .clear
+        bubble.layer.cornerRadius = isUser ? 20.0 : 0.0
         bubble.layer.cornerCurve = .continuous
+        applyBodyInsets(isUser: isUser)
 
         if let reference = message.referencedMessage {
             let referenceView = AorusAIReferenceCard()
-            referenceView.configure(reference: reference, context: context, theme: theme, accentOnColor: isUser)
+            referenceView.configure(reference: reference, context: context, theme: theme, accentOnColor: false)
             referenceView.onOpenPeer = { [weak self] peerId in
                 guard let url = URL(string: "aorus-peer://\(peerId.toInt64())") else { return }
                 self?.onOpenLink?(url)
             }
-            bodyStack.addArrangedSubview(referenceView)
+            // Above the bubble and full width: in the design the quote is its own block.
+            contentStack.insertArrangedSubview(referenceView, at: 0)
+            referenceView.translatesAutoresizingMaskIntoConstraints = false
+            referenceView.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            referenceCard = referenceView
         }
 
         let resolvedEntities = message.telegramEntities.filter { $0.peerId != nil }
         if !resolvedEntities.isEmpty {
             let entityRow = AorusAIEntityRowView()
-            entityRow.configure(context: context, entities: resolvedEntities, theme: theme, accentOnColor: isUser)
+            entityRow.configure(context: context, entities: resolvedEntities, theme: theme, accentOnColor: false)
             entityRow.onOpenPeer = { [weak self] peerId in
                 guard let url = URL(string: "aorus-peer://\(peerId.toInt64())") else { return }
                 self?.onOpenLink?(url)
@@ -3058,8 +3591,10 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             bodyStack.addArrangedSubview(entityRow)
         }
 
-        let textColor: UIColor = isUser ? .white : theme.list.itemPrimaryTextColor
-        let accent: UIColor = isUser ? .white : theme.list.itemAccentColor
+        // The bubble is neutral in both roles now, so the text keeps the label colour and
+        // links keep the accent — no white-on-accent special case.
+        let textColor: UIColor = palette.label
+        let accent: UIColor = palette.accent
         configuredTextColor = textColor
         configuredAccent = accent
         configuredTheme = theme
@@ -3097,12 +3632,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 slots.append(.code(card))
             case let .quote(value):
                 let card = AorusAIQuoteCard()
-                card.configure(text: value, theme: theme, textColor: textColor, accentOnColor: isUser)
+                card.configure(text: value, theme: theme, textColor: textColor, accentOnColor: false)
                 bodyStack.addArrangedSubview(card)
                 slots.append(.quote(card))
             case .separator:
                 let separator = UIView()
-                separator.backgroundColor = isUser ? UIColor.white.withAlphaComponent(0.35) : theme.list.itemBlocksSeparatorColor
+                separator.backgroundColor = palette.separator
                 separator.heightAnchor.constraint(equalToConstant: UIScreenPixel).isActive = true
                 bodyStack.addArrangedSubview(separator)
                 slots.append(.separator)
@@ -3118,19 +3653,22 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             bodyStack.addArrangedSubview(card)
         }
 
-        statusLabel.textColor = theme.list.itemSecondaryTextColor
+        statusLabel.textColor = palette.tertiary
         statusLabel.text = message.statusLabel
         statusLabel.isHidden = message.statusLabel == nil
-        retryButton.tintColor = theme.list.itemAccentColor
+        retryButton.tintColor = palette.accent
         copyText = message.rawText
+        // Flat text buttons, as in the design: no pill behind them, the tint carries the
+        // affordance and the row stays quiet under the answer.
         for button in [copyButton, regenerateButton] {
-            button.tintColor = theme.list.itemSecondaryTextColor
-            button.setTitleColor(theme.list.itemSecondaryTextColor, for: .normal)
-            button.backgroundColor = theme.list.itemBlocksBackgroundColor
+            button.tintColor = palette.tertiary
+            button.setTitleColor(palette.tertiary, for: .normal)
+            button.backgroundColor = .clear
         }
         assistantActions.isHidden = !(message.role == .assistant && message.state == .complete && canRetry && !message.rawText.isEmpty)
         retryButton.isHidden = !(message.state == .failed && canRetry)
         applyNotice(message: message, theme: theme, canRetry: canRetry)
+        applyStreamCaret(message: message, palette: palette)
     }
 
     /// A failed or throttled turn is reported by the full-width glass card, so the plain
@@ -3197,8 +3735,9 @@ private final class AorusAITypingIndicatorView: UIView {
     }
 
     func configure(theme: PresentationTheme) {
+        let palette = AorusAIPalette.resolve(theme)
         for dot in dots {
-            dot.backgroundColor = theme.list.itemSecondaryTextColor
+            dot.backgroundColor = palette.tertiary
         }
     }
 
@@ -3228,26 +3767,21 @@ private final class AorusAITypingIndicatorView: UIView {
 /// their items: the plain blocks background, a hairline separator border, a fully rounded
 /// shape and no tint fill, no gradient and no white. The glyph and the text carry the
 /// theme's own navigation-bar colours, so the header stays native in every theme.
+/// The chat header the design draws: one centred 15pt medium "AorusAI", nothing else. The
+/// glass capsule and the sparkle badge this view used to draw were the only decorated
+/// navigation bar in the app, and the state they carried is now shown where it belongs —
+/// the progress line above the streaming answer, the quota notice card, the dictation
+/// overlay. `setStatus` therefore keeps only its accessibility half: VoiceOver still
+/// announces "печатает…" on the header without a second line appearing on screen.
 private final class AorusAINavigationTitleView: UIView {
-    private let capsule = UIView()
-    private let badgeGlyph = UIImageView()
     private let titleLabel = UILabel()
-    private let statusLabel = UILabel()
-    private var accentColor: UIColor = .white
-    private var secondaryColor: UIColor = .gray
 
     init(theme: PresentationTheme) {
         super.init(frame: .zero)
-        capsule.layer.cornerCurve = .continuous
-        capsule.layer.masksToBounds = true
-        badgeGlyph.contentMode = .center
         titleLabel.text = "AorusAI"
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        statusLabel.font = .systemFont(ofSize: 11)
-        addSubview(capsule)
-        capsule.addSubview(badgeGlyph)
-        capsule.addSubview(titleLabel)
-        capsule.addSubview(statusLabel)
+        titleLabel.font = .systemFont(ofSize: 15.0, weight: .medium)
+        titleLabel.textAlignment = .center
+        addSubview(titleLabel)
         isAccessibilityElement = true
         accessibilityLabel = "AorusAI"
         update(theme: theme)
@@ -3256,60 +3790,17 @@ private final class AorusAINavigationTitleView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func update(theme: PresentationTheme) {
-        titleLabel.textColor = theme.rootController.navigationBar.primaryTextColor
-        secondaryColor = theme.rootController.navigationBar.secondaryTextColor
-        accentColor = theme.rootController.navigationBar.accentTextColor
-        statusLabel.textColor = secondaryColor
-        capsule.backgroundColor = theme.list.itemBlocksBackgroundColor
-        capsule.layer.borderWidth = UIScreenPixel
-        capsule.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        badgeGlyph.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))?
-            .withTintColor(theme.rootController.navigationBar.primaryTextColor, renderingMode: .alwaysOriginal)
-        setNeedsLayout()
+        titleLabel.textColor = AorusAIPalette.resolve(theme).label
     }
 
-    /// `active` renders the line in the accent colour, the way a native header marks a
-    /// peer that is typing right now.
     func setStatus(_ text: String?, active: Bool) {
         let value = text?.trimmingCharacters(in: .whitespacesAndNewlines)
-        statusLabel.text = (value?.isEmpty == false) ? value : nil
-        statusLabel.textColor = active ? accentColor : secondaryColor
-        accessibilityValue = statusLabel.text
-        setNeedsLayout()
+        accessibilityValue = (value?.isEmpty == false) ? value : nil
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard bounds.width > 0 else { return }
-        let hasStatus = (statusLabel.text?.isEmpty == false)
-        let glyphSize: CGFloat = 18
-        let leftInset: CGFloat = 10
-        let rightInset: CGFloat = 13
-        let glyphSpacing: CGFloat = 6
-        let capsuleHeight = min(bounds.height - 4.0, hasStatus ? 36.0 : 32.0)
-        let available = max(0, bounds.width - leftInset - rightInset - glyphSize - glyphSpacing)
-        let titleSize = titleLabel.sizeThatFits(CGSize(width: available, height: 20))
-        let statusSize = hasStatus ? statusLabel.sizeThatFits(CGSize(width: available, height: 14)) : .zero
-        let textWidth = min(max(titleSize.width, statusSize.width), available)
-        let capsuleWidth = leftInset + glyphSize + glyphSpacing + ceil(textWidth) + rightInset
-        let centerY = bounds.height / 2.0
-        capsule.frame = CGRect(
-            x: floor((bounds.width - capsuleWidth) / 2.0),
-            y: floor(centerY - capsuleHeight / 2.0),
-            width: capsuleWidth,
-            height: capsuleHeight
-        )
-        capsule.layer.cornerRadius = capsuleHeight / 2.0
-        let innerCenterY = capsuleHeight / 2.0
-        badgeGlyph.frame = CGRect(x: leftInset, y: floor(innerCenterY - glyphSize / 2.0), width: glyphSize, height: glyphSize)
-        let textX = leftInset + glyphSize + glyphSpacing
-        if hasStatus {
-            titleLabel.frame = CGRect(x: textX, y: floor(innerCenterY - 16.0), width: textWidth, height: 18)
-            statusLabel.frame = CGRect(x: textX, y: floor(innerCenterY + 1.0), width: textWidth, height: 14)
-        } else {
-            titleLabel.frame = CGRect(x: textX, y: floor(innerCenterY - 10.0), width: textWidth, height: 20)
-            statusLabel.frame = .zero
-        }
+        titleLabel.frame = bounds
     }
 }
 
@@ -3382,19 +3873,20 @@ private final class AorusAINoticeCard: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(kind: Kind, text: String, theme: PresentationTheme, canRetry: Bool) {
-        backgroundColor = theme.list.itemBlocksBackgroundColor
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.elevated
         layer.borderWidth = UIScreenPixel
-        layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        let accent = kind == .quota ? theme.list.itemAccentColor : theme.list.itemDestructiveColor
+        layer.borderColor = palette.separator.cgColor
+        let accent = kind == .quota ? palette.accent : theme.list.itemDestructiveColor
         icon.image = UIImage(systemName: kind.iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
             .withTintColor(accent, renderingMode: .alwaysOriginal)
-        titleLabel.textColor = theme.list.itemPrimaryTextColor
+        titleLabel.textColor = palette.label
         titleLabel.text = kind.title
-        bodyLabel.textColor = theme.list.itemSecondaryTextColor
+        bodyLabel.textColor = palette.secondary
         let detail = text.trimmingCharacters(in: .whitespacesAndNewlines)
         bodyLabel.text = detail.isEmpty ? nil : detail
         bodyLabel.isHidden = detail.isEmpty
-        retryButton.tintColor = theme.list.itemAccentColor
+        retryButton.tintColor = palette.accent
         retryButton.isHidden = !canRetry
         retryHeight?.constant = canRetry ? 28 : 0
         accessibilityLabel = kind.title + (detail.isEmpty ? "" : ". " + detail)
@@ -3451,10 +3943,15 @@ private final class AorusAIQuoteCard: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        // The design's quote: a 14pt card on the fill surface with a 2pt accent edge, not
+        // a bare rule in the margin.
+        self.layer.cornerRadius = 14.0
+        self.layer.cornerCurve = .continuous
+        self.clipsToBounds = true
         textView.backgroundColor = .clear
         textView.isEditable = false
         textView.isScrollEnabled = false
-        textView.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+        textView.textContainerInset = UIEdgeInsets(top: 10.0, left: 0.0, bottom: 10.0, right: 0.0)
         textView.textContainer.lineFragmentPadding = 0
         addSubview(line)
         addSubview(textView)
@@ -3464,9 +3961,9 @@ private final class AorusAIQuoteCard: UIView {
             line.leadingAnchor.constraint(equalTo: leadingAnchor),
             line.topAnchor.constraint(equalTo: topAnchor),
             line.bottomAnchor.constraint(equalTo: bottomAnchor),
-            line.widthAnchor.constraint(equalToConstant: 3),
-            textView.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 9),
-            textView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.widthAnchor.constraint(equalToConstant: 2.0),
+            textView.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 12.0),
+            textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14.0),
             textView.topAnchor.constraint(equalTo: topAnchor),
             textView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
@@ -3475,7 +3972,9 @@ private final class AorusAIQuoteCard: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(text: String, theme: PresentationTheme, textColor: UIColor, accentOnColor: Bool) {
-        let accent = accentOnColor ? UIColor.white.withAlphaComponent(0.8) : theme.list.itemAccentColor
+        let palette = AorusAIPalette.resolve(theme)
+        let accent = accentOnColor ? UIColor.white.withAlphaComponent(0.8) : palette.accent
+        backgroundColor = accentOnColor ? UIColor.white.withAlphaComponent(0.12) : palette.fill
         line.backgroundColor = accent
         textView.linkTextAttributes = [.foregroundColor: accent, .underlineStyle: 0]
         textView.attributedText = AorusAIMarkdown.attributed(text, color: textColor, accent: accent)
@@ -3530,7 +4029,7 @@ private final class AorusAIEntityChipView: UIControl {
         let namePresentationData = context.sharedContext.currentPresentationData.with { $0 }
         nameStrings = namePresentationData.strings
         nameOrder = namePresentationData.nameDisplayOrder
-        let accent = accentOnColor ? UIColor.white : theme.list.itemAccentColor
+        let accent = accentOnColor ? UIColor.white : AorusAIPalette.resolve(theme).accent
         backgroundColor = accent.withAlphaComponent(accentOnColor ? 0.16 : 0.12)
         titleLabel.textColor = accent
         titleLabel.text = entity.displayName
@@ -3595,60 +4094,70 @@ private final class AorusAIEntityChipView: UIControl {
     }
 }
 
+/// The Telegram message a turn was started from. The design draws it as a quote card:
+/// a 14pt card on the fill surface with a 2pt accent edge, a small "Из Telegram · Имя"
+/// caption and the quoted text below it. The caption is the tap target for the author's
+/// profile — an avatar chip inside the card would compete with the answer next to it.
 private final class AorusAIReferenceCard: UIView {
     private let line = UIView()
+    private let captionButton = UIButton(type: .system)
     private let label = UILabel()
-    private let entityContainer = UIView()
-    private var entityChip: AorusAIEntityChipView?
-    /// Toggled instead of re-created: a fresh 0-height constraint on every `configure`
-    /// would stack up and permanently collapse the author chip.
-    private var entityCollapse: NSLayoutConstraint?
+    private var authorPeerId: PeerId?
     var onOpenPeer: ((PeerId) -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
-        label.numberOfLines = 3
-        label.font = .systemFont(ofSize: 13)
-        addSubview(line); addSubview(entityContainer); addSubview(label)
-        line.translatesAutoresizingMaskIntoConstraints = false; entityContainer.translatesAutoresizingMaskIntoConstraints = false; label.translatesAutoresizingMaskIntoConstraints = false
+        layer.cornerRadius = 14.0
+        layer.cornerCurve = .continuous
+        clipsToBounds = true
+        captionButton.titleLabel?.font = .systemFont(ofSize: 12.0, weight: .medium)
+        captionButton.contentHorizontalAlignment = .leading
+        captionButton.addTarget(self, action: #selector(openAuthor), for: .touchUpInside)
+        label.numberOfLines = 4
+        addSubview(line); addSubview(captionButton); addSubview(label)
+        [line, captionButton, label].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            line.leadingAnchor.constraint(equalTo: leadingAnchor), line.topAnchor.constraint(equalTo: topAnchor), line.bottomAnchor.constraint(equalTo: bottomAnchor), line.widthAnchor.constraint(equalToConstant: 3),
-            entityContainer.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 8), entityContainer.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor), entityContainer.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            label.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 8), label.trailingAnchor.constraint(equalTo: trailingAnchor), label.topAnchor.constraint(equalTo: entityContainer.bottomAnchor, constant: 3), label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3)
+            line.leadingAnchor.constraint(equalTo: leadingAnchor), line.topAnchor.constraint(equalTo: topAnchor), line.bottomAnchor.constraint(equalTo: bottomAnchor), line.widthAnchor.constraint(equalToConstant: 2.0),
+            captionButton.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 12.0), captionButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14.0), captionButton.topAnchor.constraint(equalTo: topAnchor, constant: 10.0), captionButton.heightAnchor.constraint(equalToConstant: 16.0),
+            label.leadingAnchor.constraint(equalTo: line.trailingAnchor, constant: 12.0), label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14.0), label.topAnchor.constraint(equalTo: captionButton.bottomAnchor, constant: 4.0), label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10.0)
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
     func configure(reference: AorusAIReferencedMessage, context: AccountContext, theme: PresentationTheme, accentOnColor: Bool) {
-        entityChip?.removeFromSuperview()
-        entityChip = nil
-        if entityCollapse == nil {
-            let collapse = entityContainer.heightAnchor.constraint(equalToConstant: 0)
-            collapse.priority = .required
-            entityCollapse = collapse
+        let palette = AorusAIPalette.resolve(theme)
+        let accent = accentOnColor ? UIColor.white.withAlphaComponent(0.75) : palette.accent
+        backgroundColor = accentOnColor ? UIColor.white.withAlphaComponent(0.12) : palette.fill
+        line.backgroundColor = accent
+        let peerId = reference.authorPeerId.flatMap { $0 == 0 ? nil : PeerId($0) }
+        authorPeerId = peerId
+        var caption = aorusAILocalized("Из Telegram", "From Telegram")
+        if let author = reference.authorName?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
+            caption += " · " + author
         }
-        line.backgroundColor = accentOnColor ? UIColor.white.withAlphaComponent(0.75) : theme.list.itemAccentColor
-        label.textColor = accentOnColor ? UIColor.white.withAlphaComponent(0.88) : theme.list.itemSecondaryTextColor
-        label.text = reference.text
-        if let peerId = reference.authorPeerId {
-            let name = reference.authorName ?? aorusAILocalized("Профиль", "Profile")
-            let entity = AorusAITelegramEntity(peerId: peerId, username: nil, displayName: name, sourceText: name, rangeLocation: 0, rangeLength: 0)
-            let chip = AorusAIEntityChipView()
-            chip.configure(context: context, entity: entity, theme: theme, accentOnColor: accentOnColor)
-            chip.onOpenPeer = { [weak self] peerId in self?.onOpenPeer?(peerId) }
-            entityContainer.addSubview(chip)
-            chip.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                chip.leadingAnchor.constraint(equalTo: entityContainer.leadingAnchor),
-                chip.trailingAnchor.constraint(equalTo: entityContainer.trailingAnchor),
-                chip.topAnchor.constraint(equalTo: entityContainer.topAnchor),
-                chip.bottomAnchor.constraint(equalTo: entityContainer.bottomAnchor)
-            ])
-            entityChip = chip
-            entityCollapse?.isActive = false
-        } else {
-            let author = reference.authorName ?? aorusAILocalized("Сообщение", "Message")
-            label.text = author + "\n" + reference.text
-            entityCollapse?.isActive = true
-        }
+        captionButton.setTitle(caption, for: .normal)
+        let captionColor = accentOnColor ? UIColor.white.withAlphaComponent(0.85) : palette.tertiary
+        captionButton.setTitleColor(captionColor, for: .normal)
+        // Without an author the button is disabled, and UIButton would then paint its own
+        // grey over the design's tertiary. The caption has to look identical either way.
+        captionButton.setTitleColor(captionColor, for: .disabled)
+        // Without a peer to open the caption stays a label: a live-looking control that
+        // does nothing on tap reads as a bug.
+        captionButton.isEnabled = peerId != nil
+        captionButton.isUserInteractionEnabled = peerId != nil
+        captionButton.accessibilityLabel = peerId != nil ? aorusAILocalized("Открыть профиль", "Open profile") : caption
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = 20.0
+        paragraph.maximumLineHeight = 20.0
+        paragraph.lineBreakMode = .byTruncatingTail
+        label.attributedText = NSAttributedString(string: reference.text, attributes: [
+            .font: UIFont.systemFont(ofSize: 14.0),
+            .foregroundColor: accentOnColor ? UIColor.white.withAlphaComponent(0.88) : palette.secondary,
+            .paragraphStyle: paragraph
+        ])
+    }
+
+    @objc private func openAuthor() {
+        guard let authorPeerId else { return }
+        onOpenPeer?(authorPeerId)
     }
 }
 
@@ -3706,17 +4215,18 @@ private final class AorusAICodeCard: UIView {
     required init?(coder: NSCoder) { fatalError() }
     func configure(language: String?, code: String, theme: PresentationTheme) {
         self.code = code
-        backgroundColor = theme.list.itemBlocksBackgroundColor
-        layer.borderWidth = UIScreenPixel; layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.fill
+        layer.borderWidth = UIScreenPixel; layer.borderColor = palette.separator.cgColor
         languageLabel.text = language.flatMap { $0.isEmpty ? nil : $0.uppercased() } ?? "CODE"
-        languageLabel.textColor = theme.list.itemSecondaryTextColor
-        codeView.textColor = theme.list.itemPrimaryTextColor
+        languageLabel.textColor = palette.tertiary
+        codeView.textColor = palette.label
         codeView.text = code
         // Lay the code out at its natural width so nothing wraps; the scroll view
         // takes over when that width exceeds the card.
         let natural = codeView.sizeThatFits(CGSize(width: 10_000, height: 10_000))
         codeWidthConstraint?.constant = max(1, ceil(natural.width))
-        copyButton.tintColor = theme.list.itemAccentColor
+        copyButton.tintColor = palette.accent
     }
     @objc private func copyCode() {
         UIPasteboard.general.string = code
@@ -3756,19 +4266,20 @@ private final class AorusAIArtifactCard: UIControl {
     /// rebuilt on every reload without ever stranding a spinner. While the transfer runs
     /// the card stays tappable and says so — that tap is the stop button.
     func configure(artifact: AorusAIArtifact, theme: PresentationTheme, isLoading: Bool) {
-        backgroundColor = theme.list.itemBlocksBackgroundColor
-        layer.borderWidth = UIScreenPixel; layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.elevated
+        layer.borderWidth = UIScreenPixel; layer.borderColor = palette.separator.cgColor
         // Icon and detail line come from the shared artifact flow, so the card, the
         // download path and the tests all agree on one description of a file.
         icon.image = UIImage(systemName: artifact.isExpired ? "clock.badge.xmark" : AorusAIArtifactFlow.iconName(for: artifact))
-        icon.tintColor = artifact.isExpired ? theme.list.itemSecondaryTextColor : theme.list.itemAccentColor
+        icon.tintColor = artifact.isExpired ? palette.tertiary : palette.accent
         icon.isHidden = isLoading
-        activity.color = theme.list.itemAccentColor
+        activity.color = palette.accent
         if isLoading { activity.startAnimating() } else { activity.stopAnimating() }
-        titleLabel.textColor = theme.list.itemPrimaryTextColor; titleLabel.text = artifact.filename
-        detailLabel.textColor = theme.list.itemSecondaryTextColor
+        titleLabel.textColor = palette.label; titleLabel.text = artifact.filename
+        detailLabel.textColor = palette.secondary
         if isLoading {
-            detailLabel.text = aorusAILocalized("Загрузка... нажмите, чтобы остановить", "Downloading... tap to stop")
+            detailLabel.text = aorusAILocalized("Загрузка… нажмите, чтобы остановить", "Downloading… tap to stop")
         } else if artifact.isExpired {
             detailLabel.text = aorusAILocalized("Срок хранения файла истёк", "The file is no longer stored")
         } else {
@@ -3856,15 +4367,18 @@ private enum AorusAIMarkdown {
 
     static func attributed(_ source: String, color: UIColor, accent: UIColor) -> NSAttributedString {
         let normalized = normalizeLists(source)
-        let output = NSMutableAttributedString(string: normalized, attributes: [.font: UIFont.systemFont(ofSize: 16), .foregroundColor: color])
+        // The design sets the answer at 16.5/26. The leading is expressed as line spacing
+        // rather than a fixed line height so a serif heading in the same paragraph keeps
+        // its own ascent instead of being clipped into a 26pt box.
+        let output = NSMutableAttributedString(string: normalized, attributes: [.font: UIFont.systemFont(ofSize: 16.5), .foregroundColor: color])
         applyMarkdownLinks(in: output, accent: accent)
-        apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: 16, weight: .semibold))
-        apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: 16))
-        apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: 16))
+        apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: 16.5, weight: .semibold))
+        apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
+        apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
         applyInlineCode(in: output, backgroundColor: accent.withAlphaComponent(0.12))
         applyHeadings(in: output)
         applyLinks(in: output, accent: accent)
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 2
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 6.0
         output.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: output.length))
         return output
     }
@@ -3928,7 +4442,10 @@ private enum AorusAIMarkdown {
             let text = (value.string as NSString).substring(with: match.range(at: 2))
             let level = match.range(at: 1).length
             value.replaceCharacters(in: match.range, with: text)
-            value.addAttribute(.font, value: UIFont.systemFont(ofSize: level == 1 ? 22 : (level == 2 ? 19 : 17), weight: .bold), range: NSRange(location: match.range.location, length: (text as NSString).length))
+            // Headings are the design's serif voice: 22 / 19 / 17, the same scale the
+            // answer titles use in the mockup.
+            let size: CGFloat = level == 1 ? 22.0 : (level == 2 ? 19.0 : 17.0)
+            value.addAttribute(.font, value: aorusAISerifFont(size: size, weight: .semibold), range: NSRange(location: match.range.location, length: (text as NSString).length))
         }
     }
 
@@ -4145,24 +4662,25 @@ private final class AorusAIPeriodPickerController: UIViewController {
         dimView.backgroundColor = UIColor(white: 0.0, alpha: 0.35)
         dimView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(cancelTapped)))
 
-        // Native glass, the same recipe every other AorusAI block uses: the blocks
-        // background plus a hairline separator border, no tint fills and no white.
-        card.backgroundColor = theme.list.itemBlocksBackgroundColor
+        // The same surfaces as every other AorusAI block: the elevated colour plus a
+        // hairline separator border, no tint fills and no white.
+        let palette = AorusAIPalette.resolve(theme)
+        card.backgroundColor = palette.elevated
         card.layer.cornerRadius = 16.0
         card.layer.cornerCurve = .continuous
         card.layer.borderWidth = UIScreenPixel
-        card.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
+        card.layer.borderColor = palette.separator.cgColor
 
         titleLabel.text = aorusAILocalized("Выберите период", "Choose a period")
         titleLabel.font = .systemFont(ofSize: 17.0, weight: .semibold)
-        titleLabel.textColor = theme.list.itemPrimaryTextColor
+        titleLabel.textColor = palette.label
         titleLabel.textAlignment = .center
         subtitleLabel.text = aorusAILocalized(
             "AorusAI получит сообщения только за эти даты.",
             "AorusAI will only receive messages from these dates."
         )
         subtitleLabel.font = .systemFont(ofSize: 13.0)
-        subtitleLabel.textColor = theme.list.itemSecondaryTextColor
+        subtitleLabel.textColor = palette.secondary
         subtitleLabel.textAlignment = .center
         subtitleLabel.numberOfLines = 0
 
@@ -4174,11 +4692,11 @@ private final class AorusAIPeriodPickerController: UIViewController {
 
         cancelButton.setTitle(strings.Common_Cancel, for: .normal)
         cancelButton.titleLabel?.font = .systemFont(ofSize: 17.0)
-        cancelButton.tintColor = theme.list.itemAccentColor
+        cancelButton.tintColor = palette.accent
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         doneButton.setTitle(aorusAILocalized("Готово", "Done"), for: .normal)
         doneButton.titleLabel?.font = .systemFont(ofSize: 17.0, weight: .semibold)
-        doneButton.tintColor = theme.list.itemAccentColor
+        doneButton.tintColor = palette.accent
         doneButton.addTarget(self, action: #selector(doneTapped), for: .touchUpInside)
 
         layout()
@@ -4188,7 +4706,7 @@ private final class AorusAIPeriodPickerController: UIViewController {
         picker.datePickerMode = .date
         picker.date = date
         picker.maximumDate = maximum
-        picker.tintColor = theme.list.itemAccentColor
+        picker.tintColor = AorusAIPalette.resolve(theme).accent
         // `.compact` keeps the sheet the height of two rows; on anything older the
         // system default (a wheel) is used and the row simply grows.
         if #available(iOS 13.4, *) {
@@ -4200,7 +4718,7 @@ private final class AorusAIPeriodPickerController: UIViewController {
     private func configure(row: UIStackView, label: UILabel, title: String, picker: UIDatePicker) {
         label.text = title
         label.font = .systemFont(ofSize: 16.0)
-        label.textColor = theme.list.itemPrimaryTextColor
+        label.textColor = AorusAIPalette.resolve(theme).label
         row.axis = .horizontal
         row.alignment = .center
         row.spacing = 12.0
@@ -4369,7 +4887,7 @@ private final class AorusAIActiveTurnCenter {
         if attentionKeys.contains(key) {
             return aorusAILocalized("AorusAI ждёт ответа", "AorusAI is waiting for you")
         }
-        return aorusAILocalized("AorusAI отвечает...", "AorusAI is working...")
+        return aorusAILocalized("AorusAI отвечает…", "AorusAI is working…")
     }
 
     private func reopenLatest() {
@@ -4423,10 +4941,11 @@ private final class AorusAIWorkingIndicator: NSObject {
         self.onTap = onTap
         self.isDismissing = false
         setText(text)
-        container.backgroundColor = theme.list.itemBlocksBackgroundColor
-        container.layer.borderColor = theme.list.itemBlocksSeparatorColor.cgColor
-        label.textColor = theme.list.itemPrimaryTextColor
-        activity.color = theme.list.itemAccentColor
+        let palette = AorusAIPalette.resolve(theme)
+        container.backgroundColor = palette.elevated
+        container.layer.borderColor = palette.separator.cgColor
+        label.textColor = palette.label
+        activity.color = palette.accent
         activity.startAnimating()
         guard let host = window ?? AorusAIWorkingIndicator.keyWindow() else { return }
         guard container.superview !== host else {
