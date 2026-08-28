@@ -31,6 +31,10 @@ public struct AorusUserVPNSectionState: Equatable {
     public let serving: Bool
     /// Every server the lane could dial has refused to come up. Distinct from "not serving yet":
     /// one is a connection being made, the other is one that will not be.
+    ///
+    /// Not read by `indicator` any more -- see the note there -- but still part of the state, and
+    /// deliberately: it is one of the things whose change has to make the list re-emit, since a
+    /// verdict landing is exactly when the row has something new to say.
     public let unreachable: Bool
     /// A bring-up the user asked for is in flight — the switch was turned on, or another server was
     /// picked. True at the same time as `serving` for the length of a switch, because the endpoint
@@ -71,6 +75,16 @@ public struct AorusUserVPNSectionState: Equatable {
     /// A bring-up in flight outranks the endpoint that is still published: picking another server
     /// looks like a connection being made, which is what it is, rather than like nothing having
     /// happened because the old server is still carrying traffic in the meantime.
+    ///
+    /// "Connecting" is claimed only while the lane says a bring-up is actually in flight. It was the
+    /// fallthrough too -- `unreachable ? .suspended : .connecting` -- and that is what left the glyph
+    /// turning for as long as the screen stayed open. "Enabled, nothing published, nothing in flight,
+    /// and no verdict recorded" is a real state and it is not a connection being made: it is a lane
+    /// switched on with nothing dialable, or a round that overran the window it was being shown in,
+    /// or a walk that ended somewhere that never wrote a verdict down. The row said "соединение"
+    /// about all of them, and went on saying it, because nothing was ever going to come along and
+    /// change the answer. What is true of all of them is that there is no connection, so that is what
+    /// the row says -- and the lane, for its part, now always reaches a verdict inside the window.
     public var indicator: AorusConnectionIndicator {
         guard self.enabled else {
             return .none
@@ -81,7 +95,7 @@ public struct AorusUserVPNSectionState: Equatable {
         if self.serving {
             return .connected
         }
-        return self.unreachable ? .suspended : .connecting
+        return .suspended
     }
 
     /// Whether the switch has anything to point at. A configuration whose servers all failed to

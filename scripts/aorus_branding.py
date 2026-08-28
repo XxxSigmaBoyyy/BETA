@@ -8052,6 +8052,16 @@ def patch_aorus_stock_off_theme(tg: Path) -> None:
     initial_after_branch_new = (
         "        }\n"
         "        \n"
+        "        // AorusGram: capture the (reference, accent) pair the wallpaper picker WRITES\n"
+        "        // under — uploadCustomWallpaper() and WallpaperGalleryController both key\n"
+        "        // themeSpecificChatWallpapers by `settings.theme` (or the auto-night theme).\n"
+        "        // This has to happen BEFORE the stock-off override rewrites effectiveTheme to\n"
+        "        // .builtin(.night): otherwise the read key stops matching the write key and\n"
+        "        // every wallpaper the user picked vanishes on a cold start.\n"
+        "        let aorusWallpaperReference = effectiveTheme\n"
+        "        let aorusWallpaperAccent = themeSettings.themeSpecificAccentColors[aorusWallpaperReference.index]\n"
+        "        let aorusSelectedWallpaper = themeSettings.themeSpecificChatWallpapers[coloredThemeIndex(reference: aorusWallpaperReference, accentColor: aorusWallpaperAccent)] ?? themeSettings.themeSpecificChatWallpapers[aorusWallpaperReference.index]\n"
+        "        \n"
         "        let aorusUseStockOffTheme = aorusStockOffThemeEnabled(settings: themeSettings, autoNightModeTriggered: autoNightModeTriggered)\n"
         "        if aorusUseStockOffTheme {\n"
         "            effectiveTheme = .builtin(.night)\n"
@@ -8080,8 +8090,11 @@ def patch_aorus_stock_off_theme(tg: Path) -> None:
         "        }\n"
     )
     initial_wallpaper_new = (
-        "        var effectiveChatWallpaper: TelegramWallpaper = (themeSettings.themeSpecificChatWallpapers[coloredThemeIndex(reference: effectiveTheme, accentColor: effectiveColors)] ?? themeSettings.themeSpecificChatWallpapers[effectiveTheme.index]) ?? theme.chat.defaultWallpaper\n"
-        "        if aorusUseStockOffTheme {\n"
+        "        // Read the wallpaper under the WRITE key, not under the stock-off theme.\n"
+        "        // When stock-off is inactive this is byte-for-byte the upstream expression\n"
+        "        // (effectiveTheme == aorusWallpaperReference there).\n"
+        "        var effectiveChatWallpaper: TelegramWallpaper = aorusSelectedWallpaper ?? theme.chat.defaultWallpaper\n"
+        "        if aorusUseStockOffTheme && aorusSelectedWallpaper == nil {\n"
         "            switch effectiveChatWallpaper {\n"
         "                case .builtin, .color, .gradient:\n"
         "                    effectiveChatWallpaper = theme.chat.defaultWallpaper\n"
@@ -8096,7 +8109,7 @@ def patch_aorus_stock_off_theme(tg: Path) -> None:
         "            effectiveChatWallpaper = defaultBuiltinWallpaper(data: .legacy, colors: legacyBuiltinWallpaperGradientColors.map(\\.rgb))\n"
         "        }\n"
     )
-    if "if aorusUseStockOffTheme {\n            switch effectiveChatWallpaper" not in t:
+    if "if aorusUseStockOffTheme && aorusSelectedWallpaper == nil {\n            switch effectiveChatWallpaper" not in t:
         if initial_wallpaper not in t:
             print("AorusStockOffTheme: WARNING initial wallpaper anchor not found")
             return
@@ -8108,6 +8121,10 @@ def patch_aorus_stock_off_theme(tg: Path) -> None:
     )
     new_effective = (
         "                        let aorusUseStockOffTheme = aorusStockOffThemeEnabled(settings: themeSettings, autoNightModeTriggered: autoNightModeTriggered)\n"
+        "                        // themeSpecificWallpaper is read under exactly the key the wallpaper\n"
+        "                        // picker writes, so a non-nil value means \"the user picked this\".\n"
+        "                        // Nothing in AorusGram may override an explicit choice.\n"
+        "                        let aorusUserSelectedWallpaper = themeSpecificWallpaper != nil\n"
         "                        if aorusUseStockOffTheme {\n"
         "                            effectiveTheme = .builtin(.night)\n"
         "                            effectiveColors = nil\n"
@@ -8137,7 +8154,7 @@ def patch_aorus_stock_off_theme(tg: Path) -> None:
         t = t.replace(old_theme, new_theme, 1)
 
     old_wallpaper = "                        if autoNightModeTriggered && !switchedToNightModeWallpaper {\n"
-    new_wallpaper = "                        if (autoNightModeTriggered || aorusUseStockOffTheme) && !switchedToNightModeWallpaper {\n"
+    new_wallpaper = "                        if (autoNightModeTriggered || (aorusUseStockOffTheme && !aorusUserSelectedWallpaper)) && !switchedToNightModeWallpaper {\n"
     if new_wallpaper not in t:
         if old_wallpaper not in t:
             print("AorusStockOffTheme: WARNING wallpaper branch anchor not found")
@@ -16599,11 +16616,32 @@ _AORUS_AMOLED_HELPER = (
     "    return aorusApplyInterfaceV2Theme(PresentationTheme(name: theme.name, index: theme.index, referenceTheme: theme.referenceTheme, overallDarkAppearance: theme.overallDarkAppearance, intro: theme.intro, passcode: theme.passcode, rootController: rootController, list: list, chatList: chatList, chat: chat, actionSheet: theme.actionSheet, contextMenu: theme.contextMenu, inAppNotification: theme.inAppNotification, chart: theme.chart, preview: theme.preview))\n"
     "}\n"
     "\n"
-    "func aorusAmoledWallpaper(_ wallpaper: TelegramWallpaper, dark: Bool) -> TelegramWallpaper {\n"
-    "    if aorusAmoledEnabled() && dark {\n"
-    "        return .color(0x000000)\n"
+    "// AorusGram: true when the user has explicitly picked a chat wallpaper for the\n"
+    "// theme the wallpaper picker writes under. Mirrors the write key used by\n"
+    "// uploadCustomWallpaper() and WallpaperGalleryController exactly (colored index\n"
+    "// first, plain theme index second), so an explicit choice is never mistaken for\n"
+    "// \"nothing set\". AMOLED must not paint over a wallpaper the user just chose.\n"
+    "func aorusHasUserChosenWallpaper(settings: PresentationThemeSettings, autoNightModeTriggered: Bool) -> Bool {\n"
+    "    let reference: PresentationThemeReference = autoNightModeTriggered ? settings.automaticThemeSwitchSetting.theme : settings.theme\n"
+    "    let accentColor = settings.themeSpecificAccentColors[reference.index]\n"
+    "    if settings.themeSpecificChatWallpapers[coloredThemeIndex(reference: reference, accentColor: accentColor)] != nil {\n"
+    "        return true\n"
     "    }\n"
-    "    return wallpaper\n"
+    "    return settings.themeSpecificChatWallpapers[reference.index] != nil\n"
+    "}\n"
+    "\n"
+    "func aorusAmoledWallpaper(_ wallpaper: TelegramWallpaper, dark: Bool, settings: PresentationThemeSettings, autoNightModeTriggered: Bool) -> TelegramWallpaper {\n"
+    "    guard aorusAmoledEnabled(), dark else {\n"
+    "        return wallpaper\n"
+    "    }\n"
+    "    // AMOLED only supplies a background where the theme's default would otherwise\n"
+    "    // show. A wallpaper the user picked wins — otherwise the wallpaper grid could\n"
+    "    // never show a selection (it compares against presentationData.chatWallpaper)\n"
+    "    // and tapping a photo would appear to do nothing at all.\n"
+    "    if aorusHasUserChosenWallpaper(settings: settings, autoNightModeTriggered: autoNightModeTriggered) {\n"
+    "        return wallpaper\n"
+    "    }\n"
+    "    return .color(0x000000)\n"
     "}\n"
     "\n"
     "// Re-emits whenever the AMOLED flag flips, so the presentation pipeline re-runs\n"
@@ -16661,11 +16699,11 @@ def patch_amoled_theme(tg: Path) -> None:
     # Apply to the initial snapshot (currentPresentationDataAndSettings).
     init_old = "theme: theme, autoNightModeTriggered: autoNightModeTriggered, chatWallpaper: effectiveChatWallpaper,"
     init_new = ("theme: aorusApplyAmoledTheme(theme), autoNightModeTriggered: autoNightModeTriggered, "
-                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: theme.overallDarkAppearance),")
+                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: theme.overallDarkAppearance, settings: themeSettings, autoNightModeTriggered: autoNightModeTriggered),")
     # Apply to the live signal (updatedPresentationData).
     live_old = "theme: themeValue, autoNightModeTriggered: autoNightModeTriggered, chatWallpaper: effectiveChatWallpaper,"
     live_new = ("theme: aorusApplyAmoledTheme(themeValue), autoNightModeTriggered: autoNightModeTriggered, "
-                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: themeValue.overallDarkAppearance),")
+                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: themeValue.overallDarkAppearance, settings: themeSettings, autoNightModeTriggered: autoNightModeTriggered),")
     n = 0
     if init_old in t:
         t = t.replace(init_old, init_new, 1); n += 1
@@ -21956,11 +21994,16 @@ extension WallpaperBackgroundNodeImpl {
             aorusGifBaseWallpaper = nil
             return
         }
+        // Track the GLOBAL chat wallpaper, never this node's own one. A chat can carry
+        // a per-peer wallpaper or a theme-gift background, and reading that as "the user
+        // picked something else" would silently delete an active GIF just by opening
+        // such a chat.
+        let globalWallpaper = self.context.sharedContext.currentPresentationData.with({ $0 }).chatWallpaper
         if aorusGifBaseWallpaper == nil {
             // First time the real chat renders with the GIF active: remember the base
             // wallpaper sitting underneath, so we can detect a later user-initiated change.
-            aorusGifBaseWallpaper = wallpaper
-        } else if let base = aorusGifBaseWallpaper, base != wallpaper {
+            aorusGifBaseWallpaper = globalWallpaper
+        } else if let base = aorusGifBaseWallpaper, base != globalWallpaper {
             AorusGifWallpaperHost.clearStore()
             aorusGifBaseWallpaper = nil
             if let size = self.validLayout?.0 {

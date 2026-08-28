@@ -214,10 +214,31 @@ public final class AorusRealityManager {
     /// the round, a core that never answers, a process suspended mid-preflight: none of those clear
     /// the flag, and a row spinning forever is worse than one that is briefly wrong.
     private var userLaneConnectingSince: TimeInterval = 0
-    /// How long a bring-up is allowed to be shown as one. Comfortably longer than a full round —
-    /// three candidates, each with a port scan and a preflight budget — and short enough that a
-    /// wedged round stops claiming the row.
+    /// How long a bring-up is allowed to be shown as one. Longer than a round is allowed to take
+    /// (`userLaneRoundMaxDuration`), so the round's own verdict is what normally ends the wait, and
+    /// this is the backstop for the cases a round cannot report: a queue wedged behind a core that
+    /// will not stop, a process suspended mid-preflight, a round superseded by one that never ran.
     private let userLaneConnectingMaxDuration: TimeInterval = 45.0
+    /// Armed whenever the lane starts saying "connecting" and cancelled when it stops. Without it
+    /// the window above was only consulted by the getter, and nothing announced its end -- the row
+    /// follows notifications, so a wait that expired in silence was a wait the row went on drawing
+    /// for as long as the screen stayed open.
+    private var userLaneConnectingTimeout: DispatchWorkItem?
+    /// How long one bring-up may spend walking candidates before it records a verdict and leaves the
+    /// rest to the backoff.
+    ///
+    /// Three candidates, three ports each, and per port a core start (3s), a SOCKS handshake and a
+    /// preflight (6s patient, 2.5s after that) plus a second to stop a core that did come up: a round
+    /// that walks all of it to the end takes over a minute. That is longer than the window it is being
+    /// shown in, which is how the interface came to be left holding a spinner with no verdict behind
+    /// it. The deadline is checked before each candidate and before each port, so the walk stops at a
+    /// boundary rather than being torn out of a probe, and the round always reaches its own verdict
+    /// while the row is still allowed to be waiting for one — thirty seconds plus the longest single
+    /// attempt still fits inside the window, so the watchdog stays the backstop it is meant to be.
+    ///
+    /// What a cut round costs is the last candidate's attempt, and it gets it on the next round a
+    /// quarter of a second later, in an order that the latency sweep has meanwhile refreshed.
+    private let userLaneRoundMaxDuration: TimeInterval = 30.0
     /// The server the lane is actually carrying traffic through, readable without going through the
     /// serial queue. The interface needs it to tell "this row is the one running" from "this row is
     /// the one ticked", which are not the same thing while a bring-up is in flight.
@@ -1365,6 +1386,10 @@ extension AorusRealityManager {
     ///
     /// Takes precedence over "serving" in the interface: during a switch both are true for a while,
     /// and the one the user asked to see is this one.
+    ///
+    /// The window is checked here as well as by the watchdog that closes it. The two agree by
+    /// construction — same flag, same timestamp, same duration — and the getter is what makes the
+    /// answer correct in the instant before the watchdog has run.
     public var userLaneIsConnecting: Bool {
         guard AorusUserVPNStore.shared.isActive else { return false }
         self.userLaneStatusLock.lock()
@@ -1386,6 +1411,14 @@ extension AorusRealityManager {
             self.userLaneConnectingSince = Date().timeIntervalSince1970
         }
         self.userLaneStatusLock.unlock()
+        // Re-armed on every set for the same reason the timestamp is refreshed, and cancelled the
+        // moment the wait ends so a round that answered in a second is not followed by a timeout
+        // that fires against the next one.
+        if value {
+            self.armUserLaneConnectingTimeout()
+        } else {
+            self.cancelUserLaneConnectingTimeout()
+        }
         guard changed else { return }
         DispatchQueue.main.async {
             NotificationCenter.default.post(
@@ -1393,6 +1426,52 @@ extension AorusRealityManager {
                 object: nil
             )
         }
+    }
+
+    /// End the wait out loud when nothing else has.
+    ///
+    /// The round in flight is deliberately left alone: it still owns the core, it still has
+    /// candidates to try, and one of them coming up publishes an endpoint and clears everything this
+    /// sets. What ends here is only the *claim* that a connection is being made — after this long it
+    /// is not something a user can read as anything but a screen that has stopped working — and the
+    /// lane is reported as it stands: enabled, and not carrying traffic.
+    ///
+    /// On the main queue rather than the lane's own: `queue` is where the bring-up runs, and a
+    /// timeout that has to wait behind the walk it is timing is a timeout that fires once the walk
+    /// is already over.
+    private func armUserLaneConnectingTimeout() {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.userLaneStatusLock.lock()
+            self.userLaneConnectingTimeout = nil
+            let stillWaiting = self.userLaneConnecting
+            self.userLaneStatusLock.unlock()
+            guard stillWaiting else { return }
+            guard !self.userLaneIsServing else {
+                // It came up and the publication is what the row will read; only the wait is stale.
+                self.setUserLaneConnecting(false)
+                return
+            }
+            self.recordDiagnostic(stage: "user_connect_timeout", errorCode: "user_connect_window_expired")
+            // Order matters: the verdict is in place before the wait is withdrawn, so the row never
+            // observes a state with neither on it.
+            self.setUserLaneUnreachable(true)
+            self.setUserLaneConnecting(false)
+        }
+        self.userLaneStatusLock.lock()
+        let previous = self.userLaneConnectingTimeout
+        self.userLaneConnectingTimeout = work
+        self.userLaneStatusLock.unlock()
+        previous?.cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + self.userLaneConnectingMaxDuration, execute: work)
+    }
+
+    private func cancelUserLaneConnectingTimeout() {
+        self.userLaneStatusLock.lock()
+        let work = self.userLaneConnectingTimeout
+        self.userLaneConnectingTimeout = nil
+        self.userLaneStatusLock.unlock()
+        work?.cancel()
     }
 
     /// Bring the user's selected server up, or confirm the one already running.
@@ -1460,7 +1539,23 @@ extension AorusRealityManager {
         // case rather than an expected path, and the store is consulted each time so a lane the
         // user has since turned off stops being retried.
         if transitionInProgress {
-            guard requeues < 20, AorusUserVPNStore.shared.isActive else { return }
+            guard requeues < 20, AorusUserVPNStore.shared.isActive else {
+                // Both ways out of the requeue used to be a silent `return`, and that is the other
+                // half of the stuck spinner: the flag stayed set, no verdict was ever recorded, and
+                // nothing was queued that would produce one. Whichever of the two it is -- a lane the
+                // user turned off underneath this round, or a transition that never let go -- the
+                // interface is told where it stands, and a lane that is still enabled gets another
+                // attempt on the backoff instead of waiting for the next thing to happen to it.
+                if AorusUserVPNStore.shared.isActive {
+                    recordDiagnostic(stage: "user_core_requeue_exhausted", errorCode: "user_transition_stuck")
+                    setUserLaneUnreachable(true)
+                    setUserLaneConnecting(false)
+                    scheduleUserLaneRetryLocked()
+                } else {
+                    setUserLaneConnecting(false)
+                }
+                return
+            }
             recordDiagnostic(stage: "user_core_requeued", detail: reason)
             queue.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.userLaneBringUpLocked(reason: reason, requeues: requeues + 1)
@@ -1523,8 +1618,17 @@ extension AorusRealityManager {
         if candidates.isEmpty {
             candidates = [AorusVlessCandidate(server: server, udpEnabled: udpEnabled, muxEnabled: muxEnabled)]
         }
+        // The walk is bounded in wall-clock time as well as in candidates. Candidates are what a
+        // round is allowed to try; this is what it is allowed to take -- see
+        // `userLaneRoundMaxDuration`. Cutting the tail of a walk costs the last candidate an attempt
+        // it gets again on the next round; not cutting it costs the user a status that never arrives.
+        let roundDeadline = Date().timeIntervalSince1970 + userLaneRoundMaxDuration
         for (index, candidate) in candidates.enumerated() {
             guard AorusUserVPNStore.shared.isActive else { break }
+            guard index == 0 || Date().timeIntervalSince1970 < roundDeadline else {
+                recordDiagnostic(stage: "user_round_deadline", detail: "candidate_\(index)")
+                break
+            }
             // The user picked a different server while this round was working. The round that their
             // tap queued is sitting right behind this one, so there is nothing to do but stop.
             guard !userLaneRoundIsStale else {
@@ -1534,7 +1638,7 @@ extension AorusRealityManager {
             if index > 0 {
                 recordDiagnostic(stage: "user_failover", detail: "candidate_\(index)")
             }
-            guard userLaneStartServerLocked(candidate: candidate, patient: index == 0) else {
+            guard userLaneStartServerLocked(candidate: candidate, patient: index == 0, deadline: roundDeadline) else {
                 continue
             }
             // The stored selection follows the lane only once the lane is actually up. Moving it on
@@ -1569,15 +1673,17 @@ extension AorusRealityManager {
     /// Returns true once Telegram has been pointed at an inbound that has been proven end to end.
     /// `patient` is the first candidate of a round: it gets the full preflight budget because it is
     /// the server the user chose, and the ones after it get the sweep budget so that walking a
-    /// subscription costs seconds rather than minutes.
-    private func userLaneStartServerLocked(candidate: AorusVlessCandidate, patient: Bool) -> Bool {
+    /// subscription costs seconds rather than minutes. `deadline` is the round's, and the first port
+    /// is tried regardless of it: a candidate worth starting is worth one attempt.
+    private func userLaneStartServerLocked(candidate: AorusVlessCandidate, patient: Bool, deadline: TimeInterval) -> Bool {
         let server = candidate.server
-        for port in Self.candidatePorts {
+        for (portIndex, port) in Self.candidatePorts.enumerated() {
             guard AorusUserVPNStore.shared.isActive else { return false }
             // Checked per port as well as per candidate: the port scan below is itself a walk with a
             // core start and a preflight in it, and a tap on another server should not have to wait
             // for the end of one.
             guard !userLaneRoundIsStale else { return false }
+            guard portIndex == 0 || Date().timeIntervalSince1970 < deadline else { return false }
             guard localPortIsAvailable(port) else { continue }
             guard let json = AorusVlessLink.xrayConfiguration(
                 server: server,
