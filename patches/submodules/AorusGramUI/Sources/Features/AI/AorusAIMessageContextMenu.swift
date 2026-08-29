@@ -7,6 +7,10 @@ import AccountContext
 import TelegramPresentationData
 import SwiftSignalKit
 import AppBundle
+// `AorusAIReferencedMessage` is a core model, not a UI type: it lives in AorusGram, which
+// AorusGramUI already depends on. The preflight parses this file rather than typechecking
+// it, so a missing import here only surfaces in Bazel.
+import AorusGram
 
 // The AorusAI message actions are a native Telegram context menu: the row in the message
 // menu pushes another level of the same menu, with Telegram's own rows, icons, section
