@@ -27,6 +27,10 @@ swift_library(
         "//submodules/ItemListPeerItem:ItemListPeerItem",
         "//submodules/PresentationDataUtils:PresentationDataUtils",
         "//submodules/AccountContext:AccountContext",
+        # The AorusAI message actions are a native context menu level, built from
+        # ContextUI's own items. Nothing in ContextUI's dependency graph reaches back
+        # into TelegramUI or PeerInfo, so this cannot close a cycle.
+        "//submodules/ContextUI:ContextUI",
         "//submodules/ComponentFlow",
         "//submodules/ActivityIndicator:ActivityIndicator",
         "//submodules/TextFormat:TextFormat",

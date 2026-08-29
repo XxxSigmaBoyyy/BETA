@@ -3426,6 +3426,8 @@ def main() -> None:
     ai_ui = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIControllers.swift"
     ai_design = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIDesign.swift"
     ai_design_text = ai_design.read_text(encoding="utf-8") if ai_design.is_file() else ""
+    ai_context_menu = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIMessageContextMenu.swift"
+    ai_context_menu_text = ai_context_menu.read_text(encoding="utf-8") if ai_context_menu.is_file() else ""
     ai_models = ai_core_dir / "AorusAIModels.swift"
     ai_client = ai_core_dir / "AorusAIClient.swift"
 
@@ -3455,7 +3457,7 @@ def main() -> None:
             if forbidden_key in core_text:
                 err.append(f"AorusAI: {ai_core_file.name} still serializes {forbidden_key}")
 
-    for ai_source in ([ai_ui, ai_design] + (sorted(ai_core_dir.glob("*.swift")) if ai_core_dir.is_dir() else [])):
+    for ai_source in ([ai_ui, ai_design, ai_context_menu] + (sorted(ai_core_dir.glob("*.swift")) if ai_core_dir.is_dir() else [])):
         if not ai_source.is_file():
             continue
         if "debugDisplayTitle" in ai_source.read_text(encoding="utf-8"):
@@ -3465,63 +3467,83 @@ def main() -> None:
         err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift")
     else:
         ai_ui_text = ai_ui.read_text(encoding="utf-8")
-        for exported in ("public func aorusAIMessageMenuTitle()", "public func aorusAIMessageMenuIconName()", "public func aorusAIPresentMessageActions("):
-            if exported not in ai_ui_text + ai_design_text:
+        for exported in ("public func aorusAIMessageMenuTitle()", "public func aorusAIMessageMenuIconName()", "public func aorusAIMessageMenuItems("):
+            if exported not in ai_ui_text + ai_design_text + ai_context_menu_text:
                 err.append(f"AorusAI: message menu export missing — {exported}")
-        if "import ContextUI" in ai_ui_text:
-            err.append("AorusAI: AorusGramUI must not import ContextUI (it is not in its BUILD deps)")
+        # Presenting on a NavigationController is preconditionFailure() in Display, and
+        # the reported crash was exactly that. Every UIKit modal raised from a menu
+        # action has to go through the window's root controller instead.
+        if "navigationController.present(" in ai_ui_text or "navigationController.present(" in ai_design_text:
+            err.append("AorusAI: a UIKit modal is presented on the navigation controller (Display traps there)")
 
     if not ai_design.is_file():
         err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIDesign.swift")
     else:
-        # The sheet is what makes the message actions fit: a fixed header and footer with
-        # a scrolling body clamped to the screen. Lose the clamp and the twenty-two rows
-        # run off the bottom again, which is exactly the reported defect.
-        for marker in (
-            "final class AorusAIActionSheetController",
-            "bodyMaxHeight",
-            "min(entry.view.contentHeight, AorusAIActionSheetMetrics.bodyMaxHeight)",
-            "UIScrollView",
+        # The bespoke sheet is gone: the message actions are a native context menu level.
+        for removed in (
+            "AorusAIActionSheetController",
+            "aorusAIPresentMessageActions(",
         ):
-            if marker not in ai_design_text:
-                err.append(f"AorusAI: action sheet lost {marker}")
-        if "import ContextUI" in ai_design_text:
-            err.append("AorusAI: AorusGramUI must not import ContextUI (it is not in its BUILD deps)")
+            if removed in ai_design_text:
+                err.append(f"AorusAI: the replaced action sheet is still present — {removed}")
+
+    if not ai_context_menu.is_file():
+        err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIMessageContextMenu.swift")
+    else:
+        # The menu is native, so it is built from ContextUI's own items: rows, section
+        # bands, a back row and pushed levels. Losing any of those turns it back into a
+        # foreign surface bolted onto the chat.
+        for marker in (
+            "import ContextUI",
+            "ContextMenuCustomItem",
+            "theme.contextMenu.sectionSeparatorColor",
+            "strings.Common_Back",
+            "c?.popItems()",
+            "c?.pushItems(items: .single(ContextController.Items(content: .list(subItems))))",
+            "generateTintedImage(image: UIImage(bundleImageName:",
+        ):
+            if marker not in ai_context_menu_text:
+                err.append(f"AorusAI: native message menu lost {marker}")
+        if "UIImage(systemName:" in ai_context_menu_text:
+            err.append("AorusAI: native message menu icons must be bundle images, not SF Symbols")
 
     ai_ui_build = tg / "submodules" / "AorusGramUI" / "BUILD"
-    if ai_ui_build.is_file() and "//submodules/LocalizedPeerData:LocalizedPeerData" not in ai_ui_build.read_text(encoding="utf-8"):
-        err.append("AorusAI: AorusGramUI BUILD is missing LocalizedPeerData (peer display titles)")
+    if ai_ui_build.is_file():
+        ai_ui_build_text = ai_ui_build.read_text(encoding="utf-8")
+        if "//submodules/LocalizedPeerData:LocalizedPeerData" not in ai_ui_build_text:
+            err.append("AorusAI: AorusGramUI BUILD is missing LocalizedPeerData (peer display titles)")
+        # The native menu items are ContextUI types; without the dep the module does not
+        # compile, and the failure is 50 minutes into the build.
+        if "//submodules/ContextUI:ContextUI" not in ai_ui_build_text:
+            err.append("AorusAI: AorusGramUI BUILD is missing ContextUI (the native message menu)")
 
     ai_menu_host = tg / "submodules" / "TelegramUI" / "Sources" / "ChatInterfaceStateContextMenus.swift"
     if not ai_menu_host.is_file():
         err.append("AorusAI: missing ChatInterfaceStateContextMenus.swift")
     else:
         ai_menu_text = ai_menu_host.read_text(encoding="utf-8")
-        if "// AorusGram: AorusAI message action v5" not in ai_menu_text:
-            err.append("AorusAI: message action sheet (v5) was not integrated")
-        for legacy in ("v1", "v2", "v3", "v4"):
+        if "// AorusGram: AorusAI message action v6" not in ai_menu_text:
+            err.append("AorusAI: native message menu (v6) was not integrated")
+        for legacy in ("v1", "v2", "v3", "v4", "v5"):
             if f"// AorusGram: AorusAI message action {legacy}" in ai_menu_text:
                 err.append(f"AorusAI: legacy message action ({legacy}) is still present")
-        if "aorusAIOpenMessageActions" in ai_menu_text:
-            err.append("AorusAI: message menu calls the removed aorusAIOpenMessageActions")
-        if "aorusAIMessageMenuSections()" in ai_menu_text:
-            err.append("AorusAI: message menu still builds the removed native section list")
+        for removed in ("aorusAIOpenMessageActions", "aorusAIPresentMessageActions(", "aorusAIMessageMenuSections()"):
+            if removed in ai_menu_text:
+                err.append(f"AorusAI: message menu still calls the removed {removed}")
         # The generated block, bounded by its sentinel and the native anchor it precedes.
         # Everything below is asserted inside it: the file's own native menu code also
         # pushes levels, and those must not be touched.
-        ai_menu_index = ai_menu_text.find("// AorusGram: AorusAI message action v5")
+        ai_menu_index = ai_menu_text.find("// AorusGram: AorusAI message action v6")
         if ai_menu_index >= 0:
             ai_menu_end = ai_menu_text.find("if !isReplyThreadHead, (!data.messageActions.options", ai_menu_index)
             ai_menu_block = ai_menu_text[ai_menu_index:ai_menu_end if ai_menu_end > ai_menu_index else ai_menu_index + 6000]
-            # No native level at all. ContextControllerActionsStackNode only positions the
-            # top two containers of its stack, so a second push left the chat menu visible
-            # underneath — and a single push could not scroll twenty-two rows into view.
-            if "pushItems(" in ai_menu_block:
-                err.append("AorusAI: message menu must not push a native level — the sheet owns the actions")
-            if ai_menu_block.count("aorusAIPresentMessageActions(") != 1:
-                err.append("AorusAI: message menu row does not open the AorusAI action sheet exactly once")
-            if "c?.dismiss(completion: {" not in ai_menu_block:
-                err.append("AorusAI: the context menu must close before the AorusAI sheet is presented")
+            # The row pushes exactly one level of the native menu and hands the message to
+            # AorusGramUI. Anything else here — a dismissal, a modal, a second call — means
+            # the menu stopped being native.
+            if ai_menu_block.count("c?.pushItems(items: aorusAIMessageMenuItems(") != 1:
+                err.append("AorusAI: message menu row does not push the native AorusAI level exactly once")
+            if "c?.dismiss(" in ai_menu_block:
+                err.append("AorusAI: the AorusAI row must push a level, not dismiss the context menu")
             # Icons have to be native bundle assets tinted like every other row; SF Symbols
             # went through withTintColor and rendered black inside the menu.
             if "UIImage(systemName:" in ai_menu_block or "withTintColor" in ai_menu_block:

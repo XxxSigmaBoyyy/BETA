@@ -29,6 +29,28 @@ private func aorusAIPresentActionSheet(_ controller: UIAlertController, from pre
     presenter.present(controller, animated: true)
 }
 
+/// Presents a UIKit controller over a navigation controller.
+///
+/// `NavigationController.present(_:animated:completion:)` is `preconditionFailure()` in
+/// Display: Telegram routes UIKit modals through the window's root controller, and its
+/// own `ViewController.present(_:animated:)` does exactly that. Calling `present` on the
+/// navigation controller itself therefore traps, so every alert raised from a menu
+/// action — which only has the navigation controller to hand — has to go through here.
+private func aorusAIPresent(_ controller: UIViewController, from navigationController: NavigationController) {
+    let presenter: UIViewController?
+    if let top = navigationController.topViewController as? ViewController {
+        presenter = top
+    } else {
+        presenter = navigationController.view.window?.rootViewController
+    }
+    guard let presenter else { return }
+    if let alert = controller as? UIAlertController {
+        aorusAIPresentActionSheet(alert, from: presenter)
+    } else {
+        presenter.present(controller, animated: true)
+    }
+}
+
 public func aorusAIConversationListController(context: AccountContext) -> ViewController {
     return AorusAIConversationListController(context: context)
 }
@@ -92,9 +114,9 @@ enum AorusAIMessageMenu {
         }
     }
 
-    /// A titled group is one of the design's four sections; the sheet draws the title
-    /// as a small header above a rounded card of rows.
-    private struct Group {
+    /// A titled group is one of the four sections. In the native context menu the title
+    /// is a `SectionTitleContextItem`-shaped header, which is also the group separator.
+    struct Group {
         var title: String?
         var items: [Item]
     }
@@ -161,7 +183,7 @@ enum AorusAIMessageMenu {
 
     /// Every icon is a native `Chat/Context Menu/*` bundle asset, tinted with the
     /// AorusAI accent inside its tile.
-    private static func groups(languageCode: String) -> [Group] {
+    static func groups(languageCode: String) -> [Group] {
         let tones = toneItems
         return [
             Group(title: aorusAILocalized("Текст", "Text"), items: [
@@ -214,55 +236,12 @@ enum AorusAIMessageMenu {
         ]
     }
 
-    private static var footerItem: Item {
+    static var footerItem: Item {
         return Item(
             id: newChatId,
             title: aorusAILocalized("Новый диалог с текстом", "New chat with this text"),
             icon: "Chat/Context Menu/MessageBubble",
             prompt: ""
-        )
-    }
-
-    private static func row(for item: Item) -> AorusAIActionSheetRow {
-        return AorusAIActionSheetRow(
-            id: item.id,
-            title: item.title,
-            iconName: item.icon,
-            hint: item.hint,
-            opensPage: !item.children.isEmpty
-        )
-    }
-
-    /// The level the context-menu row opens: the four titled sections of the design
-    /// and the wide "new chat" button under them.
-    static func rootSheetPage(authorName: String?, languageCode: String) -> AorusAIActionSheetPage {
-        let subtitle: String
-        if let authorName, !authorName.isEmpty {
-            subtitle = aorusAILocalized("Действия с сообщением \(authorName)", "Actions for the message from \(authorName)")
-        } else {
-            subtitle = aorusAILocalized("Действия с сообщением", "Message actions")
-        }
-        return AorusAIActionSheetPage(
-            title: aorusAIMessageMenuTitle(),
-            subtitle: subtitle,
-            sections: groups(languageCode: languageCode).map { group in
-                AorusAIActionSheetSection(title: group.title, rows: group.items.map(row(for:)))
-            },
-            footer: row(for: footerItem)
-        )
-    }
-
-    /// The nested level of a row that has children — inside the sheet, never as a
-    /// second native context-menu container.
-    static func sheetPage(forRowId id: String, languageCode: String) -> AorusAIActionSheetPage? {
-        guard let item = groups(languageCode: languageCode).flatMap({ $0.items }).first(where: { $0.id == id }), !item.children.isEmpty else {
-            return nil
-        }
-        return AorusAIActionSheetPage(
-            title: item.title,
-            subtitle: nil,
-            sections: [AorusAIActionSheetSection(title: nil, rows: item.children.map(row(for:)))],
-            footer: nil
         )
     }
 
@@ -301,7 +280,7 @@ private func aorusAIPresentHistoryCount(context: AccountContext, navigationContr
         aorusAIPresentCustomHistoryCount(context: context, navigationController: navigationController, reference: reference)
     }))
     sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
-    aorusAIPresentActionSheet(sheet, from: navigationController)
+    aorusAIPresent(sheet, from: navigationController)
 }
 
 private func aorusAIPresentCustomHistoryCount(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
@@ -330,12 +309,12 @@ private func aorusAIPresentCustomHistoryCount(context: AccountContext, navigatio
             invalid.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default, handler: { _ in
                 aorusAIPresentCustomHistoryCount(context: context, navigationController: navigationController, reference: reference)
             }))
-            navigationController.present(invalid, animated: true)
+            aorusAIPresent(invalid, from: navigationController)
             return
         }
         aorusAIPrepareHistoryAnalysis(context: context, navigationController: navigationController, reference: reference, count: min(limit, parsed))
     }))
-    navigationController.present(alert, animated: true)
+    aorusAIPresent(alert, from: navigationController)
 }
 
 private struct AorusAITranscript {
@@ -439,7 +418,7 @@ private func aorusAIPrepareHistoryAnalysis(context: AccountContext, navigationCo
                 preferredStyle: .alert
             )
             empty.addAction(UIAlertAction(title: presentationData.strings.Common_OK, style: .default))
-            navigationController.present(empty, animated: true)
+            aorusAIPresent(empty, from: navigationController)
             return
         }
         let confirmation = UIAlertController(
@@ -465,7 +444,7 @@ private func aorusAIPrepareHistoryAnalysis(context: AccountContext, navigationCo
                 reference: reference
             ))
         }))
-        navigationController.present(confirmation, animated: true)
+        aorusAIPresent(confirmation, from: navigationController)
     })
 }
 
@@ -494,6 +473,9 @@ private final class AorusAIConversationListController: ViewController, UITableVi
     private var sections: [Section] = []
     private var searchQuery = ""
     private var observer: NSObjectProtocol?
+    /// The last width the list was laid out at, so the header and footer can be re-measured
+    /// when their text changes and not only when the screen resizes.
+    private var listWidth: CGFloat = 0.0
 
     private var visibleConversations: [AorusAIConversation] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -628,6 +610,8 @@ private final class AorusAIConversationListController: ViewController, UITableVi
             guard let self else { return }
             let name = peer?.displayTitle(strings: self.presentationData.strings, displayOrder: self.presentationData.nameDisplayOrder)
             self.listHeader.setDisplayName(name)
+            // The greeting just grew by a name, which can turn it into two lines.
+            self.updateTableAccessories()
         }))
         reload()
         self.displayNodeDidLoad()
@@ -644,10 +628,26 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         transition.updateFrame(view: newChatButton, frame: CGRect(x: 16.0, y: 8.0, width: max(0.0, layout.size.width - 32.0), height: 48.0))
         let tableTop = searchFrame.maxY + 12.0
         transition.updateFrame(view: tableView, frame: CGRect(x: 0.0, y: tableTop, width: layout.size.width, height: max(0.0, bottomFrame.minY - tableTop)))
-        if listHeader.frame.width != layout.size.width {
-            listHeader.frame = CGRect(x: 0.0, y: 0.0, width: layout.size.width, height: AorusAIConversationListHeaderView.preferredHeight)
+        listWidth = layout.size.width
+        updateTableAccessories()
+    }
+
+    /// Sizes the table's header and footer to the text they actually hold. Both are plain
+    /// views placed by their own frame, so the height has to be measured here — a fixed one
+    /// clipped the greeting and the privacy notice on a narrow screen — and re-measured
+    /// whenever the width or the greeting changes.
+    private func updateTableAccessories() {
+        guard listWidth > 0.0 else { return }
+        let headerHeight = listHeader.height(forWidth: listWidth)
+        if abs(listHeader.frame.width - listWidth) > 0.5 || abs(listHeader.frame.height - headerHeight) > 0.5 {
+            listHeader.frame = CGRect(x: 0.0, y: 0.0, width: listWidth, height: headerHeight)
+            listHeader.layoutIfNeeded()
             tableView.tableHeaderView = listHeader
-            footerView.frame = CGRect(x: 0.0, y: 0.0, width: layout.size.width, height: AorusAIConversationPrivacyFooterView.preferredHeight)
+        }
+        let footerHeight = footerView.height(forWidth: listWidth)
+        if abs(footerView.frame.width - listWidth) > 0.5 || abs(footerView.frame.height - footerHeight) > 0.5 {
+            footerView.frame = CGRect(x: 0.0, y: 0.0, width: listWidth, height: footerHeight)
+            footerView.layoutIfNeeded()
             tableView.tableFooterView = footerView
         }
     }
@@ -847,7 +847,10 @@ private final class AorusAISectionHeaderView: UIView {
 }
 
 private final class AorusAIConversationListHeaderView: UIView {
-    static let preferredHeight: CGFloat = 68.0
+    private static let horizontalInset: CGFloat = 20.0
+    private static let topInset: CGFloat = 12.0
+    private static let spacing: CGFloat = 4.0
+    private static let bottomInset: CGFloat = 10.0
 
     private let greetingLabel = UILabel()
     private let subtitleLabel = UILabel()
@@ -858,10 +861,13 @@ private final class AorusAIConversationListHeaderView: UIView {
         // The design sets the greeting in the system serif, the one place on the screen
         // where the type turns editorial.
         greetingLabel.font = aorusAISerifFont(size: 26.0, weight: .semibold)
-        greetingLabel.numberOfLines = 1
-        greetingLabel.adjustsFontSizeToFitWidth = true
-        greetingLabel.minimumScaleFactor = 0.8
+        // "Добрый вечер, " plus a full display name does not fit one 26pt serif line on a
+        // narrow phone. It used to be squeezed into a fixed 32pt frame, which is what put
+        // the text outside the header; it wraps to a second line instead.
+        greetingLabel.numberOfLines = 2
+        greetingLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.font = .systemFont(ofSize: 15.0, weight: .regular)
+        subtitleLabel.numberOfLines = 2
         subtitleLabel.text = aorusAILocalized("Чем займёмся сегодня?", "What are we doing today?")
         [greetingLabel, subtitleLabel].forEach { addSubview($0) }
         refreshGreeting()
@@ -881,10 +887,28 @@ private final class AorusAIConversationListHeaderView: UIView {
         refreshGreeting()
     }
 
+    /// The height the current text needs at `width`. A table header view is positioned by
+    /// its own frame, so the measurement has to happen before it is installed.
+    func height(forWidth width: CGFloat) -> CGFloat {
+        let available = max(1.0, width - Self.horizontalInset * 2.0)
+        return ceil(Self.topInset + textHeight(of: greetingLabel, width: available) + Self.spacing + textHeight(of: subtitleLabel, width: available) + Self.bottomInset)
+    }
+
+    private func textHeight(of label: UILabel, width: CGFloat) -> CGFloat {
+        return ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        greetingLabel.frame = CGRect(x: 20.0, y: 12.0, width: max(0.0, bounds.width - 40.0), height: 32.0)
-        subtitleLabel.frame = CGRect(x: 20.0, y: 48.0, width: max(0.0, bounds.width - 40.0), height: 20.0)
+        let available = max(0.0, bounds.width - Self.horizontalInset * 2.0)
+        let greetingHeight = textHeight(of: greetingLabel, width: available)
+        greetingLabel.frame = CGRect(x: Self.horizontalInset, y: Self.topInset, width: available, height: greetingHeight)
+        subtitleLabel.frame = CGRect(
+            x: Self.horizontalInset,
+            y: greetingLabel.frame.maxY + Self.spacing,
+            width: available,
+            height: textHeight(of: subtitleLabel, width: available)
+        )
     }
 
     private func refreshGreeting() {
@@ -899,6 +923,7 @@ private final class AorusAIConversationListHeaderView: UIView {
         }
         greetingLabel.text = displayName.map { "\(greeting), \($0)" } ?? greeting
         greetingLabel.accessibilityLabel = greetingLabel.text
+        setNeedsLayout()
     }
 }
 
@@ -1031,7 +1056,9 @@ private final class AorusAIConversationListEmptyView: UIView {
 }
 
 private final class AorusAIConversationPrivacyFooterView: UIView {
-    static let preferredHeight: CGFloat = 114.0
+    private static let horizontalInset: CGFloat = 32.0
+    private static let topInset: CGFloat = 28.0
+    private static let bottomInset: CGFloat = 32.0
 
     private let label = UILabel()
 
@@ -1054,9 +1081,22 @@ private final class AorusAIConversationPrivacyFooterView: UIView {
         label.textColor = palette.tertiary
     }
 
+    /// The height the notice needs at `width`. The Russian sentence takes four 13pt lines
+    /// on a narrow phone, and the fixed 54pt frame it used to be drawn in cut the last one
+    /// off.
+    func height(forWidth width: CGFloat) -> CGFloat {
+        let available = max(1.0, width - Self.horizontalInset * 2.0)
+        return ceil(Self.topInset + textHeight(width: available) + Self.bottomInset)
+    }
+
+    private func textHeight(width: CGFloat) -> CGFloat {
+        return ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.frame = CGRect(x: 32.0, y: 28.0, width: max(0.0, bounds.width - 64.0), height: 54.0)
+        let available = max(0.0, bounds.width - Self.horizontalInset * 2.0)
+        label.frame = CGRect(x: Self.horizontalInset, y: Self.topInset, width: available, height: textHeight(width: available))
     }
 }
 
@@ -3037,8 +3077,8 @@ private final class AorusAIDictationOverlayView: UIView {
         hintLabel.textAlignment = .center
         hintLabel.numberOfLines = 3
         hintLabel.text = aorusAILocalized(
-            "Говорите — текст появится в поле ввода. Распознавание идёт на устройстве.",
-            "Speak — the text appears in the input field. Recognition runs on this device."
+            "Говорите — текст появится в поле ввода. Речь распознаёт система iOS.",
+            "Speak — the text appears in the input field. Recognition is done by iOS."
         )
         // A text view, not a label: the caret has to sit exactly after the last glyph of a
         // centred, growing transcript, and `caretRect(for:)` is the only exact answer.
@@ -3346,17 +3386,34 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         assistantActions.spacing = 4
         assistantActions.alignment = .center
         copyButton.setTitle(aorusAILocalized("Копировать", "Copy"), for: .normal)
-        copyButton.setImage(UIImage(systemName: "doc.on.doc"), for: .normal)
         regenerateButton.setTitle(aorusAILocalized("Ещё раз", "Again"), for: .normal)
-        regenerateButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        // A 12pt glyph next to the 13pt title. `UIImage(systemName:)` with no configuration
+        // renders at the body text style — a 17pt glyph, which made the row half again as
+        // tall as the design draws it.
+        let actionSymbol = UIImage.SymbolConfiguration(pointSize: 12.0, weight: .medium)
+        copyButton.setImage(UIImage(systemName: "doc.on.doc", withConfiguration: actionSymbol), for: .normal)
+        regenerateButton.setImage(UIImage(systemName: "arrow.clockwise", withConfiguration: actionSymbol), for: .normal)
         for button in [copyButton, regenerateButton] {
             button.titleLabel?.font = .systemFont(ofSize: 13.0)
             button.imageEdgeInsets = UIEdgeInsets(top: 0.0, left: -4.0, bottom: 0.0, right: 4.0)
-            button.contentEdgeInsets = UIEdgeInsets(top: 6.0, left: 8.0, bottom: 6.0, right: 8.0)
+            button.contentEdgeInsets = UIEdgeInsets(top: 5.0, left: 10.0, bottom: 5.0, right: 8.0)
             button.layer.cornerRadius = 8.0
             button.layer.cornerCurve = .continuous
+            // `contentStack` stretches this row to the full body width, and a horizontal
+            // stack with the default `.fill` distribution hands all of that width to its
+            // buttons — which is why both of them were as wide as half the screen. Making
+            // them hug their titles and letting the trailing spacer absorb the remainder
+            // leaves two compact chips at the leading edge, as in the design.
+            button.setContentHuggingPriority(.required, for: .horizontal)
             assistantActions.addArrangedSubview(button)
         }
+        let actionsSpacer = UIView()
+        actionsSpacer.setContentHuggingPriority(UILayoutPriority(1.0), for: .horizontal)
+        actionsSpacer.setContentCompressionResistancePriority(UILayoutPriority(1.0), for: .horizontal)
+        assistantActions.addArrangedSubview(actionsSpacer)
+        // A spacer has no intrinsic size of its own, and the row is centre-aligned, so its
+        // height is pinned to keep the layout unambiguous.
+        actionsSpacer.heightAnchor.constraint(equalToConstant: 0.0).isActive = true
         copyButton.addTarget(self, action: #selector(copyAssistant), for: .touchUpInside)
         regenerateButton.addTarget(self, action: #selector(retry), for: .touchUpInside)
         assistantActions.isHidden = true

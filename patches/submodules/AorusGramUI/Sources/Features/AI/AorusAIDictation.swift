@@ -15,6 +15,7 @@ final class AorusAIDictation {
         case notAuthorized
         case unavailable
         case engine
+        case recognition
 
         var message: String {
             switch self {
@@ -24,6 +25,8 @@ final class AorusAIDictation {
                 return aorusAILocalized("Распознавание речи недоступно для этого языка", "Speech recognition is unavailable for this language")
             case .engine:
                 return aorusAILocalized("Не удалось включить микрофон", "Could not start the microphone")
+            case .recognition:
+                return aorusAILocalized("Не удалось распознать речь. Попробуйте ещё раз", "Could not recognize any speech. Please try again")
             }
         }
     }
@@ -33,6 +36,10 @@ final class AorusAIDictation {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var isTapInstalled = false
+    /// Held so the run can be ended by whichever of the recognizer, the user or the
+    /// watchdog gets there first, and only once.
+    private var finishHandler: (() -> Void)?
+    private var runIdentifier = 0
 
     private(set) var isRunning = false
 
@@ -96,14 +103,24 @@ final class AorusAIDictation {
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             request.taskHint = .dictation
-            if recognizer.supportsOnDeviceRecognition {
-                request.requiresOnDeviceRecognition = true
-            }
+            // On-device recognition is deliberately not forced. `supportsOnDeviceRecognition`
+            // only says the recognizer could work offline; when the language asset has not
+            // been downloaded the task fails on its first callback, and that failure was
+            // swallowed — which is why dictation appeared to do nothing at all. Leaving the
+            // choice to iOS keeps the server path available and it still prefers on-device
+            // whenever the asset is there.
             self.request = request
 
             let session = AVAudioSession.sharedInstance()
             do {
-                try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+                // `.duckOthers` is what Apple's own streaming-recognition sample asks for,
+                // but it is documented as a playback option, so a session that refuses it
+                // is retried without it rather than failing the whole run.
+                do {
+                    try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+                } catch {
+                    try session.setCategory(.record, mode: .measurement)
+                }
                 try session.setActive(true, options: .notifyOthersOnDeactivation)
             } catch {
                 self.tearDown()
@@ -135,34 +152,46 @@ final class AorusAIDictation {
             }
 
             self.isRunning = true
-            var didFinish = false
-            let finishOnce: () -> Void = {
-                guard !didFinish else { return }
-                didFinish = true
-                onFinish()
-            }
+            self.runIdentifier += 1
+            self.finishHandler = onFinish
             self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                guard let self else { return }
-                if let result {
-                    let text = result.bestTranscription.formattedString
-                    if text != self.transcript {
-                        self.transcript = text
-                        onText(text)
+                // `recognitionTask(with:resultHandler:)` makes no promise about its queue and
+                // everything below writes to the composer, so hop to the main one first.
+                DispatchQueue.main.async {
+                    guard let self, self.isRunning else { return }
+                    if let result {
+                        let text = result.bestTranscription.formattedString
+                        if text != self.transcript {
+                            self.transcript = text
+                            onText(text)
+                        }
+                        if result.isFinal {
+                            self.tearDown()
+                            self.finishRun()
+                        }
+                        return
                     }
-                    if result.isFinal {
-                        self.tearDown()
-                        finishOnce()
-                    }
-                    return
-                }
-                if error != nil {
-                    // A silent run ends with an error too; whatever was recognised is
-                    // already in the composer, so this is not surfaced as a failure.
+                    guard error != nil else { return }
+                    // A run the user ended after speaking reports an error too, and its text
+                    // is already in the composer. Only a run that recognised nothing is a
+                    // real failure, and it has to say so rather than close in silence.
+                    let recognizedNothing = self.transcript.isEmpty
                     self.tearDown()
-                    finishOnce()
+                    if recognizedNothing {
+                        onFailure(.recognition)
+                    }
+                    self.finishRun()
                 }
             }
         }
+    }
+
+    /// Ends the run at most once, whichever of the recognizer, the user or the watchdog
+    /// gets there first.
+    private func finishRun() {
+        guard let handler = self.finishHandler else { return }
+        self.finishHandler = nil
+        handler()
     }
 
     /// Ends the run. The recognizer delivers its final result through the callback
@@ -170,10 +199,21 @@ final class AorusAIDictation {
     func stop() {
         guard self.isRunning else {
             self.tearDown()
+            self.finishRun()
             return
         }
         self.request?.endAudio()
         self.engine.pause()
+        // `endAudio()` normally draws a final result out of the recognizer, and that is
+        // what ends the run. If it never arrives — a dropped connection, a task the system
+        // cancelled — the overlay would stay up over the chat forever, so close the run
+        // here instead. The identifier keeps a stale watchdog from ending a later run.
+        let expected = self.runIdentifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self, self.runIdentifier == expected, self.finishHandler != nil else { return }
+            self.tearDown()
+            self.finishRun()
+        }
     }
 
     private func tearDown() {
