@@ -16,10 +16,10 @@ import AorusGram
 // menu pushes another level of the same menu, with Telegram's own rows, icons, section
 // headers, back row and dismissal. Nothing here draws a surface of its own.
 //
-// Depth is not a problem: `ContextControllerActionsStackNode` lays out every container in
-// its stack and only gives the top two a non-zero alpha, and the extracted presentation
-// node's scroll view sizes itself to the actions, so a long level scrolls instead of
-// running off the screen.
+// Each level stays deliberately short. Telegram's context presentation is not a general
+// purpose scrolling list on every host screen, so opening all AI actions at once can run
+// below the viewport and collide with the original message menu. Categories push another
+// native ContextUI level and preserve Telegram's own transitions and dismissal behavior.
 
 /// The grey band that titles a group of rows.
 ///
@@ -198,17 +198,21 @@ public func aorusAIMessageMenuItems(
         }
     }
 
-    var items: [ContextMenuItem] = []
-    items.append(aorusAIMenuBackItem(strings: strings))
+    var items: [ContextMenuItem] = [
+        aorusAIMenuBackItem(strings: strings),
+        .custom(AorusAISectionTitleContextItem(text: aorusAILocalized("ИИ-компаньон", "AI Companion")), false)
+    ]
     for group in AorusAIMessageMenu.groups(languageCode: languageCode) {
-        if let title = group.title, !title.isEmpty {
-            items.append(.custom(AorusAISectionTitleContextItem(text: title), false))
-        } else {
-            items.append(.separator)
-        }
-        for item in group.items {
-            items.append(aorusAIMenuItem(item, strings: strings, run: run))
-        }
+        let title = group.title ?? aorusAILocalized("Действия", "Actions")
+        let category = AorusAIMessageMenu.Item(
+            id: "group.\(title)",
+            title: title,
+            icon: group.icon,
+            prompt: "",
+            hint: aorusAILocalized("\(group.items.count) действий", "\(group.items.count) actions"),
+            children: group.items
+        )
+        items.append(aorusAIMenuItem(category, strings: strings, run: run))
     }
     items.append(.separator)
     items.append(aorusAIMenuItem(AorusAIMessageMenu.footerItem, strings: strings, run: run))

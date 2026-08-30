@@ -40,8 +40,10 @@ final class AorusAIDictation {
     /// watchdog gets there first, and only once.
     private var finishHandler: (() -> Void)?
     private var runIdentifier = 0
+    private var isStarting = false
 
     private(set) var isRunning = false
+    var isActive: Bool { self.isStarting || self.isRunning }
 
     /// The transcription of the current run only, so the caller can append it to
     /// whatever the user had already typed instead of replacing it.
@@ -83,19 +85,26 @@ final class AorusAIDictation {
         onFailure: @escaping (Failure) -> Void,
         onFinish: @escaping () -> Void
     ) {
-        guard !self.isRunning else { return }
+        guard !self.isRunning, !self.isStarting else { return }
         self.transcript = ""
+        self.isStarting = true
+        self.runIdentifier += 1
+        let expectedRunIdentifier = self.runIdentifier
+        self.finishHandler = onFinish
 
         self.requestAuthorization { [weak self] granted in
             guard let self else { return }
+            guard self.isStarting, self.runIdentifier == expectedRunIdentifier else { return }
             guard granted else {
+                self.isStarting = false
                 onFailure(.notAuthorized)
-                onFinish()
+                self.finishRun()
                 return
             }
             guard let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(), recognizer.isAvailable else {
+                self.isStarting = false
                 onFailure(.unavailable)
-                onFinish()
+                self.finishRun()
                 return
             }
             self.recognizer = recognizer
@@ -125,7 +134,7 @@ final class AorusAIDictation {
             } catch {
                 self.tearDown()
                 onFailure(.engine)
-                onFinish()
+                self.finishRun()
                 return
             }
 
@@ -134,7 +143,7 @@ final class AorusAIDictation {
             guard format.sampleRate > 0.0, format.channelCount > 0 else {
                 self.tearDown()
                 onFailure(.engine)
-                onFinish()
+                self.finishRun()
                 return
             }
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
@@ -147,18 +156,19 @@ final class AorusAIDictation {
             } catch {
                 self.tearDown()
                 onFailure(.engine)
-                onFinish()
+                self.finishRun()
                 return
             }
 
+            self.isStarting = false
             self.isRunning = true
-            self.runIdentifier += 1
-            self.finishHandler = onFinish
             self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 // `recognitionTask(with:resultHandler:)` makes no promise about its queue and
                 // everything below writes to the composer, so hop to the main one first.
                 DispatchQueue.main.async {
-                    guard let self, self.isRunning else { return }
+                    guard let self,
+                          self.isRunning,
+                          self.runIdentifier == expectedRunIdentifier else { return }
                     if let result {
                         let text = result.bestTranscription.formattedString
                         if text != self.transcript {
@@ -197,6 +207,15 @@ final class AorusAIDictation {
     /// Ends the run. The recognizer delivers its final result through the callback
     /// passed to `start`, so the caller does not have to read anything back here.
     func stop() {
+        if self.isStarting {
+            // Permission prompts may outlive the overlay. Invalidate this attempt so a
+            // late authorization callback cannot start recording after the user closed it.
+            self.runIdentifier += 1
+            self.isStarting = false
+            self.tearDown()
+            self.finishRun()
+            return
+        }
         guard self.isRunning else {
             self.tearDown()
             self.finishRun()
@@ -228,6 +247,7 @@ final class AorusAIDictation {
         self.task = nil
         self.request = nil
         self.recognizer = nil
+        self.isStarting = false
         self.isRunning = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
