@@ -143,30 +143,48 @@ enum AorusAIMessageMenu {
         ("uz", "Oʻzbekcha")
     ]
 
-    private static func orderedLanguages(for languageCode: String) -> [(code: String, name: String)] {
-        let base = languageCode.lowercased().prefix(2)
-        var ordered = translationLanguages
-        if let index = ordered.firstIndex(where: { $0.code == base }) {
-            let current = ordered.remove(at: index)
-            ordered.insert(current, at: 0)
-        }
-        return ordered
+    private static func currentLanguageName(for languageCode: String) -> String {
+        let base = String(languageCode.lowercased().prefix(2))
+        return translationLanguages.first(where: { $0.code == base })?.name ?? "English"
     }
 
-    private static func currentLanguageName(for languageCode: String) -> String {
-        return orderedLanguages(for: languageCode).first?.name ?? "English"
+    private static func translationLeaf(code: String) -> Item? {
+        guard let language = translationLanguages.first(where: { $0.code == code }) else { return nil }
+        return Item(
+            id: "\(translateId).\(language.code)",
+            title: language.name,
+            icon: "Chat/Context Menu/Translate",
+            prompt: aorusAILocalized(
+                "Переведи это сообщение на язык: \(language.name). Дай только перевод.",
+                "Translate this message into \(language.name). Reply with the translation only."
+            )
+        )
     }
 
     private static func translationItems(for languageCode: String) -> [Item] {
-        return orderedLanguages(for: languageCode).map { language in
-            Item(
-                id: "\(translateId).\(language.code)",
-                title: language.name,
+        let base = String(languageCode.lowercased().prefix(2))
+        var groups: [(id: String, title: String, codes: [String])] = [
+            ("popular", aorusAILocalized("Основные", "Popular"), ["ru", "en", "uk"]),
+            ("europe", aorusAILocalized("Европа", "Europe"), ["es", "de", "fr", "it", "pt", "pl"]),
+            ("eurasia", aorusAILocalized("Евразия", "Eurasia"), ["tr", "ar", "kk", "uz"]),
+            ("eastAsia", aorusAILocalized("Восточная Азия", "East Asia"), ["zh", "ja", "ko"])
+        ]
+        // Put the group containing the interface language first without making any
+        // individual level taller. Every resulting native context-menu page has at most
+        // eight rows including its back row and title band.
+        if let index = groups.firstIndex(where: { $0.codes.contains(base) }), index != 0 {
+            let current = groups.remove(at: index)
+            groups.insert(current, at: 0)
+        }
+        return groups.map { group in
+            let children = group.codes.compactMap { translationLeaf(code: $0) }
+            return Item(
+                id: "\(translateId).group.\(group.id)",
+                title: group.title,
                 icon: "Chat/Context Menu/Translate",
-                prompt: aorusAILocalized(
-                    "Переведи это сообщение на язык: \(language.name). Дай только перевод.",
-                    "Translate this message into \(language.name). Reply with the translation only."
-                )
+                prompt: "",
+                hint: aorusAILocalized("\(children.count) языков", "\(children.count) languages"),
+                children: children
             )
         }
     }
@@ -651,7 +669,6 @@ private final class AorusAIConversationListController: ViewController, UITableVi
         emptyView.isHidden = !isEmpty
         emptyView.accessibilityElementsHidden = !isEmpty
         emptyView.setSearching(!searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        footerView.isHidden = isEmpty
     }
 
     @objc private func createConversation() {
