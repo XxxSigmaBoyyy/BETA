@@ -1,170 +1,16 @@
 import Foundation
 import UIKit
-import AsyncDisplayKit
 import Display
-import ContextUI
 import AccountContext
 import TelegramPresentationData
-import SwiftSignalKit
 import AppBundle
-// `AorusAIReferencedMessage` is a core model, not a UI type: it lives in AorusGram, which
-// AorusGramUI already depends on. The preflight parses this file rather than typechecking
-// it, so a missing import here only surfaces in Bazel.
 import AorusGram
 
-// The AorusAI message actions are a native Telegram context menu: the row in the message
-// menu pushes another level of the same menu, with Telegram's own rows, icons, section
-// headers, back row and dismissal. Nothing here draws a surface of its own.
-//
-// Each level stays deliberately short. Telegram's context presentation is not a general
-// purpose scrolling list on every host screen, so opening all AI actions at once can run
-// below the viewport and collide with the original message menu. Categories push another
-// native ContextUI level and preserve Telegram's own transitions and dismissal behavior.
-
-/// The grey band that titles a group of rows.
-///
-/// Telegram ships `SectionTitleContextItem` for this, in a module TelegramUI does not
-/// depend on; the node is small enough that owning it here is cheaper than adding a
-/// build dependency to a module we do not patch.
-final class AorusAISectionTitleContextItem: ContextMenuCustomItem {
-    let text: String
-
-    init(text: String) {
-        self.text = text
-    }
-
-    func node(presentationData: PresentationData, getController: @escaping () -> ContextControllerProtocol?, actionSelected: @escaping (ContextMenuActionResult) -> Void) -> ContextMenuCustomNode {
-        return AorusAISectionTitleContextItemNode(presentationData: presentationData, item: self)
-    }
-}
-
-private final class AorusAISectionTitleContextItemNode: ASDisplayNode, ContextMenuCustomNode {
-    private let backgroundNode: ASDisplayNode
-    private let textNode: ImmediateTextNode
-
-    var needsSeparator: Bool {
-        return false
-    }
-
-    var needsPadding: Bool {
-        return false
-    }
-
-    init(presentationData: PresentationData, item: AorusAISectionTitleContextItem) {
-        let textFont = Font.regular(presentationData.listsFontSize.baseDisplaySize * 12.0 / 17.0)
-
-        self.backgroundNode = ASDisplayNode()
-        self.backgroundNode.isAccessibilityElement = false
-        self.backgroundNode.backgroundColor = presentationData.theme.contextMenu.sectionSeparatorColor
-
-        self.textNode = ImmediateTextNode()
-        self.textNode.isAccessibilityElement = false
-        self.textNode.isUserInteractionEnabled = false
-        self.textNode.displaysAsynchronously = false
-        self.textNode.attributedText = NSAttributedString(string: item.text, font: textFont, textColor: presentationData.theme.contextMenu.secondaryColor)
-        self.textNode.maximumNumberOfLines = 1
-
-        super.init()
-
-        self.addSubnode(self.backgroundNode)
-        self.addSubnode(self.textNode)
-    }
-
-    func updateLayout(constrainedWidth: CGFloat, constrainedHeight: CGFloat) -> (CGSize, (CGSize, ContainedViewLayoutTransition) -> Void) {
-        let sideInset: CGFloat = 18.0 + 4.0
-        let textSize = self.textNode.updateLayout(CGSize(width: max(1.0, constrainedWidth - sideInset * 2.0), height: .greatestFiniteMagnitude))
-        // 28pt of band plus the 10pt gap that separates it from the group above.
-        let height: CGFloat = 10.0 + 28.0
-        return (CGSize(width: textSize.width + sideInset * 2.0, height: height), { size, transition in
-            let verticalOrigin = floor((size.height - 10.0 - textSize.height) / 2.0)
-            transition.updateFrameAdditive(node: self.textNode, frame: CGRect(origin: CGPoint(x: sideInset, y: verticalOrigin), size: textSize))
-            transition.updateFrame(node: self.backgroundNode, frame: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: max(0.0, size.height - 10.0))))
-        })
-    }
-
-    func updateTheme(presentationData: PresentationData) {
-        self.backgroundNode.backgroundColor = presentationData.theme.contextMenu.sectionSeparatorColor
-        let textFont = Font.regular(presentationData.listsFontSize.baseDisplaySize * 12.0 / 17.0)
-        self.textNode.attributedText = NSAttributedString(
-            string: self.textNode.attributedText?.string ?? "",
-            font: textFont,
-            textColor: presentationData.theme.contextMenu.secondaryColor
-        )
-    }
-
-    func canBeHighlighted() -> Bool {
-        return false
-    }
-
-    func updateIsHighlighted(isHighlighted: Bool) {
-    }
-
-    func performAction() {
-    }
-}
-
-private func aorusAIMenuBackItem(strings: PresentationStrings) -> ContextMenuItem {
-    return .action(ContextMenuActionItem(text: strings.Common_Back, textColor: .primary, icon: { theme in
-        return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Back"), color: theme.contextMenu.primaryColor)
-    }, iconPosition: .left, action: { c, _ in
-        c?.popItems()
-    }))
-}
-
-private func aorusAIMenuTextLayout(hint: String?) -> ContextMenuActionItemTextLayout {
-    if let hint, !hint.isEmpty {
-        return .secondLineWithValue(hint)
-    }
-    return .singleLine
-}
-
-/// One row. A row with children pushes another level; a leaf closes the menu and runs.
-private func aorusAIMenuItem(
-    _ item: AorusAIMessageMenu.Item,
-    strings: PresentationStrings,
-    run: @escaping (String) -> Void
-) -> ContextMenuItem {
-    let iconName = item.icon
-    let icon: (PresentationTheme) -> UIImage? = { theme in
-        return generateTintedImage(image: UIImage(bundleImageName: iconName), color: theme.contextMenu.primaryColor)
-    }
-    let children = item.children
-    if children.isEmpty {
-        let id = item.id
-        return .action(ContextMenuActionItem(
-            text: item.title,
-            textLayout: aorusAIMenuTextLayout(hint: item.hint),
-            icon: icon,
-            action: { c, _ in
-                c?.dismiss(completion: {
-                    run(id)
-                })
-            }
-        ))
-    }
-    let title = item.title
-    return .action(ContextMenuActionItem(
-        text: item.title,
-        textLayout: aorusAIMenuTextLayout(hint: item.hint),
-        icon: icon,
-        action: { c, _ in
-            var subItems: [ContextMenuItem] = []
-            subItems.append(aorusAIMenuBackItem(strings: strings))
-            subItems.append(.custom(AorusAISectionTitleContextItem(text: title), false))
-            for child in children {
-                subItems.append(aorusAIMenuItem(child, strings: strings, run: run))
-            }
-            c?.pushItems(items: .single(ContextController.Items(content: .list(subItems))))
-        }
-    ))
-}
-
-/// The level the "ИИ-компаньон" row of the message context menu pushes.
-///
-/// This is the whole surface the host patch needs: the generated code hands the message
-/// over and pushes these items, so the actions, their grouping and their navigation all
-/// live in this module instead of inside TelegramUI.
-public func aorusAIMessageMenuItems(
+/// AorusAI actions live in one native page sheet after Telegram's message menu has fully
+/// dismissed. ContextUI's stacked `pushItems` transition can leave both extracted menus
+/// visible on narrow devices; keeping one controller and switching its segment in place
+/// makes that overlap structurally impossible.
+public func aorusAIPresentMessageActions(
     context: AccountContext,
     navigationController: NavigationController?,
     peerId: Int64,
@@ -172,50 +18,223 @@ public func aorusAIMessageMenuItems(
     messageId: Int32,
     authorPeerId: Int64?,
     text: String
-) -> Signal<ContextController.Items, NoError> {
-    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-    let strings = presentationData.strings
-    let languageCode = strings.baseLanguageCode
+) {
+    guard let navigationController else { return }
+    aorusAIResolveAuthorName(context: context, authorPeerId: authorPeerId) { authorName in
+        let reference = AorusAIReferencedMessage(
+            peerId: peerId,
+            messageNamespace: messageNamespace,
+            messageId: messageId,
+            authorPeerId: authorPeerId,
+            authorName: authorName,
+            text: text
+        )
+        let controller = AorusAIMessageActionsController(
+            context: context,
+            navigationController: navigationController,
+            reference: reference
+        )
+        controller.modalPresentationStyle = .pageSheet
+        if #available(iOS 15.0, *) {
+            controller.sheetPresentationController?.detents = [.medium(), .large()]
+            controller.sheetPresentationController?.selectedDetentIdentifier = .medium
+            controller.sheetPresentationController?.prefersGrabberVisible = true
+            controller.sheetPresentationController?.prefersScrollingExpandsWhenScrolledToEdge = true
+        }
+        controller.preferredContentSize = CGSize(width: 420.0, height: 560.0)
+        let presenter = (navigationController.topViewController as? UIViewController)
+            ?? navigationController.view.window?.rootViewController
+        presenter?.present(controller, animated: true)
+    }
+}
 
-    // The author's name is only needed by the action that eventually runs, so it is
-    // resolved then rather than held up in front of the menu.
-    let run: (String) -> Void = { id in
-        guard let navigationController else { return }
-        aorusAIResolveAuthorName(context: context, authorPeerId: authorPeerId) { authorName in
-            AorusAIMessageMenu.run(
-                id: id,
-                context: context,
-                navigationController: navigationController,
-                reference: AorusAIReferencedMessage(
-                    peerId: peerId,
-                    messageNamespace: messageNamespace,
-                    messageId: messageId,
-                    authorPeerId: authorPeerId,
-                    authorName: authorName,
-                    text: text
-                )
-            )
+private final class AorusAIMessageActionsController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private let context: AccountContext
+    private weak var targetNavigationController: NavigationController?
+    private let reference: AorusAIReferencedMessage
+    private let presentationData: PresentationData
+    private let palette: AorusAIPalette
+    private let groups: [AorusAIMessageMenu.Group]
+    private let languageCode: String
+
+    private let materialView = UIVisualEffectView()
+    private let headerView = UIView()
+    private let titleLabel = UILabel()
+    private let closeButton = UIButton(type: .system)
+    private let segments: UISegmentedControl
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let newChatButton = UIButton(type: .system)
+    private var selectedItems: [AorusAIMessageMenu.Item] = []
+
+    init(context: AccountContext, navigationController: NavigationController, reference: AorusAIReferencedMessage) {
+        self.context = context
+        self.targetNavigationController = navigationController
+        self.reference = reference
+        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        self.presentationData = presentationData
+        self.palette = AorusAIPalette.resolve(presentationData.theme)
+        self.languageCode = presentationData.strings.baseLanguageCode
+        let groups = AorusAIMessageMenu.groups(languageCode: presentationData.strings.baseLanguageCode)
+        self.groups = groups
+        self.segments = UISegmentedControl(items: groups.map { $0.title ?? aorusAILocalized("Действия", "Actions") })
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        materialView.effect = aorusAIGlassEffect(palette: palette)
+        materialView.backgroundColor = aorusAIGlassTint(palette: palette)
+        view.addSubview(materialView)
+
+        titleLabel.text = aorusAILocalized("ИИ-компаньон", "AI Companion")
+        titleLabel.font = .systemFont(ofSize: 20.0, weight: .bold)
+        titleLabel.textColor = palette.label
+        titleLabel.textAlignment = .center
+        headerView.addSubview(titleLabel)
+
+        closeButton.setImage(
+            UIImage(systemName: "xmark")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 14.0, weight: .semibold)),
+            for: .normal
+        )
+        closeButton.tintColor = palette.secondary
+        closeButton.backgroundColor = aorusAIGlassTint(palette: palette, strong: true)
+        closeButton.layer.cornerRadius = 16.0
+        closeButton.layer.cornerCurve = .continuous
+        closeButton.accessibilityLabel = aorusAILocalized("Закрыть", "Close")
+        closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
+        headerView.addSubview(closeButton)
+        view.addSubview(headerView)
+
+        segments.selectedSegmentIndex = 0
+        segments.selectedSegmentTintColor = aorusAIGlassTint(palette: palette, strong: true)
+        segments.setTitleTextAttributes([.foregroundColor: palette.secondary], for: .normal)
+        segments.setTitleTextAttributes([.foregroundColor: palette.label, .font: UIFont.systemFont(ofSize: 12.0, weight: .semibold)], for: .selected)
+        segments.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
+        view.addSubview(segments)
+
+        tableView.backgroundColor = .clear
+        tableView.separatorColor = aorusAIGlassBorder(palette: palette)
+        tableView.separatorInset = UIEdgeInsets(top: 0.0, left: 56.0, bottom: 0.0, right: 16.0)
+        tableView.rowHeight = 54.0
+        tableView.dataSource = self
+        tableView.delegate = self
+        view.addSubview(tableView)
+
+        newChatButton.setTitle(aorusAILocalized("Новый диалог с сообщением", "New chat with message"), for: .normal)
+        newChatButton.setImage(UIImage(systemName: "bubble.left.and.bubble.right"), for: .normal)
+        newChatButton.tintColor = palette.accent
+        newChatButton.titleLabel?.font = .systemFont(ofSize: 15.0, weight: .semibold)
+        newChatButton.semanticContentAttribute = .forceLeftToRight
+        newChatButton.imageEdgeInsets = UIEdgeInsets(top: 0.0, left: -5.0, bottom: 0.0, right: 5.0)
+        newChatButton.backgroundColor = aorusAIGlassTint(palette: palette, strong: true)
+        newChatButton.layer.cornerRadius = 20.0
+        newChatButton.layer.cornerCurve = .continuous
+        newChatButton.layer.borderWidth = UIScreenPixel
+        newChatButton.layer.borderColor = aorusAIGlassBorder(palette: palette).cgColor
+        newChatButton.addTarget(self, action: #selector(newChat), for: .touchUpInside)
+        view.addSubview(newChatButton)
+
+        updateSelectedItems()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        materialView.frame = view.bounds
+        let safe = view.safeAreaInsets
+        let width = view.bounds.width
+        headerView.frame = CGRect(x: 0.0, y: safe.top + 4.0, width: width, height: 48.0)
+        titleLabel.frame = CGRect(x: 56.0, y: 7.0, width: max(0.0, width - 112.0), height: 28.0)
+        closeButton.frame = CGRect(x: width - 48.0, y: 7.0, width: 32.0, height: 32.0)
+        segments.frame = CGRect(x: 16.0, y: headerView.frame.maxY + 4.0, width: max(0.0, width - 32.0), height: 34.0)
+        let buttonHeight: CGFloat = 40.0
+        newChatButton.frame = CGRect(x: 16.0, y: view.bounds.height - safe.bottom - buttonHeight - 10.0, width: max(0.0, width - 32.0), height: buttonHeight)
+        tableView.frame = CGRect(x: 0.0, y: segments.frame.maxY + 8.0, width: width, height: max(0.0, newChatButton.frame.minY - segments.frame.maxY - 14.0))
+    }
+
+    private func updateSelectedItems() {
+        guard groups.indices.contains(segments.selectedSegmentIndex) else {
+            selectedItems = []
+            tableView.reloadData()
+            return
+        }
+        selectedItems = displayItems(from: groups[segments.selectedSegmentIndex].items)
+        tableView.reloadData()
+        tableView.setContentOffset(.zero, animated: false)
+    }
+
+    /// Tone options belong directly to the Tone segment. Translation is a single direct
+    /// action into the current interface language, so selecting it never opens another
+    /// menu layer.
+    private func displayItems(from items: [AorusAIMessageMenu.Item]) -> [AorusAIMessageMenu.Item] {
+        var result: [AorusAIMessageMenu.Item] = []
+        let language = String(languageCode.lowercased().prefix(2))
+        for item in items {
+            if item.id == AorusAIMessageMenu.toneId {
+                result.append(contentsOf: item.children)
+            } else if item.id == AorusAIMessageMenu.translateId {
+                let leaves = item.children.flatMap { group in group.children.isEmpty ? [group] : group.children }
+                if var target = leaves.first(where: { $0.id.hasSuffix(".\(language)") })
+                    ?? leaves.first(where: { $0.id.hasSuffix(".en") }) {
+                    target.title = aorusAILocalized("Перевести", "Translate")
+                    target.hint = item.hint
+                    result.append(target)
+                }
+            } else {
+                result.append(item)
+            }
+        }
+        return result
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return selectedItems.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "action")
+            ?? UITableViewCell(style: .subtitle, reuseIdentifier: "action")
+        let item = selectedItems[indexPath.row]
+        cell.textLabel?.text = item.title
+        cell.textLabel?.textColor = palette.label
+        cell.textLabel?.font = .systemFont(ofSize: 16.0, weight: .medium)
+        cell.detailTextLabel?.text = item.hint
+        cell.detailTextLabel?.textColor = palette.tertiary
+        cell.detailTextLabel?.font = .systemFont(ofSize: 12.0)
+        cell.imageView?.image = UIImage(bundleImageName: item.icon)?.withRenderingMode(.alwaysTemplate)
+        cell.imageView?.tintColor = palette.secondary
+        cell.backgroundColor = .clear
+        cell.accessoryType = .none
+        let selected = UIView()
+        selected.backgroundColor = aorusAIGlassTint(palette: palette, strong: true)
+        cell.selectedBackgroundView = selected
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        run(selectedItems[indexPath.row].id)
+    }
+
+    private func run(_ id: String) {
+        guard let targetNavigationController else { return }
+        dismiss(animated: true) {
+            AorusAIMessageMenu.run(id: id, context: self.context, navigationController: targetNavigationController, reference: self.reference)
         }
     }
 
-    var items: [ContextMenuItem] = [
-        aorusAIMenuBackItem(strings: strings),
-        .custom(AorusAISectionTitleContextItem(text: aorusAILocalized("ИИ-компаньон", "AI Companion")), false)
-    ]
-    for group in AorusAIMessageMenu.groups(languageCode: languageCode) {
-        let title = group.title ?? aorusAILocalized("Действия", "Actions")
-        let category = AorusAIMessageMenu.Item(
-            id: "group.\(title)",
-            title: title,
-            icon: group.icon,
-            prompt: "",
-            hint: aorusAILocalized("\(group.items.count) действий", "\(group.items.count) actions"),
-            children: group.items
-        )
-        items.append(aorusAIMenuItem(category, strings: strings, run: run))
+    @objc private func segmentChanged() {
+        UISelectionFeedbackGenerator().selectionChanged()
+        updateSelectedItems()
     }
-    items.append(.separator)
-    items.append(aorusAIMenuItem(AorusAIMessageMenu.footerItem, strings: strings, run: run))
 
-    return .single(ContextController.Items(content: .list(items)))
+    @objc private func close() {
+        dismiss(animated: true)
+    }
+
+    @objc private func newChat() {
+        run(AorusAIMessageMenu.newChatId)
+    }
 }

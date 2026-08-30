@@ -78,6 +78,27 @@ struct AorusAIPalette {
     }
 }
 
+/// Shared material recipe for every AorusAI surface. A blur view with an opaque grey
+/// `backgroundColor` is visually just a grey card, so tint and border stay translucent
+/// and the material remains visible over Telegram's live content.
+func aorusAIGlassEffect(palette: AorusAIPalette) -> UIBlurEffect {
+    return UIBlurEffect(style: palette.isDark ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight)
+}
+
+func aorusAIGlassTint(palette: AorusAIPalette, strong: Bool = false) -> UIColor {
+    if palette.isDark {
+        return UIColor.white.withAlphaComponent(strong ? 0.085 : 0.045)
+    } else {
+        return UIColor.white.withAlphaComponent(strong ? 0.42 : 0.28)
+    }
+}
+
+func aorusAIGlassBorder(palette: AorusAIPalette) -> UIColor {
+    return palette.isDark
+        ? UIColor.white.withAlphaComponent(0.16)
+        : UIColor.black.withAlphaComponent(0.10)
+}
+
 /// Headings are set in the system serif (New York), the way the design draws them.
 ///
 /// `withDesign` returns nil on a descriptor that has no serif counterpart, and the
@@ -136,9 +157,11 @@ enum AorusAIGroupPosition {
 /// The rounded card behind a group of rows.
 ///
 /// Grouped tables give a fixed 10pt corner; the design asks for 16–18 with a hairline
-/// border, so the card is drawn per row and masked by position. One view, no shadows,
-/// no blur — the same recipe on both appearances.
+/// border, so the material is drawn per row and masked by position. Adjacent rows share
+/// the same translucent recipe and read as one continuous glass group.
 final class AorusAIGroupBackgroundView: UIView {
+    private let materialView = UIVisualEffectView()
+    private let tintView = UIView()
     private let separator = UIView()
     private let border = CAShapeLayer()
     private var position: AorusAIGroupPosition = .single
@@ -148,6 +171,11 @@ final class AorusAIGroupBackgroundView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         self.layer.cornerCurve = .continuous
+        self.clipsToBounds = true
+        materialView.isUserInteractionEnabled = false
+        tintView.isUserInteractionEnabled = false
+        self.addSubview(materialView)
+        materialView.contentView.addSubview(tintView)
         // The card is one card per row, so a plain layer border would draw a line
         // where two rows meet. The stroke is a path over the outer edges only.
         border.fillColor = nil
@@ -162,20 +190,27 @@ final class AorusAIGroupBackgroundView: UIView {
     /// row groups inside the sheet, which the design draws in the page background so they
     /// read as inset panels instead of merging with the sheet.
     func configure(palette: AorusAIPalette, position: AorusAIGroupPosition, radius: CGFloat, separatorInset: CGFloat, fill: UIColor? = nil) {
-        self.backgroundColor = fill ?? palette.elevated
+        self.backgroundColor = .clear
+        materialView.effect = aorusAIGlassEffect(palette: palette)
+        // An override is still translucent: callers can make an inset group quieter
+        // without turning the material back into an opaque painted rectangle.
+        tintView.backgroundColor = fill?.withAlphaComponent(palette.isDark ? 0.18 : 0.30)
+            ?? aorusAIGlassTint(palette: palette)
         self.position = position
         self.radius = radius
         self.separatorInset = separatorInset
         self.layer.cornerRadius = radius
         self.layer.maskedCorners = position.maskedCorners
-        border.strokeColor = palette.separator.cgColor
-        separator.backgroundColor = palette.separator
+        border.strokeColor = aorusAIGlassBorder(palette: palette).cgColor
+        separator.backgroundColor = aorusAIGlassBorder(palette: palette)
         separator.isHidden = !position.drawsSeparator
         setNeedsLayout()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        materialView.frame = bounds
+        tintView.frame = materialView.bounds
         separator.frame = CGRect(x: separatorInset, y: bounds.height - UIScreenPixel, width: max(0.0, bounds.width - separatorInset), height: UIScreenPixel)
         border.frame = bounds
         let inset = UIScreenPixel / 2.0

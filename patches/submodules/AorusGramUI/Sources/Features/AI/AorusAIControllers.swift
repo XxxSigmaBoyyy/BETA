@@ -272,10 +272,18 @@ enum AorusAIMessageMenu {
             navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), reference: reference))
         default:
             let languageCode = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode
-            let all = groups(languageCode: languageCode).flatMap { $0.items }.flatMap { [$0] + $0.children }
-            guard let prompt = all.first(where: { $0.id == id })?.prompt, !prompt.isEmpty else { return }
+            let roots = groups(languageCode: languageCode).flatMap { $0.items }
+            guard let prompt = findItem(id: id, in: roots)?.prompt, !prompt.isEmpty else { return }
             navigationController.pushViewController(AorusAIChatController(context: context, conversation: AorusAIConversation(), initialPrompt: prompt, reference: reference))
         }
+    }
+
+    private static func findItem(id: String, in items: [Item]) -> Item? {
+        for item in items {
+            if item.id == id { return item }
+            if let found = findItem(id: id, in: item.children) { return found }
+        }
+        return nil
     }
 }
 
@@ -764,6 +772,7 @@ private final class AorusAIConversationListController: ViewController, UITableVi
 /// this shape without fighting its internals.
 private final class AorusAISearchFieldView: UIView {
     let textField = UITextField()
+    private let materialView = UIVisualEffectView()
     private let iconView = UIImageView()
 
     override init(frame: CGRect) {
@@ -772,6 +781,8 @@ private final class AorusAISearchFieldView: UIView {
         self.layer.cornerCurve = .continuous
         self.layer.borderWidth = UIScreenPixel
         self.clipsToBounds = true
+        materialView.isUserInteractionEnabled = false
+        addSubview(materialView)
         iconView.contentMode = .scaleAspectFit
         iconView.image = UIImage(systemName: "magnifyingglass")?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 14.0, weight: .medium))
         textField.font = .systemFont(ofSize: 15.0)
@@ -786,8 +797,10 @@ private final class AorusAISearchFieldView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func configure(palette: AorusAIPalette, placeholder: String) {
-        backgroundColor = palette.elevated
-        layer.borderColor = palette.separator.cgColor
+        backgroundColor = .clear
+        materialView.effect = aorusAIGlassEffect(palette: palette)
+        materialView.backgroundColor = aorusAIGlassTint(palette: palette)
+        layer.borderColor = aorusAIGlassBorder(palette: palette).cgColor
         iconView.tintColor = palette.tertiary
         textField.textColor = palette.label
         textField.tintColor = palette.accent
@@ -800,6 +813,7 @@ private final class AorusAISearchFieldView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        materialView.frame = bounds
         iconView.frame = CGRect(x: 12.0, y: floor((bounds.height - 16.0) / 2.0), width: 16.0, height: 16.0)
         textField.frame = CGRect(x: 36.0, y: 0.0, width: max(0.0, bounds.width - 48.0), height: bounds.height)
     }
@@ -808,7 +822,7 @@ private final class AorusAISearchFieldView: UIView {
 /// A 13pt group label — "Закреплённые", "Недавние" — with the design's spacing above the
 /// card it introduces.
 private final class AorusAISectionHeaderView: UIView {
-    static let preferredHeight: CGFloat = 34.0
+    static let preferredHeight: CGFloat = 24.0
 
     private let label = UILabel()
 
@@ -828,15 +842,15 @@ private final class AorusAISectionHeaderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.frame = CGRect(x: 20.0, y: 8.0, width: max(0.0, bounds.width - 40.0), height: 18.0)
+        label.frame = CGRect(x: 20.0, y: 2.0, width: max(0.0, bounds.width - 40.0), height: 18.0)
     }
 }
 
 private final class AorusAIConversationListHeaderView: UIView {
     private static let horizontalInset: CGFloat = 20.0
-    private static let topInset: CGFloat = 12.0
-    private static let spacing: CGFloat = 4.0
-    private static let bottomInset: CGFloat = 3.0
+    private static let topInset: CGFloat = 8.0
+    private static let spacing: CGFloat = 2.0
+    private static let bottomInset: CGFloat = 0.0
 
     private let greetingLabel = UILabel()
     private let subtitleLabel = UILabel()
@@ -1145,12 +1159,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// the ceiling leaves room for a retry without ever looping forever.
     private static let maxToolContinuations = 6
     private let dictation = AorusAIDictation()
-    private let dictationOverlay = AorusAIDictationOverlayView()
     /// What the input held before the current dictation run, so partial results replace
     /// only the spoken part instead of the whole draft.
     private var dictationBaseText = ""
     private var dictationSpokenText = ""
-    private var shouldCommitDictation = true
     private var headerView: AorusAINavigationTitleView?
 
     private let tableView = UITableView(frame: .zero, style: .plain)
@@ -1251,17 +1263,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         composer.reference = pendingReference
         resolveDraftEntities(in: composer.text)
         self.displayNode.view.addSubview(composer)
-        dictationOverlay.configure(theme: presentationData.theme)
-        dictationOverlay.onCancel = { [weak self] in
-            guard let self else { return }
-            self.shouldCommitDictation = false
-            self.dictation.stop()
-        }
-        dictationOverlay.onFinish = { [weak self] in
-            self?.shouldCommitDictation = true
-            self?.dictation.stop()
-        }
-        self.displayNode.view.addSubview(dictationOverlay)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
@@ -1392,7 +1393,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         let composerFrame = CGRect(x: 0, y: layout.size.height - bottomInset - composerHeight, width: layout.size.width, height: composerHeight)
         transition.updateFrame(view: composer, frame: composerFrame)
         transition.updateFrame(view: tableView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: max(0, composerFrame.minY - top)))
-        transition.updateFrame(view: dictationOverlay, frame: CGRect(x: 0, y: top, width: layout.size.width, height: max(0, layout.size.height - top)))
         // A read-modify-write on `scrollIndicatorInsets` goes through a getter the SDK
         // deprecated in iOS 13, so assign the vertical insets directly instead.
         tableView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 0.0, left: 0.0, bottom: 8.0, right: 0.0)
@@ -2159,7 +2159,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     private func toggleDictation() {
         if dictation.isActive {
-            shouldCommitDictation = true
             dictation.stop()
             return
         }
@@ -2167,23 +2166,20 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         self.displayNode.view.endEditing(true)
         dictationBaseText = composer.text
         dictationSpokenText = ""
-        shouldCommitDictation = true
         let locale = AorusAIDictation.locale(for: presentationData.strings.baseLanguageCode)
         composer.isDictating = true
-        dictationOverlay.present()
-        self.displayNode.view.bringSubviewToFront(dictationOverlay)
         updateComposer()
         dictation.start(locale: locale, onText: { [weak self] text in
             self?.dictationSpokenText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         }, onFailure: { [weak self] failure in
-            self?.shouldCommitDictation = false
-            self?.dictationOverlay.dismiss(animated: true)
+            self?.composer.isDictating = false
+            self?.updateComposer()
             self?.presentError(failure.message)
         }, onFinish: { [weak self] in
             guard let self else { return }
             let base = self.dictationBaseText.trimmingCharacters(in: .whitespacesAndNewlines)
             let spoken = self.dictationSpokenText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if self.shouldCommitDictation, !spoken.isEmpty {
+            if !spoken.isEmpty {
                 self.composer.text = base.isEmpty ? spoken : base + " " + spoken
             } else {
                 self.composer.text = self.dictationBaseText
@@ -2192,8 +2188,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             self.composer.isDictating = false
             self.dictationBaseText = self.composer.text
             self.dictationSpokenText = ""
-            self.shouldCommitDictation = true
-            self.dictationOverlay.dismiss(animated: true)
             self.updateComposer()
         })
     }
@@ -2719,10 +2713,12 @@ private final class AorusAIComposerView: UIView {
     private let glassView = UIVisualEffectView()
     private let placeholder = UILabel()
     private let referenceView = UIView()
+    private let referenceLine = UIView()
     private let referenceLabel = UILabel()
     private let referenceClose = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
     private let dictationButton = UIButton(type: .system)
+    private let dictationWaveform = AorusAIWaveformView()
     var onSend: (() -> Void)?
     var onDismissReference: (() -> Void)?
     var onOpenPeer: ((PeerId) -> Void)?
@@ -2741,7 +2737,7 @@ private final class AorusAIComposerView: UIView {
         get { textView.text }
         set {
             textView.text = newValue
-            placeholder.isHidden = !newValue.isEmpty
+            placeholder.isHidden = isDictating || !newValue.isEmpty
             applyMentionStyling()
         }
     }
@@ -2753,13 +2749,23 @@ private final class AorusAIComposerView: UIView {
     }
     var isGenerating = false { didSet { refreshButton() } }
     var canSend = false { didSet { refreshButton() } }
-    var isDictating = false { didSet { refreshDictationButton() } }
+    var isDictating = false {
+        didSet {
+            refreshDictationButton()
+            dictationWaveform.isHidden = !isDictating
+            textView.isHidden = isDictating
+            placeholder.isHidden = isDictating || !text.isEmpty
+            dictationWaveform.setAnimating(isDictating)
+            setNeedsLayout()
+        }
+    }
     override init(frame: CGRect) {
         super.init(frame: frame)
         addSubview(container)
         glassView.isUserInteractionEnabled = false
         container.addSubview(glassView)
-        [referenceView, dictationButton, textView, sendButton].forEach { container.addSubview($0) }
+        [referenceView, dictationWaveform, dictationButton, textView, sendButton].forEach { container.addSubview($0) }
+        referenceView.addSubview(referenceLine)
         referenceView.addSubview(referenceLabel)
         referenceView.addSubview(referenceClose)
         textView.addSubview(placeholder)
@@ -2770,13 +2776,15 @@ private final class AorusAIComposerView: UIView {
         textView.isScrollEnabled = true
         textView.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
         referenceLabel.font = .systemFont(ofSize: 12)
-        referenceLabel.numberOfLines = 2
+        referenceLabel.numberOfLines = 1
+        referenceLabel.lineBreakMode = .byTruncatingTail
         referenceClose.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
         referenceClose.addTarget(self, action: #selector(closeReference), for: .touchUpInside)
         sendButton.addTarget(self, action: #selector(send), for: .touchUpInside)
         sendButton.accessibilityLabel = aorusAILocalized("Отправить", "Send")
         dictationButton.addTarget(self, action: #selector(dictate), for: .touchUpInside)
         dictationButton.accessibilityLabel = aorusAILocalized("Диктовать", "Dictate")
+        dictationWaveform.isHidden = true
         referenceView.isHidden = true
     }
 
@@ -2787,21 +2795,23 @@ private final class AorusAIComposerView: UIView {
         self.theme = theme
         let palette = AorusAIPalette.resolve(theme)
         backgroundColor = palette.background
-        glassView.effect = UIBlurEffect(style: palette.isDark ? .systemThinMaterialDark : .systemThinMaterialLight)
-        glassView.backgroundColor = palette.elevated.withAlphaComponent(0.24)
+        glassView.effect = aorusAIGlassEffect(palette: palette)
+        glassView.backgroundColor = aorusAIGlassTint(palette: palette)
         container.backgroundColor = .clear
         container.layer.cornerRadius = 24
         container.layer.cornerCurve = .continuous
         container.clipsToBounds = true
         container.layer.borderWidth = UIScreenPixel
-        container.layer.borderColor = palette.separator.cgColor
+        container.layer.borderColor = aorusAIGlassBorder(palette: palette).cgColor
         textView.textColor = palette.label
         textView.tintColor = palette.accent
         textView.keyboardAppearance = palette.isDark ? .dark : .light
         placeholder.textColor = palette.tertiary
         referenceLabel.textColor = palette.secondary
-        referenceView.backgroundColor = palette.fill
+        referenceView.backgroundColor = .clear
+        referenceLine.backgroundColor = palette.accent
         referenceClose.tintColor = palette.tertiary
+        dictationWaveform.configure(accent: palette.secondary)
         applyMentionStyling()
         refreshButton()
         refreshDictationButton()
@@ -2815,33 +2825,34 @@ private final class AorusAIComposerView: UIView {
         let textInset: CGFloat = 16
         container.frame = CGRect(x: side, y: 0, width: bounds.width - side * 2, height: max(0, bounds.height - 8))
         glassView.frame = container.bounds
-        // Both controls sit at the bottom right of the card, the way the design draws them,
-        // so the text runs the full width of the card above them.
         let buttonSize = AorusAIComposerView.actionButtonSize
         let buttonY = container.bounds.height - buttonSize - 8
         sendButton.frame = CGRect(x: container.bounds.width - buttonSize - 12, y: buttonY, width: buttonSize, height: buttonSize)
         sendButton.layer.cornerRadius = buttonSize / 2.0
-        dictationButton.frame = CGRect(x: sendButton.frame.minX - buttonSize - 8, y: buttonY, width: buttonSize, height: buttonSize)
-        let refHeight: CGFloat = reference == nil ? 0 : 42
-        referenceView.frame = CGRect(x: 12, y: 10, width: container.bounds.width - 24, height: refHeight)
-        referenceView.layer.cornerRadius = 12
-        referenceLabel.frame = CGRect(x: 10, y: 4, width: referenceView.bounds.width - 40, height: 34)
-        referenceClose.frame = CGRect(x: referenceView.bounds.width - 32, y: 7, width: 28, height: 28)
-        let inputTop: CGFloat = refHeight == 0 ? 12 : refHeight + 16
-        textView.frame = CGRect(x: textInset, y: inputTop, width: max(0, container.bounds.width - textInset * 2), height: max(0, buttonY - 6 - inputTop))
+        let micSize = AorusAIComposerView.dictationButtonSize
+        dictationButton.frame = CGRect(x: sendButton.frame.minX - micSize - 7, y: buttonY + floor((buttonSize - micSize) / 2.0), width: micSize, height: micSize)
+        let refHeight: CGFloat = reference == nil ? 0 : 32
+        referenceView.frame = CGRect(x: 14, y: 6, width: container.bounds.width - 28, height: refHeight)
+        referenceLine.frame = CGRect(x: 0, y: 5, width: 2, height: max(0, refHeight - 10))
+        referenceLine.layer.cornerRadius = 1
+        referenceLabel.frame = CGRect(x: 9, y: 5, width: max(0, referenceView.bounds.width - 39), height: max(0, refHeight - 10))
+        referenceClose.frame = CGRect(x: referenceView.bounds.width - 27, y: 3, width: 26, height: 26)
+        let inputTop: CGFloat = refHeight == 0 ? 8 : 38
+        let inputRight = dictationButton.frame.minX - 8
+        textView.frame = CGRect(x: textInset, y: inputTop, width: max(0, inputRight - textInset), height: max(0, container.bounds.height - inputTop - 8))
+        dictationWaveform.frame = CGRect(x: textInset, y: inputTop + 4, width: max(0, inputRight - textInset), height: max(20, container.bounds.height - inputTop - 16))
         placeholder.frame = CGRect(x: 0, y: 2, width: max(0, textView.bounds.width), height: 21)
     }
 
     private static let actionButtonSize: CGFloat = 32
+    private static let dictationButtonSize: CGFloat = 26
 
     func requiredHeight(width: CGFloat) -> CGFloat {
         // 12pt page inset on each side, then the card's own 16pt text inset on each side.
         let available = max(100, width - 24 - 32)
         let measured = textView.sizeThatFits(CGSize(width: available, height: 132)).height
-        let extras: CGFloat = reference == nil ? 0 : 46
-        // 12 above the text, 6 between it and the buttons, then the button row and 8 below.
-        let chrome: CGFloat = 12 + 6 + AorusAIComposerView.actionButtonSize + 8
-        let containerHeight = min(212, max(84, ceil(measured) + chrome + extras))
+        let extras: CGFloat = reference == nil ? 0 : 34
+        let containerHeight = min(184, max(56 + extras, ceil(measured) + 16 + extras))
         return containerHeight + 8
     }
 
@@ -2867,7 +2878,7 @@ private final class AorusAIComposerView: UIView {
     private func refreshDictationButton() {
         let palette = theme.map { AorusAIPalette.resolve($0) }
         let name = isDictating ? "waveform" : "mic"
-        dictationButton.setImage(UIImage(systemName: name)?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .medium)), for: .normal)
+        dictationButton.setImage(UIImage(systemName: name)?.withConfiguration(UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)), for: .normal)
         dictationButton.tintColor = isDictating ? palette?.accent : palette?.secondary
         dictationButton.accessibilityLabel = isDictating ? aorusAILocalized("Остановить диктовку", "Stop dictation") : aorusAILocalized("Диктовать", "Dictate")
     }
@@ -3078,7 +3089,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     }
 
     private let contentStack = UIStackView()
-    private let bubble = UIView()
+    private let bubble = UIVisualEffectView()
     private let bodyStack = UIStackView()
     private let statusLabel = UILabel()
     private let assistantActions = UIStackView()
@@ -3116,7 +3127,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         contentStack.spacing = 7
         bodyStack.axis = .vertical
         bodyStack.spacing = 8
-        bubble.addSubview(bodyStack)
+        bubble.contentView.addSubview(bodyStack)
         // The design puts the progress line *above* the answer — "Читаю профиль диалога…"
         // is what the turn is doing before the text it produces, not a footnote under it.
         statusLabel.font = .systemFont(ofSize: 13.0)
@@ -3360,11 +3371,13 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             : bubble.widthAnchor.constraint(equalTo: contentStack.widthAnchor)
         bubbleWidthConstraint.isActive = true
         self.bubbleWidthConstraint = bubbleWidthConstraint
-        // The design's own bubble: a neutral raised surface, not an accent-filled one, so
-        // the violet is spent on actions instead of on every line the user typed.
-        bubble.backgroundColor = isUser ? palette.fillStrong : .clear
+        bubble.effect = isUser ? aorusAIGlassEffect(palette: palette) : nil
+        bubble.backgroundColor = isUser ? aorusAIGlassTint(palette: palette, strong: true) : .clear
         bubble.layer.cornerRadius = isUser ? 20.0 : 0.0
         bubble.layer.cornerCurve = .continuous
+        bubble.clipsToBounds = isUser
+        bubble.layer.borderWidth = isUser ? UIScreenPixel : 0.0
+        bubble.layer.borderColor = isUser ? aorusAIGlassBorder(palette: palette).cgColor : UIColor.clear.cgColor
         applyBodyInsets(isUser: isUser)
 
         if let reference = message.referencedMessage {
@@ -3567,7 +3580,6 @@ private final class AorusAINavigationTitleView: UIView {
     private let glassView = UIVisualEffectView()
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
-    private let statusDot = UIView()
 
     init(theme: PresentationTheme) {
         super.init(frame: .zero)
@@ -3582,12 +3594,9 @@ private final class AorusAINavigationTitleView: UIView {
         statusLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
         statusLabel.textAlignment = .center
         statusLabel.lineBreakMode = .byTruncatingTail
-        statusDot.layer.cornerRadius = 2.5
-        statusDot.isHidden = true
         addSubview(glassView)
         glassView.contentView.addSubview(titleLabel)
         glassView.contentView.addSubview(statusLabel)
-        glassView.contentView.addSubview(statusDot)
         isAccessibilityElement = true
         accessibilityLabel = "AorusAI"
         update(theme: theme)
@@ -3597,20 +3606,18 @@ private final class AorusAINavigationTitleView: UIView {
 
     func update(theme: PresentationTheme) {
         let palette = AorusAIPalette.resolve(theme)
-        glassView.effect = UIBlurEffect(style: palette.isDark ? .systemThinMaterialDark : .systemThinMaterialLight)
-        glassView.backgroundColor = palette.elevated.withAlphaComponent(0.18)
-        glassView.layer.borderColor = palette.separator.cgColor
+        glassView.effect = aorusAIGlassEffect(palette: palette)
+        glassView.backgroundColor = aorusAIGlassTint(palette: palette)
+        glassView.layer.borderColor = aorusAIGlassBorder(palette: palette).cgColor
         titleLabel.textColor = palette.label
         statusLabel.textColor = palette.secondary
-        statusDot.backgroundColor = palette.accent
     }
 
-    func setStatus(_ text: String?, active: Bool) {
+    func setStatus(_ text: String?, active _: Bool) {
         let value = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         accessibilityValue = (value?.isEmpty == false) ? value : nil
         let update = {
             self.statusLabel.text = value
-            self.statusDot.isHidden = !active || value?.isEmpty != false
         }
         if statusLabel.text != value {
             UIView.transition(with: statusLabel, duration: 0.18, options: [.transitionCrossDissolve, .beginFromCurrentState], animations: update)
@@ -3626,8 +3633,7 @@ private final class AorusAINavigationTitleView: UIView {
         let frame = CGRect(x: max(0, floor((bounds.width - 174.0) / 2.0)), y: max(0, floor((bounds.height - 40.0) / 2.0)), width: min(174.0, bounds.width), height: min(40.0, bounds.height))
         glassView.frame = frame
         titleLabel.frame = CGRect(x: 14.0, y: 4.0, width: max(0, frame.width - 28.0), height: 18.0)
-        statusLabel.frame = CGRect(x: 20.0, y: 21.0, width: max(0, frame.width - 40.0), height: 14.0)
-        statusDot.frame = CGRect(x: 12.0, y: 25.0, width: 5.0, height: 5.0)
+        statusLabel.frame = CGRect(x: 14.0, y: 21.0, width: max(0, frame.width - 28.0), height: 14.0)
     }
 }
 

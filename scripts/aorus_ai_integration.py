@@ -109,7 +109,7 @@ def patch_context_menu(root: Path) -> None:
     if not path.is_file():
         raise RuntimeError(f"AorusAI: missing {path}")
     value = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: AorusAI message action v6"
+    sentinel = "// AorusGram: AorusAI message action v7"
     if sentinel in value:
         return
     if "import AorusGramUI\n" not in value:
@@ -126,6 +126,7 @@ def patch_context_menu(root: Path) -> None:
         "        // AorusGram: AorusAI message action v3\n",
         "        // AorusGram: AorusAI message action v4\n",
         "        // AorusGram: AorusAI message action v5\n",
+        "        // AorusGram: AorusAI message action v6\n",
     ):
         legacy_index = value.find(legacy_sentinel)
         if legacy_index < 0:
@@ -135,23 +136,9 @@ def patch_context_menu(root: Path) -> None:
             raise RuntimeError("AorusAI: legacy message action block end not found")
         value = value[:legacy_index] + value[anchor_index:]
 
-    # §10: the AorusAI row opens another level of Telegram's own context menu.
-    #
-    # It is a native menu in every respect — Telegram's rows, its icons, its section
-    # bands, its back row, its dismissal — because a message menu that opened a surface
-    # of its own read as a foreign sheet bolted onto the chat.
-    #
-    # Depth is safe. `ContextControllerActionsStackNode` lays out every container in the
-    # stack and gives everything below the top two `alphaTransitionFraction = 0`, so the
-    # chat menu is invisible under the pushed level rather than showing through, and
-    # `ContextControllerExtractedPresentationNode` sizes its scroll view to
-    # `actionsFrame.maxY`, so a level taller than the screen scrolls instead of running
-    # out of the frame. That is what the four sections and the language and tone
-    # sub-levels rely on.
-    #
-    # The generated code is therefore only a hand-off: the items, their grouping and
-    # their navigation are built by `aorusAIMessageMenuItems` inside AorusGramUI, out of
-    # TelegramUI.
+    # §10: ContextUI's stacked extracted-menu transition can leave both panels visible
+    # on compact hosts. Dismiss it first, then present one native AorusAI sheet from the
+    # completion, so the old and new surfaces never coexist.
     #
     # The row icon stays a native bundle image tinted through `generateTintedImage`,
     # like every other row in this file. SF Symbols went through
@@ -164,15 +151,21 @@ def patch_context_menu(root: Path) -> None:
         "            actions.append(.action(ContextMenuActionItem(text: aorusAIMessageMenuTitle(), icon: { theme in\n"
         "                return generateTintedImage(image: UIImage(bundleImageName: aorusAIMessageMenuIconName()), color: theme.actionSheet.primaryTextColor)\n"
         "            }, action: { [weak controllerInteraction] c, _ in\n"
-        "                c?.pushItems(items: aorusAIMessageMenuItems(\n"
-        "                    context: context,\n"
-        "                    navigationController: controllerInteraction?.navigationController(),\n"
-        "                    peerId: aorusAIMessage.id.peerId.toInt64(),\n"
-        "                    messageNamespace: aorusAIMessage.id.namespace,\n"
-        "                    messageId: aorusAIMessage.id.id,\n"
-        "                    authorPeerId: aorusAIMessage.author?.id.toInt64(),\n"
-        "                    text: aorusAIMessage.text\n"
-        "                ))\n"
+        "                guard let navigationController = controllerInteraction?.navigationController() else {\n"
+        "                    c?.dismiss(completion: {})\n"
+        "                    return\n"
+        "                }\n"
+        "                c?.dismiss(completion: {\n"
+        "                    aorusAIPresentMessageActions(\n"
+        "                        context: context,\n"
+        "                        navigationController: navigationController,\n"
+        "                        peerId: aorusAIMessage.id.peerId.toInt64(),\n"
+        "                        messageNamespace: aorusAIMessage.id.namespace,\n"
+        "                        messageId: aorusAIMessage.id.id,\n"
+        "                        authorPeerId: aorusAIMessage.author?.id.toInt64(),\n"
+        "                        text: aorusAIMessage.text\n"
+        "                    )\n"
+        "                })\n"
         "            })))\n"
         "            actions.append(.separator)\n"
         "        }\n"
