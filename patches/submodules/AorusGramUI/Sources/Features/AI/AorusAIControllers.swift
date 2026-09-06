@@ -5797,6 +5797,7 @@ private final class AorusAIShareScopeController: UIViewController {
     /// floating capsule to match. Deallocating counts as declining.
     deinit {
         peerDisposable.dispose()
+        peerByIdDisposable.dispose()
         guard !didAnswer else { return }
         didAnswer = true
         onCancel()
@@ -5815,6 +5816,8 @@ private final class AorusAIShareScopeController: UIViewController {
     // the class it returns, and the subclass is the whole point of this one.
     private let cancelButton = AorusAIFilledButton()
     private let peerDisposable = MetaDisposable()
+    /// The by-id fallback lookup, held separately so it cannot cancel the named one.
+    private let peerByIdDisposable = MetaDisposable()
     private var didAnimateIn = false
     /// How far below its resting place the card sits, honoured by `viewDidLayoutSubviews`.
     private var cardOffset: CGFloat = 0.0
@@ -5957,31 +5960,52 @@ private final class AorusAIShareScopeController: UIViewController {
     }
 
     private func resolvePeer() {
-        guard let username, !username.isEmpty else { return }
-        if let cached = AorusAIMentionStore.shared.lookup(username) {
+        // The handle arrives in the payload, so its exact spelling is the backend's choice.
+        // `resolvePeerByName` wants the bare name: given "@durov" it finds nobody, and the
+        // sheet would then sit on a monogram with no way to tell that from a peer who
+        // simply has no photo.
+        let handle = (username ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
+        guard !handle.isEmpty else { return }
+        let cached = AorusAIMentionStore.shared.lookup(handle)
+        if let cached {
             peerLabel.text = cached.displayName
             avatarNode.setCustomLetters(AorusAIMentionRenderer.letters(for: cached.displayName))
         }
-        peerDisposable.set((context.engine.peers.resolvePeerByName(name: username, referrer: nil)
+        peerDisposable.set((context.engine.peers.resolvePeerByName(name: handle, referrer: nil)
         |> deliverOnMainQueue).start(next: { [weak self] result in
-            guard let self, case let .result(peer) = result, let peer else { return }
-            let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
-            let name = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-            self.peerLabel.text = name
-            // The peer is kept and the photo is asked for from the layout pass, not here.
-            // This resolve is started from `viewDidLoad`, and for anyone already in the
-            // database it answers *synchronously* on the main queue — inside `viewDidLoad`,
-            // where the avatar has no size yet. Asking for a photo at zero points did
-            // nothing and was never asked for again, so the sheet kept the monogram for
-            // every peer the app already knew, which is most of them.
-            self.resolvedPeer = peer
-            // Both routes, because either one can be the one that runs first: if the sheet
-            // is already laid out the photo is asked for now, and if it is not, the layout
-            // pass this schedules asks for it. `updateAvatarImage` is idempotent per peer
-            // and size, so whichever loses the race does nothing.
-            self.updateAvatarImage(size: self.avatarNode.bounds.size)
-            self.view.setNeedsLayout()
+            guard let self, case let .result(peer) = result else { return }
+            if let peer {
+                self.apply(peer: peer)
+            } else if let cached {
+                // Named lookup found nobody, but this session already resolved the handle
+                // once — that is how the name under the title got there. Asking by id is
+                // the same peer by a route that cannot fail on spelling.
+                self.peerByIdDisposable.set((self.context.engine.data.get(
+                    TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(cached.peerId))
+                ) |> deliverOnMainQueue).start(next: { [weak self] peer in
+                    guard let self, let peer else { return }
+                    self.apply(peer: peer)
+                }))
+            }
         }))
+    }
+
+    /// Takes the resolved peer and gets its photo drawn.
+    private func apply(peer: EnginePeer) {
+        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        peerLabel.text = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+        // The peer is kept, because the photo needs a size and the size is only known once
+        // the sheet is laid out. This resolve is started from `viewDidLoad`, and for anyone
+        // already in the database it answers *synchronously* — inside `viewDidLoad`, where
+        // the avatar is still zero points wide. Asking for a photo there did nothing and
+        // was never asked for again, which left the monogram standing for every peer the
+        // app already knew.
+        resolvedPeer = peer
+        // Both routes, because either can run first: if the sheet is already laid out the
+        // photo is asked for now, and if it is not, the layout pass this schedules asks for
+        // it. The request is idempotent per peer and size, so whichever loses does nothing.
+        updateAvatarImage(size: avatarNode.bounds.size)
+        view.setNeedsLayout()
     }
 
     /// The peer this sheet is about, once it has resolved.
