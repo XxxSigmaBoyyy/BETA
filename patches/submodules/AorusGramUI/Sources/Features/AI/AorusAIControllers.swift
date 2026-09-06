@@ -5975,6 +5975,11 @@ private final class AorusAIShareScopeController: UIViewController {
             // nothing and was never asked for again, so the sheet kept the monogram for
             // every peer the app already knew, which is most of them.
             self.resolvedPeer = peer
+            // Both routes, because either one can be the one that runs first: if the sheet
+            // is already laid out the photo is asked for now, and if it is not, the layout
+            // pass this schedules asks for it. `updateAvatarImage` is idempotent per peer
+            // and size, so whichever loses the race does nothing.
+            self.updateAvatarImage(size: self.avatarNode.bounds.size)
             self.view.setNeedsLayout()
         }))
     }

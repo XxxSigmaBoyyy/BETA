@@ -90,14 +90,21 @@ struct AorusAIPalette {
             // on any background. Same here, so a custom theme gets a fill that belongs to
             // it instead of a grey borrowed from the stock one.
             fill: label.withAlphaComponent(isDark ? 0.10 : 0.055),
-            // Three to four times the ink of `fill`, which is what it takes for a surface
-            // carrying nothing but one line of label-coloured text to read as a button.
-            // Measured against the stock themes: on Night a #606061 plate on a #1C1C1D
-            // card, 2.7:1 against it where the old fill managed 1.4:1; on Day a #CCCCCC
-            // plate on white at 1.6:1. The light theme takes more ink for the same effect
-            // because a pale surface loses contrast faster than a dark one.
-            controlFill: AorusAIPalette.mix(label, into: elevated, amount: isDark ? 0.30 : 0.20),
-            controlFillHighlighted: AorusAIPalette.mix(label, into: elevated, amount: isDark ? 0.42 : 0.32),
+            // The same shade as `fill`, resolved to an opaque colour instead of a wash.
+            //
+            // A sheet's button belongs to the panel of rows above it — they are one set of
+            // choices — so it is that surface, not a lighter one competing with it. The
+            // earlier attempt at "make the button visible" raised the ink instead and
+            // produced a plate that read as a different, louder control.
+            //
+            // Mixing rather than layering is what was actually needed: a wash has no
+            // defined result over a card that is itself translucent, which is what made the
+            // button transparent in the first place. At the same ink it is the same colour
+            // the rows are, and it is a colour rather than a film.
+            controlFill: AorusAIPalette.mix(label, into: elevated, amount: isDark ? 0.10 : 0.055),
+            // What a row looks like under a finger: those draw `fill` over themselves a
+            // second time, so this is that composition resolved — 1-(1-a)² of the same ink.
+            controlFillHighlighted: AorusAIPalette.mix(label, into: elevated, amount: isDark ? 0.19 : 0.107),
             separator: list.itemBlocksSeparatorColor,
             label: label,
             secondary: list.itemSecondaryTextColor,
