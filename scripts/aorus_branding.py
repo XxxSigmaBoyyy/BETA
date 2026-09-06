@@ -5789,88 +5789,6 @@ def patch_conversation_export(tg: Path) -> None:
         print("WARNING: PeerInfoScreenPerformButtonAction clear-history anchor not found — export item NOT added")
 
 
-def patch_profile_chat_button_when_empty(tg: Path) -> None:
-    """Offer "Message" instead of "Search" on a profile whose chat has nothing in it.
-
-    Upstream decides both of those buttons from one flag. `peerInfoHeaderButtons` adds
-    `.message` only when the profile was *not* opened from a chat, and `.search` only when
-    it was — the reasoning being that someone already inside a conversation does not need a
-    way into it, and does need a way through it.
-
-    Both halves of that stop being true when the conversation is empty. There is nothing to
-    search, so the magnifier opens a search over no messages; and "go to the chat" is
-    exactly what a profile with no history is for — it is where the first message gets
-    written. So an empty chat is treated as what it is: a profile that was not opened from
-    a conversation, because there is no conversation yet. The row becomes Message, Call,
-    Mute, More, which is the same set upstream already builds for a profile opened from
-    anywhere else — no new button, no new ordering, nothing to lay out differently.
-
-    Emptiness is read from `TopMessage`, which is a postbox view rather than a request: it
-    is nil exactly when the peer has no messages, it updates itself, and the first message
-    sent turns the button back into the magnifier without the screen being reopened.
-
-    The two calls in `PeerInfoScreenPerformButtonAction` are deliberately left alone. They
-    difference the same function against itself to find the actions that did not fit in the
-    header, and the user branch ignores `isExpanded`, so that difference is empty whatever
-    this flag says.
-    """
-    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
-    if not path.is_file():
-        raise RuntimeError("ProfileChatButton: PeerInfoHeaderNode.swift is missing")
-    text = path.read_text(encoding="utf-8")
-    if "aorusChatIsEmpty" in text:
-        print("ProfileChatButton: already patched")
-        return
-
-    replacements = [
-        (
-            "state",
-            "    private let isOpenedFromChat: Bool\n",
-            "    private let isOpenedFromChat: Bool\n"
-            "    // AorusGram: true while this peer has no messages at all. Drives the one\n"
-            "    // substitution below and nothing else.\n"
-            "    private var aorusChatIsEmpty: Bool = false\n"
-            "    private var aorusChatEmptinessPeerId: EnginePeer.Id?\n"
-            "    private let aorusChatEmptinessDisposable = MetaDisposable()\n",
-        ),
-        (
-            "dispose",
-            "    deinit {\n",
-            "    deinit {\n"
-            "        self.aorusChatEmptinessDisposable.dispose()\n",
-        ),
-        (
-            "subscribe and substitute",
-            "        let buttonKeys: [PeerInfoHeaderButtonKey] = (self.isSettings || self.isMyProfile) ? [] : peerInfoHeaderButtons(peer: peer, cachedData: cachedData, isOpenedFromChat: self.isOpenedFromChat, isExpanded: true,",
-            "        // AorusGram: watch this peer's top message, once per peer. Only a profile\n"
-            "        // opened from a chat can be affected, so nothing else subscribes.\n"
-            "        if self.isOpenedFromChat, let peer, case .user = peer, self.aorusChatEmptinessPeerId != peer.id {\n"
-            "            self.aorusChatEmptinessPeerId = peer.id\n"
-            "            self.aorusChatEmptinessDisposable.set((self.context.engine.data.subscribe(\n"
-            "                TelegramEngine.EngineData.Item.Messages.TopMessage(id: peer.id)\n"
-            "            )\n"
-            "            |> map { $0 == nil }\n"
-            "            |> distinctUntilChanged\n"
-            "            |> deliverOnMainQueue).start(next: { [weak self] isEmpty in\n"
-            "                guard let self, self.aorusChatIsEmpty != isEmpty else {\n"
-            "                    return\n"
-            "                }\n"
-            "                self.aorusChatIsEmpty = isEmpty\n"
-            "                self.requestUpdateLayout?(false)\n"
-            "            }))\n"
-            "        }\n"
-            "        // AorusGram: an empty chat is not a chat yet — see patch_profile_chat_button_when_empty.\n"
-            "        let buttonKeys: [PeerInfoHeaderButtonKey] = (self.isSettings || self.isMyProfile) ? [] : peerInfoHeaderButtons(peer: peer, cachedData: cachedData, isOpenedFromChat: self.isOpenedFromChat && !self.aorusChatIsEmpty, isExpanded: true,",
-        ),
-    ]
-    for name, old, new in replacements:
-        if text.count(old) != 1:
-            raise RuntimeError(f"ProfileChatButton: {name} anchor not unique ({text.count(old)})")
-        text = text.replace(old, new, 1)
-    path.write_text(text, encoding="utf-8")
-    print("ProfileChatButton: an empty chat offers Message instead of Search")
-
-
 def patch_profile_report_button(tg: Path) -> None:
     """Optionally show Telegram's native Report action in the profile "More" menu.
 
@@ -25892,7 +25810,6 @@ def main() -> None:
     patch_bypass_channel_copy_protection(tg)
     patch_bypass_story_download(tg)
     patch_conversation_export(tg)
-    patch_profile_chat_button_when_empty(tg)
     patch_profile_report_button(tg)
     patch_undo_button_theme_color(tg)
     patch_login_backup_key_button(tg)

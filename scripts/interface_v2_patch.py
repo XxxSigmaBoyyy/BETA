@@ -1113,18 +1113,29 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "            }\n"
             "        )\n"
             "        // A peer with no photograph gives the sampler nothing to read, so it publishes\n"
-            "        // nothing and the page stays at its unsampled default -- the black behind a\n"
-            "        // Premium profile background on someone who never set an avatar. Their profile\n"
-            "        // colour is what that background is drawn from, so it is what the page should\n"
-            "        // have been: the same colour by the same route as the cover above it. Only when\n"
-            "        // there is genuinely no photo, so a picture still loading is still waited for.\n"
+            "        // nothing and the page stays at its unsampled default -- the black under a\n"
+            "        // Premium profile background on someone who never set an avatar.\n"
+            "        //\n"
+            "        // But there is something to read. The header is not empty: it is the background\n"
+            "        // that peer chose, drawn by `PeerInfoCoverComponent` -- its colours, its pattern,\n"
+            "        // its gradient. So the cover is sampled exactly as a photo would be, by the same\n"
+            "        // sampler reading the same bottom band, and the page continues the colour the\n"
+            "        // header ends in for the same reason it does under a photo. No colour is chosen\n"
+            "        // here and none is looked up: what the page gets is what the header shows.\n"
+            "        //\n"
+            "        // The tail is zero because there is no mirrored strip to account for -- that\n"
+            "        // strip exists to extend a square photo, and the cover is drawn to the header's\n"
+            "        // own bottom edge already.\n"
             "        if listContainerNode.galleryEntries.isEmpty,\n"
-            "           let profileColor = peer.effectiveProfileColor,\n"
-            "           let presentationData = self.presentationData {\n"
-            "            let colors = self.context.peerNameColors.getProfile(profileColor, dark: presentationData.theme.overallDarkAppearance)\n"
-            "            AorusGlassProfileTint.publishProfileColorTint(\n"
+            "           let coverView = self.backgroundCover.view,\n"
+            "           coverView.bounds.height > 0.0 {\n"
+            "            AorusGlassProfileTint.publishAvatarTint(\n"
             "                for: peer.id.id._internalGetInt64Value(),\n"
-            "                color: colors.main,\n"
+            "                photo: 0,\n"
+            "                photoCount: 0,\n"
+            "                view: coverView,\n"
+            "                mirroredTail: 0.0,\n"
+            "                isFullPhoto: true,\n"
             "                onUpdate: { [weak self] in\n"
             "                    self?.requestUpdateLayout?(false)\n"
             "                }\n"
@@ -2273,6 +2284,37 @@ def _patch_header_button_set(tg: Path) -> None:
     if "aorusForcedButtons" in text:
         print("InterfaceV2: header button set already fixed at four")
         return
+    # Which peers have no messages at all, written by the header and read by the button set.
+    #
+    # `peerInfoHeaderButtons` is a free function over a peer and its cached data, and neither
+    # of those knows whether a conversation exists. Threading an argument through would touch
+    # three call sites for a fact only one of them can supply, so the header -- which has the
+    # account context and is already laying itself out -- publishes it here instead. Main
+    # thread only, because that is the only thread either side runs on.
+    text = _replace_once(
+        text,
+        "func peerInfoHeaderButtons(peer: EnginePeer?",
+        "enum AorusEmptyChatRegistry {\n"
+        "    private static var emptyPeerIds = Set<EnginePeer.Id>()\n"
+        "\n"
+        "    static func isEmpty(_ peerId: EnginePeer.Id) -> Bool {\n"
+        "        return AorusEmptyChatRegistry.emptyPeerIds.contains(peerId)\n"
+        "    }\n"
+        "\n"
+        "    /// Returns true when this is news, so the caller can ask for the header to be laid\n"
+        "    /// out again and only then.\n"
+        "    @discardableResult\n"
+        "    static func set(_ isEmpty: Bool, for peerId: EnginePeer.Id) -> Bool {\n"
+        "        if isEmpty {\n"
+        "            return AorusEmptyChatRegistry.emptyPeerIds.insert(peerId).inserted\n"
+        "        }\n"
+        "        return AorusEmptyChatRegistry.emptyPeerIds.remove(peerId) != nil\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "func peerInfoHeaderButtons(peer: EnginePeer?",
+        "empty chat registry",
+    )
     text = _replace_once(
         text,
         "        result.append(.mute)\n"
@@ -2294,8 +2336,17 @@ def _patch_header_button_set(tg: Path) -> None:
         "    // header buttons at all, not one with too few.\n"
         "    if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\"), threadInfo == nil, !result.isEmpty {\n"
         "        var aorusForcedButtons: [PeerInfoHeaderButtonKey] = []\n"
+        "        // A conversation with nothing in it leads the row with the way into it. Search is\n"
+        "        // what it replaces, because searching no messages is the one button here that\n"
+        "        // cannot do anything -- and writing the first message is what the profile of\n"
+        "        // someone you have never spoken to is for. The row becomes Message, Call, Mute,\n"
+        "        // More; it is still four, still in the order the other profiles use.\n"
+        "        let aorusIsEmptyChat = peer.flatMap({ AorusEmptyChatRegistry.isEmpty($0.id) }) ?? false\n"
+        "        if aorusIsEmptyChat {\n"
+        "            aorusForcedButtons.append(.message)\n"
+        "        }\n"
         "        for candidate in [PeerInfoHeaderButtonKey.call, .voiceChat, .message, .discussion] {\n"
-        "            if result.contains(candidate) {\n"
+        "            if result.contains(candidate), !aorusForcedButtons.contains(candidate) {\n"
         "                aorusForcedButtons.append(candidate)\n"
         "                break\n"
         "            }\n"
@@ -2306,7 +2357,11 @@ def _patch_header_button_set(tg: Path) -> None:
         "            aorusForcedButtons.append(.message)\n"
         "        }\n"
         "        aorusForcedButtons.append(.mute)\n"
-        "        aorusForcedButtons.append(.search)\n"
+        "        // Search stays unless it was the thing traded away for Message. A peer whose own\n"
+        "        // list offered no second action keeps it regardless, so the row is never three.\n"
+        "        if !aorusIsEmptyChat || aorusForcedButtons.count < 3 {\n"
+        "            aorusForcedButtons.append(.search)\n"
+        "        }\n"
         "        aorusForcedButtons.append(.more)\n"
         "        return aorusForcedButtons\n"
         "    }\n"
@@ -2316,6 +2371,55 @@ def _patch_header_button_set(tg: Path) -> None:
         "four header buttons",
     )
     path.write_text(text, encoding="utf-8")
+
+    # And the side that fills the registry. The header owns an account context and is laid out
+    # whenever the profile changes, so it is where the subscription belongs.
+    header_path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    header = _read(header_path, "PeerInfoHeaderNode.swift")
+    if "aorusEmptinessPeerId" not in header:
+        header = _replace_once(
+            header,
+            "    private let isOpenedFromChat: Bool\n",
+            "    private let isOpenedFromChat: Bool\n"
+            "    // AorusGram: one subscription per peer, feeding AorusEmptyChatRegistry.\n"
+            "    private var aorusEmptinessPeerId: EnginePeer.Id?\n"
+            "    private let aorusEmptinessDisposable = MetaDisposable()\n",
+            "emptiness state",
+        )
+        header = _replace_once(
+            header,
+            "    deinit {\n",
+            "    deinit {\n"
+            "        self.aorusEmptinessDisposable.dispose()\n",
+            "emptiness dispose",
+        )
+        header = _replace_once(
+            header,
+            "        let buttonKeys: [PeerInfoHeaderButtonKey] = (self.isSettings || self.isMyProfile) ? [] : peerInfoHeaderButtons(",
+            "        // AorusGram: whether this peer has any messages, read from a postbox view rather\n"
+            "        // than requested -- `TopMessage` is nil exactly when the chat is empty and it\n"
+            "        // updates itself, so the first message sent puts Search back without the screen\n"
+            "        // being reopened. Subscribed once per peer; the button set reads the registry.\n"
+            "        if let peer, !self.isSettings, !self.isMyProfile, self.aorusEmptinessPeerId != peer.id {\n"
+            "            self.aorusEmptinessPeerId = peer.id\n"
+            "            let aorusPeerId = peer.id\n"
+            "            self.aorusEmptinessDisposable.set((self.context.engine.data.subscribe(\n"
+            "                TelegramEngine.EngineData.Item.Messages.TopMessage(id: aorusPeerId)\n"
+            "            )\n"
+            "            |> map { $0 == nil }\n"
+            "            |> distinctUntilChanged\n"
+            "            |> deliverOnMainQueue).start(next: { [weak self] isEmpty in\n"
+            "                guard AorusEmptyChatRegistry.set(isEmpty, for: aorusPeerId) else {\n"
+            "                    return\n"
+            "                }\n"
+            "                self?.requestUpdateLayout?(false)\n"
+            "            }))\n"
+            "        }\n"
+            "        let buttonKeys: [PeerInfoHeaderButtonKey] = (self.isSettings || self.isMyProfile) ? [] : peerInfoHeaderButtons(",
+            "emptiness subscription",
+        )
+        header_path.write_text(header, encoding="utf-8")
+
     print("InterfaceV2: fixed the header button set at four")
 
 
