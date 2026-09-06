@@ -277,7 +277,16 @@ final class DeletedMessagesCache {
     func registerBackgroundTask() {
         if #available(iOS 13.0, *) {
             BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.bgTaskID, using: nil) { [weak self] task in
-                self?.handleBGTask(task as! BGAppRefreshTask)
+                // Conditional, not forced. Only a BGAppRefreshTaskRequest is ever submitted
+                // for this identifier, so the cast holds today — but a forced one turns a
+                // future change of task type into a crash in the background, where nobody
+                // sees it and the system withdraws the app's refresh budget for it. An
+                // unexpected task is completed instead, which is what the scheduler needs.
+                guard let refresh = task as? BGAppRefreshTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                self?.handleBGTask(refresh)
             }
         }
     }

@@ -783,6 +783,8 @@ def main() -> int:
                     if name not in defined:
                         fail(errors, f"aorus_branding.py main() calls {name}(), which is not defined")
 
+    check_mirrored_sources(root, errors)
+
     if errors:
         print("Release security check failed:")
         for error in errors:
@@ -790,6 +792,57 @@ def main() -> int:
         return 1
     print("Release security check: OK")
     return 0
+
+
+# Files that exist under both `AorusGram/Sources` (the core module) and
+# `patches/submodules/AorusGramUI/Sources` (the UI module) and are *allowed* to differ,
+# each with the reason. Everything else with a shared filename has to stay identical.
+#
+# Two modules carrying a type of the same name is deliberate: AppDelegate imports only the
+# core module, because importing both makes a reference like `AorusGramBootstrap.shared`
+# ambiguous. The consequence is that for a mirrored type, the core copy is the one that
+# runs — and a change made only to the UI copy is a change to code nothing calls.
+#
+# That is not hypothetical. Anti-spam's "never auto-block a peer the user un-blocked by
+# hand" was written into the UI copy alone; the decision is taken in `processIncoming`,
+# which the core bootstrap calls, so the feature did nothing while both copies wrote the
+# same UserDefaults keys over each other. This check exists so the next one is caught here
+# instead of in a bug report.
+_MIRROR_DIVERGENCE_ALLOWED = {
+    "AorusGramConfig.swift": "core is public for TelegramUI to read; the UI copy is internal",
+    "AorusTamperGuard.swift": "AorusSessionCounter is core-only, so the UI copy reports through the mirrored flag",
+    "VoiceTranscriberView.swift": "each module localises through its own table (SubL10n / aorusL)",
+    "AorusGramBootstrap.swift": "different entry points: the core one runs at launch, before the account stack",
+    "AorusPerformanceHUDManager.swift": "two implementations, not one drifted: the UI copy is written against AorusGramManager/AorusL10n",
+    "AntiSpoofManager.swift": "status separator differs per module (• / -)",
+}
+
+
+def check_mirrored_sources(root: Path, errors: list[str]) -> None:
+    """A file that exists in both modules must be identical, or listed above with a reason."""
+    core_root = root / "AorusGram/Sources"
+    ui_root = root / "patches/submodules/AorusGramUI/Sources"
+    if not core_root.is_dir() or not ui_root.is_dir():
+        return
+    core = {p.name: p for p in core_root.rglob("*.swift")}
+    ui = {p.name: p for p in ui_root.rglob("*.swift")}
+    for name in sorted(set(core) & set(ui)):
+        if core[name].read_bytes() == ui[name].read_bytes():
+            if name in _MIRROR_DIVERGENCE_ALLOWED:
+                fail(
+                    errors,
+                    f"{name} is listed as an allowed mirror divergence but the two copies are "
+                    f"now identical — drop it from _MIRROR_DIVERGENCE_ALLOWED",
+                )
+            continue
+        if name in _MIRROR_DIVERGENCE_ALLOWED:
+            continue
+        fail(
+            errors,
+            f"{name} differs between AorusGram/Sources and AorusGramUI/Sources. Only the core "
+            f"copy runs, so a change to the UI copy alone does nothing. Sync them, or add the "
+            f"file to _MIRROR_DIVERGENCE_ALLOWED with the reason.",
+        )
 
 
 if __name__ == "__main__":

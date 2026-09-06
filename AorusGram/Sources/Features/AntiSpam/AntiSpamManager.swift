@@ -20,6 +20,12 @@ final class AntiSpamManager {
     private(set) var keywords: [String] = []
     private(set) var blockedPeerIds: Set<Int64> = []
     private(set) var allowedPeerIds: Set<Int64> = []
+    // Peers the user manually un-blocked: never auto-block them again. Un-blocking is an
+    // explicit "I trust this one" signal, so spam from them must not silently re-add them to
+    // the block list (the annoying unblock -> instantly re-blocked loop). This is weaker than
+    // an exception (their individual spam messages can still be hidden), it only stops the
+    // AUTO-BLOCK from re-adding them.
+    private(set) var autoBlockImmuneIds: Set<Int64> = []
 
     // Per-category protection switches (all default ON). Let the user disable a class of
     // detection without turning anti-spam off entirely.
@@ -203,6 +209,7 @@ final class AntiSpamManager {
         keywords   = saved.keywords
         blockedPeerIds = Set(saved.blockedPeerIds)
         allowedPeerIds = Set(saved.allowedPeerIds ?? []).union(flatAllowedPeerIds)
+        autoBlockImmuneIds = Set(saved.autoBlockImmuneIds ?? [])
         threatProtection = saved.threatProtection ?? true
         spamProtection = saved.spamProtection ?? true
         stopWordsProtection = saved.stopWordsProtection ?? true
@@ -230,6 +237,7 @@ final class AntiSpamManager {
             keywords:       keywords,
             blockedPeerIds: Array(blockedPeerIds),
             allowedPeerIds: Array(allowedPeerIds),
+            autoBlockImmuneIds: Array(autoBlockImmuneIds),
             threatProtection: threatProtection,
             spamProtection: spamProtection,
             stopWordsProtection: stopWordsProtection,
@@ -246,6 +254,7 @@ final class AntiSpamManager {
     private func mirrorFlatState() {
         UserDefaults.standard.set(Array(blockedPeerIds).map { NSNumber(value: $0) }, forKey: "aorusgram_antispam_blocked_peer_ids")
         UserDefaults.standard.set(Array(allowedPeerIds).map { NSNumber(value: $0) }, forKey: "aorusgram_antispam_allowed_peer_ids")
+        UserDefaults.standard.set(Array(autoBlockImmuneIds).map { NSNumber(value: $0) }, forKey: "aorusgram_antispam_immune_peer_ids")
         UserDefaults.standard.set(keywords, forKey: "aorusgram_antispam_keywords")
         UserDefaults.standard.set(threatPatterns, forKey: "aorusgram_antispam_threat_patterns")
         UserDefaults.standard.set(threatTokensLatin, forKey: "aorusgram_antispam_threat_tokens_latin")
@@ -291,7 +300,7 @@ final class AntiSpamManager {
     func setTextCleanup(_ value: Bool)         { textCleanup = value; save() }
 
     func addKeyword(_ kw: String) {
-        let clean = kw.lowercased().trimmingCharacters(in: .whitespaces)
+        let clean = kw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, !keywords.contains(clean) else { return }
         keywords.append(clean)
         save()
@@ -310,6 +319,9 @@ final class AntiSpamManager {
 
     func unblockPeer(_ peerId: Int64) {
         blockedPeerIds.remove(peerId)
+        // Manual unblock = "I trust this one": grant auto-block immunity so spam from them
+        // can never silently re-add them to the block list.
+        autoBlockImmuneIds.insert(peerId)
         save()
     }
 
@@ -481,6 +493,21 @@ final class AntiSpamManager {
         let verdict = existingVerdict ?? check(peerId: peerId, text: text)
         guard verdict.isSpam else { return }
 
+        // Immune peers (manually un-blocked): suppress the spam/blocked notice and never
+        // auto-block. Threats and flood still alert though — immunity only exempts the
+        // spam + blocked path, not doxx/swat/flood.
+        let isImmune = autoBlockImmuneIds.contains(peerId)
+        let isFloodOrThreat: Bool
+        switch verdict.reason {
+        case .threat, .flood, .repeatedMessage:
+            isFloodOrThreat = true
+        default:
+            isFloodOrThreat = false
+        }
+        if isImmune && !isFloodOrThreat {
+            return
+        }
+
         var userInfo: [String: Any] = ["peerId": NSNumber(value: peerId), "reason": verdict.reason.description]
         if let messageId {
             userInfo["msgId"] = NSNumber(value: messageId)
@@ -491,7 +518,7 @@ final class AntiSpamManager {
             userInfo: userInfo
         )
 
-        if autoBlock {
+        if autoBlock && !isImmune {
             blockPeer(peerId)
         }
     }
@@ -505,6 +532,7 @@ final class AntiSpamManager {
         var keywords: [String]
         var blockedPeerIds: [Int64]
         var allowedPeerIds: [Int64]?   // optional: tolerant decode of states saved before exceptions existed
+        var autoBlockImmuneIds: [Int64]?   // optional: tolerant decode of states saved before immunity existed
         var threatProtection: Bool?
         var spamProtection: Bool?
         var stopWordsProtection: Bool?

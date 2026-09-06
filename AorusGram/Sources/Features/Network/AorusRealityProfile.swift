@@ -294,7 +294,10 @@ enum AorusRealityDeviceIdentity {
         ]
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return (item as! SecKey)
+        // Conditional, not forced: every other way this lookup can fail returns nil, and a
+        // keychain that answered with something other than a key should not be a crash.
+        guard let key = item as? SecKey else { return nil }
+        return key
     }
 
     private static func createKey() -> SecKey? {

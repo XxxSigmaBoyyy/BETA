@@ -59,7 +59,11 @@ enum AorusSeKeyBinder {
         ]
         var ref: AnyObject?
         guard SecItemCopyMatching(q as CFDictionary, &ref) == errSecSuccess else { return nil }
-        return (ref as! SecKey)
+        // Conditional, not forced: the query asks for a key and the keychain answers with
+        // one, but a forced cast turns any deviation from that into a crash on a path whose
+        // every other failure mode already returns nil.
+        guard let key = ref as? SecKey else { return nil }
+        return key
     }
 
     private static func createSeKey() -> SecKey? {
