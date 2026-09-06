@@ -157,6 +157,30 @@ public enum AorusGlassProfileTint {
     /// header shows, and the block's own kernel decides how far either side of it to read; see
     /// `bandRange(tail:)`. The block's height is deliberately not among the arguments -- see the same
     /// place for why it cannot matter.
+    /// The page for a peer who has no photograph at all, taken from their profile colour.
+    ///
+    /// `publishAvatarTint` samples a picture, and a profile with no picture gives it nothing to
+    /// read, so it returns without publishing and the page stays at its unsampled default — which
+    /// is the black a reader sees behind a Premium profile background on someone who never set an
+    /// avatar. The background itself is drawn from `peer.profileColor`, so that colour is what the
+    /// page should have been all along: it is the same colour, by the same route, that the cover
+    /// above it is already painted with.
+    ///
+    /// Deliberately not a sample and deliberately never settled. It carries no image, so nothing
+    /// downstream mistakes it for a photograph's backdrop; and it is refused the moment this peer
+    /// has a real sample, so a photo added later — or one still loading — always wins.
+    public static func publishProfileColorTint(for peerId: Int64, color: UIColor, onUpdate: @escaping () -> Void) {
+        guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
+            return
+        }
+        // A peer that has sampled a photo keeps that page. This is the fallback for having
+        // nothing to sample, not an override of what was sampled.
+        if let key = AorusGlassProfileTint.currentKeys[peerId], AorusGlassProfileTint.sampledColors[key] != nil {
+            return
+        }
+        AorusGlassProfileTint.adopt(Sample(color: color, image: nil), for: peerId, onUpdate: onUpdate)
+    }
+
     public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
