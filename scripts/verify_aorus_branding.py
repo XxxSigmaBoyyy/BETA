@@ -3580,10 +3580,12 @@ def main() -> None:
             ("private func updateTypingHandle(", "AorusAI: the composer no longer tracks the handle being typed"),
             ("private func deleteMentionBeforeCaret(", "AorusAI: the composer no longer deletes a pill whole"),
             ("func refreshMentionStyling(", "AorusAI: moving the caret no longer finishes a handle"),
-            # The share sheet's avatar. `resolvePeerByName` answers synchronously for a peer
-            # already in the database — inside `viewDidLoad`, where the avatar has no size
-            # yet — so the photo has to be asked for from the layout pass instead.
-            ("private func updateAvatarImage(size:", "AorusAI: the share sheet asks for its avatar photo before it has a size"),
+            # The share sheet's avatar draws through the same cache as the pills in the
+            # thread. An AvatarNode needs a peer and a size at once, and this sheet learns
+            # them at different times — that mismatch is what left a grey monogram beside a
+            # message whose pill was showing the same peer's photo.
+            ("private func refreshAvatar()", "AorusAI: the share sheet no longer draws its avatar through the mention cache"),
+            ("AorusAIMentionAvatarCache.shared.image(for: mention", "AorusAI: the share sheet's avatar is not asking the cache for a picture"),
         ):
             if marker not in ai_ui_text:
                 err.append(message)

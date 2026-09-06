@@ -5797,7 +5797,9 @@ private final class AorusAIShareScopeController: UIViewController {
     /// floating capsule to match. Deallocating counts as declining.
     deinit {
         peerDisposable.dispose()
-        peerByIdDisposable.dispose()
+        if let avatarObserver {
+            NotificationCenter.default.removeObserver(avatarObserver)
+        }
         guard !didAnswer else { return }
         didAnswer = true
         onCancel()
@@ -5806,7 +5808,20 @@ private final class AorusAIShareScopeController: UIViewController {
     private let dimView = UIView()
     private let card = UIView()
     private let grabber = UIView()
-    private let avatarNode = AvatarNode(font: UIFont.systemFont(ofSize: 15.0, weight: .semibold))
+    // The same picture the pills in the thread are drawn with, rather than an `AvatarNode`
+    // of this sheet's own.
+    //
+    // Those pills work: the message above this sheet shows the peer's photo next to their
+    // name at the moment the sheet below shows a grey monogram for that same peer. An
+    // `AvatarNode` has to be handed a peer *and* a size, and this sheet learns the two at
+    // different times — the resolve answers synchronously for anyone already in the
+    // database, inside `viewDidLoad`, where the avatar is still zero points wide. The cache
+    // takes a peer id and a diameter, returns a monogram immediately, draws the photo off
+    // the main thread and posts when it is ready. There is no order to get wrong.
+    private let avatarView = UIImageView()
+    /// Who the avatar is drawing, once the peer is known.
+    private var avatarMention: AorusAIMention?
+    private var avatarObserver: NSObjectProtocol?
     private let titleLabel = UILabel()
     private let peerLabel = UILabel()
     private let bodyLabel = UILabel()
@@ -5816,8 +5831,6 @@ private final class AorusAIShareScopeController: UIViewController {
     // the class it returns, and the subclass is the whole point of this one.
     private let cancelButton = AorusAIFilledButton()
     private let peerDisposable = MetaDisposable()
-    /// The by-id fallback lookup, held separately so it cannot cancel the named one.
-    private let peerByIdDisposable = MetaDisposable()
     private var didAnimateIn = false
     /// How far below its resting place the card sits, honoured by `viewDidLayoutSubviews`.
     private var cardOffset: CGFloat = 0.0
@@ -5865,8 +5878,19 @@ private final class AorusAIShareScopeController: UIViewController {
         grabber.layer.cornerRadius = 2.5
         card.addSubview(grabber)
 
-        card.addSubview(avatarNode.view)
-        avatarNode.setCustomLetters(AorusAIMentionRenderer.letters(for: username ?? "#"))
+        avatarView.contentMode = .scaleAspectFill
+        avatarView.clipsToBounds = true
+        card.addSubview(avatarView)
+        AorusAIMentionAvatarCache.shared.use(context: context)
+        // Redrawn when the photo lands: the cache answers with a monogram first and posts
+        // once the real picture has been drawn.
+        avatarObserver = NotificationCenter.default.addObserver(
+            forName: AorusAIMentionAvatarCache.changedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshAvatar()
+        }
 
         titleLabel.text = aorusAILocalized("Сколько показать AorusAI", "How much to show AorusAI")
         titleLabel.font = .systemFont(ofSize: 20.0, weight: .semibold)
@@ -5966,66 +5990,42 @@ private final class AorusAIShareScopeController: UIViewController {
         // simply has no photo.
         let handle = (username ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
         guard !handle.isEmpty else { return }
-        let cached = AorusAIMentionStore.shared.lookup(handle)
-        if let cached {
+        // The session's own record of this handle is enough to draw the person: the cache
+        // takes an id and a name. It is the same record the pill in the message above this
+        // sheet is drawn from, which is why that pill shows a photo.
+        if let cached = AorusAIMentionStore.shared.lookup(handle) {
             peerLabel.text = cached.displayName
-            avatarNode.setCustomLetters(AorusAIMentionRenderer.letters(for: cached.displayName))
+            setAvatar(peerId: cached.peerId, displayName: cached.displayName, handle: handle)
         }
         peerDisposable.set((context.engine.peers.resolvePeerByName(name: handle, referrer: nil)
         |> deliverOnMainQueue).start(next: { [weak self] result in
-            guard let self, case let .result(peer) = result else { return }
-            if let peer {
-                self.apply(peer: peer)
-            } else if let cached {
-                // Named lookup found nobody, but this session already resolved the handle
-                // once — that is how the name under the title got there. Asking by id is
-                // the same peer by a route that cannot fail on spelling.
-                self.peerByIdDisposable.set((self.context.engine.data.get(
-                    TelegramEngine.EngineData.Item.Peer.Peer(id: EnginePeer.Id(cached.peerId))
-                ) |> deliverOnMainQueue).start(next: { [weak self] peer in
-                    guard let self, let peer else { return }
-                    self.apply(peer: peer)
-                }))
-            }
+            guard let self, case let .result(peer) = result, let peer else { return }
+            let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+            let name = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+            self.peerLabel.text = name
+            self.setAvatar(peerId: peer.id.toInt64(), displayName: name, handle: handle)
         }))
     }
 
-    /// Takes the resolved peer and gets its photo drawn.
-    private func apply(peer: EnginePeer) {
-        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-        peerLabel.text = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
-        // The peer is kept, because the photo needs a size and the size is only known once
-        // the sheet is laid out. This resolve is started from `viewDidLoad`, and for anyone
-        // already in the database it answers *synchronously* — inside `viewDidLoad`, where
-        // the avatar is still zero points wide. Asking for a photo there did nothing and
-        // was never asked for again, which left the monogram standing for every peer the
-        // app already knew.
-        resolvedPeer = peer
-        // Both routes, because either can run first: if the sheet is already laid out the
-        // photo is asked for now, and if it is not, the layout pass this schedules asks for
-        // it. The request is idempotent per peer and size, so whichever loses does nothing.
-        updateAvatarImage(size: avatarNode.bounds.size)
-        view.setNeedsLayout()
+    /// Points the avatar at a person. Safe to call twice with the same one.
+    private func setAvatar(peerId: Int64, displayName: String, handle: String) {
+        guard peerId != 0 else { return }
+        let mention = AorusAIMention(sourceText: "@" + handle, username: handle, peerId: peerId, displayName: displayName)
+        guard avatarMention != mention else { return }
+        avatarMention = mention
+        refreshAvatar()
     }
 
-    /// The peer this sheet is about, once it has resolved.
-    private var resolvedPeer: EnginePeer?
-    /// The peer and size the avatar's photo was last requested for, so a layout pass that
-    /// changes nothing does not re-request it.
-    private var appliedAvatar: (peerId: EnginePeer.Id, size: CGSize)?
-
-    /// Draws the resolved peer's photo at the size the layout just gave the avatar.
+    /// Draws whoever the avatar is pointed at, at whatever size it currently has.
     ///
-    /// Called from every layout pass rather than from the resolve, because the size is only
-    /// known here and the resolve can land before the first pass.
-    private func updateAvatarImage(size: CGSize) {
-        guard size.width > 0.0, let peer = resolvedPeer else { return }
-        if let applied = appliedAvatar, applied.peerId == peer.id, applied.size == size {
-            return
-        }
-        appliedAvatar = (peer.id, size)
-        avatarNode.setPeer(context: context, theme: theme, peer: peer, clipStyle: .round, synchronousLoad: false, displayDimensions: size)
-        avatarNode.updateSize(size: size)
+    /// Called from the layout pass, from the resolve, and from the cache's notification —
+    /// all three, because none of them is guaranteed to be last. The cache answers
+    /// immediately with a monogram and again with the photo once it is drawn, so calling it
+    /// more often than needed costs a dictionary lookup.
+    private func refreshAvatar() {
+        let side = avatarView.bounds.width
+        guard side > 0.0, let mention = avatarMention else { return }
+        avatarView.image = AorusAIMentionAvatarCache.shared.image(for: mention, diameter: side, ring: palette.accent)
     }
 
     override func viewDidLayoutSubviews() {
@@ -6062,13 +6062,11 @@ private final class AorusAIShareScopeController: UIViewController {
         grabber.frame = CGRect(x: floor((width - 36.0) / 2.0), y: 8.0, width: 36.0, height: 5.0)
 
         let avatarFrame = CGRect(x: side, y: headerTop, width: avatarSize, height: avatarSize)
-        if avatarNode.frame != avatarFrame {
-            avatarNode.frame = avatarFrame
-            avatarNode.updateSize(size: avatarFrame.size)
-        }
+        avatarView.frame = avatarFrame
+        avatarView.layer.cornerRadius = avatarSize / 2.0
         // Unconditionally, not only when the frame changed: the peer usually resolves after
-        // the frame has settled, and that pass is the one that has to ask for the photo.
-        updateAvatarImage(size: avatarFrame.size)
+        // the frame has settled, and this is the pass that knows the size to draw at.
+        refreshAvatar()
         titleLabel.frame = CGRect(x: titleX, y: headerTop, width: titleWidth, height: titleHeight)
         peerLabel.frame = CGRect(x: titleX, y: titleLabel.frame.maxY + 2.0, width: titleWidth, height: peerHeight)
         bodyLabel.frame = CGRect(x: side, y: bodyTop, width: contentWidth, height: bodyHeight)
