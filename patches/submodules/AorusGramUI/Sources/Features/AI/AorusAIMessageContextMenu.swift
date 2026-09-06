@@ -108,9 +108,22 @@ private final class AorusAIMessageActionsController: UIViewController, UITableVi
         view.addSubview(headerView)
 
         segments.selectedSegmentIndex = 0
-        segments.selectedSegmentTintColor = palette.elevated
+        // The selection indicator is the system's, deliberately. Setting
+        // `selectedSegmentTintColor` replaces that indicator with a flat rectangle of
+        // whatever colour it is given, and the colour this was given is the palette's card
+        // surface — which is a surface, not an indicator. It only ever read as one because
+        // under Interface 2.0 the card colour is a near-invisible marker and the system's
+        // own glass showed through it. Making that colour opaque, which the share sheet
+        // needed, covered the glass with a slab that sits a shade off the page behind it,
+        // and the selected tab stopped being findable.
+        //
+        // The system draws this control's selection against whatever is behind it and
+        // keeps its label legible on top; nothing here knows better. So the indicator and
+        // the selected label are left alone, and only the unselected label is themed —
+        // Interface 2.0 repaints the page's ink, and the default grey belongs to the theme
+        // it replaced.
         segments.setTitleTextAttributes([.foregroundColor: palette.secondary], for: .normal)
-        segments.setTitleTextAttributes([.foregroundColor: palette.label, .font: UIFont.systemFont(ofSize: 12.0, weight: .semibold)], for: .selected)
+        segments.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 12.0, weight: .semibold)], for: .selected)
         segments.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
         view.addSubview(segments)
 

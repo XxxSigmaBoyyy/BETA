@@ -3602,6 +3602,14 @@ def main() -> None:
         # the hierarchy, so the marker was guarding dead code and failed the build the
         # moment that code was removed. `modalPresentationStyle = .pageSheet` asserts the
         # same thing about the real construction.
+        # The category selector keeps the system's own indicator. `selectedSegmentTintColor`
+        # replaces it with a flat rectangle, and every colour this palette can offer for it
+        # is a page or card surface — which is what made the selected tab impossible to find
+        # once the card colour was made opaque for the share sheet.
+        # Matched as an assignment, not as a mention: the source explains in a comment why
+        # this property is left alone, and a substring check would fail on that comment.
+        if ".selectedSegmentTintColor =" in ai_context_menu_text:
+            err.append("AorusAI: the category selector paints over the system's selection indicator")
         for marker in (
             "UISegmentedControl",
             "UITableViewDataSource",
