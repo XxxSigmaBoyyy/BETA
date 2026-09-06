@@ -294,10 +294,12 @@ enum AorusRealityDeviceIdentity {
         ]
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        // Conditional, not forced: every other way this lookup can fail returns nil, and a
-        // keychain that answered with something other than a key should not be a crash.
-        guard let key = item as? SecKey else { return nil }
-        return key
+        // Checked by type id, not by `as?`: Swift rejects a conditional downcast to a
+        // CoreFoundation type outright. Every other way this lookup can fail returns nil,
+        // and a keychain that answered with something other than a key should not be the
+        // one path that crashes.
+        guard let item, CFGetTypeID(item) == SecKeyGetTypeID() else { return nil }
+        return (item as! SecKey)
     }
 
     private static func createKey() -> SecKey? {

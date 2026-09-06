@@ -784,6 +784,7 @@ def main() -> int:
                         fail(errors, f"aorus_branding.py main() calls {name}(), which is not defined")
 
     check_mirrored_sources(root, errors)
+    check_corefoundation_casts(root, errors)
 
     if errors:
         print("Release security check failed:")
@@ -844,6 +845,51 @@ def check_mirrored_sources(root: Path, errors: list[str]) -> None:
             f"file to _MIRROR_DIVERGENCE_ALLOWED with the reason.",
         )
 
+# `as?` to a CoreFoundation type is a compile error, not a warning: Swift answers
+# "conditional downcast to CoreFoundation type 'SecKey' will always succeed" and refuses
+# the file. `swiftc -frontend -parse` cannot see it — it is a semantic diagnosis, not a
+# syntax one — so it costs a full Bazel run to find out, which is how it was found.
+#
+# The compiler's own suggestion is the fix and the one this project uses: compare
+# `CFGetTypeID(value)` against the type's `…GetTypeID()`, then cast with `as!`, which is
+# safe because the type has just been checked.
+# Named explicitly rather than matched by prefix. `CGRect`, `CGSize` and the rest of the
+# geometry are ordinary structs, and `as? CGRect` out of a notification's userInfo is both
+# legal and common — a prefix rule flags those and is worse than no rule at all. These are
+# the CoreFoundation *object* types, the ones that are really CFTypeRef.
+_CF_OBJECT_TYPES = (
+    "SecKey", "SecCertificate", "SecTrust", "SecIdentity", "SecAccessControl", "SecPolicy",
+    "CGImage", "CGColor", "CGPath", "CGMutablePath", "CGContext", "CGFont",
+    "CGDataProvider", "CGColorSpace", "CGLayer", "CGPattern", "CGGradient",
+    "CTFont", "CTFontDescriptor", "CTLine", "CTFrame", "CTFramesetter", "CTRun",
+    "CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer",
+    "CVPixelBuffer", "CVBuffer", "CVMetalTexture",
+    "CFString", "CFArray", "CFDictionary", "CFNumber", "CFData", "CFURL", "CFBoolean",
+)
+_CF_CAST = re.compile(r"\bas\?\s+(" + "|".join(_CF_OBJECT_TYPES) + r")\b")
+
+
+def check_corefoundation_casts(root: Path, errors: list[str]) -> None:
+    for base in ("AorusGram/Sources", "patches"):
+        directory = root / base
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.swift")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for number, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if stripped.startswith("//") or stripped.startswith("///"):
+                    continue
+                match = _CF_CAST.search(line)
+                if match is None:
+                    continue
+                name = match.group(1)
+                fail(
+                    errors,
+                    f"{path.relative_to(root)}:{number}: `as? {name}` is a CoreFoundation "
+                    f"downcast, which Swift rejects outright. Compare CFGetTypeID against "
+                    f"{name}GetTypeID() and then cast with as!.",
+                )
 
 if __name__ == "__main__":
     raise SystemExit(main())

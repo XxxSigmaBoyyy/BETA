@@ -59,11 +59,13 @@ enum AorusSeKeyBinder {
         ]
         var ref: AnyObject?
         guard SecItemCopyMatching(q as CFDictionary, &ref) == errSecSuccess else { return nil }
-        // Conditional, not forced: the query asks for a key and the keychain answers with
-        // one, but a forced cast turns any deviation from that into a crash on a path whose
-        // every other failure mode already returns nil.
-        guard let key = ref as? SecKey else { return nil }
-        return key
+        // Checked by type id, not by `as?`: Swift rejects a conditional downcast to a
+        // CoreFoundation type outright ("will always succeed") and points at this instead.
+        // The query asks for a key and the keychain answers with one, but a bare forced
+        // cast turns any deviation from that into a crash on a path whose every other
+        // failure mode already returns nil.
+        guard let ref, CFGetTypeID(ref) == SecKeyGetTypeID() else { return nil }
+        return (ref as! SecKey)
     }
 
     private static func createSeKey() -> SecKey? {
