@@ -257,11 +257,17 @@ public enum AorusGlassProfileTint {
     /// What is being read, which decides two things that always go together.
     ///
     /// A photograph is opaque and has Telegram's own bottom block drawn over its last row, so it
-    /// is sampled as stored and the block's darkening is taken off afterwards. A profile
-    /// background is neither: `PeerInfoCoverComponent` fills itself with `.clear` when the peer
-    /// has no `profileColor` and paints only its pattern, so it has to be read over the page it
-    /// shows through -- and there is no block above it to compensate for, because that block
-    /// belongs to the photo gallery and a peer with no photos has none.
+    /// is sampled as stored and the block's darkening is taken off afterwards.
+    ///
+    /// A profile background is neither of those things, and both differences were traced rather
+    /// than assumed. It is not opaque: `PeerInfoCoverComponent` fills itself with `.clear` when
+    /// the peer has no `profileColor` and paints only its pattern, so the colour a reader sees
+    /// there is the page showing through it, and it has to be read over that page. And it has no
+    /// block above it: `bottomShadowNode` lives in `avatarListNode.listContainerNode`, which
+    /// `PeerInfoHeaderNode` unhides only inside `if self.isAvatarExpanded`, and Interface 2.0
+    /// never expands a header that has no photo to expand. So for these peers the block is not
+    /// merely absent from the model, it is `isHidden` on screen -- and taking a third off a
+    /// colour that never had it added is what put the page a visible step below the header.
     ///
     /// One value rather than two flags: the pairing is not a coincidence, and passing "composite
     /// me over the page, then darken as if a block were there" is not a state that means anything.

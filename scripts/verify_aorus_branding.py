@@ -931,6 +931,21 @@ def main() -> None:
     elif "AorusFakeGiftsStore.remove(instanceId: giftInstanceId)" not in fake_gift_manage_controller.read_text(encoding="utf-8"):
         err.append("FakeGifts: manager does not remove the selected gift instance")
 
+    # The profile page colour. A photograph and a Premium cover are read differently, and the
+    # difference is one value so the two halves cannot drift apart: a cover is composited over
+    # the page it shows through, and carries no block-shadow correction because the block lives
+    # in the avatar gallery, which is hidden for a peer with no photo. `.photo` must stay the
+    # default, or every avatar in the app silently changes shade.
+    profile_tint = tg / "submodules" / "AorusGramUI" / "Sources" / "UI" / "GlassMorphism" / "AorusGlassProfileTint.swift"
+    if profile_tint.is_file():
+        profile_tint_text = profile_tint.read_text(encoding="utf-8")
+        if "static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true)" not in profile_tint_text:
+            err.append("ProfileTint: the photo sampling mode no longer matches the original behaviour")
+        if "mode: SampleMode = .photo" not in profile_tint_text:
+            err.append("ProfileTint: photo sampling is no longer the default mode")
+        if "mode.appliesBlockShadow ? 1.0 - AorusGlassProfileTint.bandShadow : 1.0" not in profile_tint_text:
+            err.append("ProfileTint: the block-shadow correction is no longer conditional")
+
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
         err.append("VideoMasks: mask preset controller is missing")
