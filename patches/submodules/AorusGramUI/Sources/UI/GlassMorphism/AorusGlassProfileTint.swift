@@ -274,13 +274,24 @@ public enum AorusGlassProfileTint {
     public struct SampleMode {
         let backdrop: UIColor?
         let appliesBlockShadow: Bool
+        /// Read the band at the view's own bottom edge instead of at the seam `tail` names.
+        ///
+        /// `bandRange` places the band by working back from the mirrored strip a photograph is
+        /// extended with: at a tail of 98 the seam is 34 points up the picture and the band is
+        /// the 15 below it. A cover has no such strip -- it is drawn to the header's bottom edge
+        /// already -- so its tail is zero, and the same arithmetic puts the seam 1.33 points up
+        /// and clamps the band to those 1.33 points. Sampling that means rendering the layer at
+        /// seventy-two times scale in Y and averaging what comes back, which is nothing: the
+        /// read then returns the backdrop alone, and the page came out `blocksBackgroundColor`
+        /// exactly as measured off the screenshot.
+        let readsBottomEdge: Bool
 
         /// A photograph, sampled as stored. What every caller did before this existed.
-        public static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true)
+        public static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true, readsBottomEdge: false)
 
         /// A header read as it is composited, over the page it is drawn on.
         public static func composited(over page: UIColor?) -> SampleMode {
-            return SampleMode(backdrop: page, appliesBlockShadow: false)
+            return SampleMode(backdrop: page, appliesBlockShadow: false, readsBottomEdge: true)
         }
     }
 
@@ -539,13 +550,22 @@ public enum AorusGlassProfileTint {
         // ends are kept inside the picture: a header taller than three times the photo it is built
         // from is a shape this was never given, but clamping is three lines and a crash is a crash.
         let range = AorusGlassProfileTint.bandRange(tail: tail)
-        let seam = min(bounds.height, max(0.0, bounds.height - range.edge))
+        // A cover ends where the header ends, so its band is the depth above that edge and its
+        // seam is the edge itself. Same thickness as a photograph's band, and therefore the same
+        // scale to render at; only the place it is taken from differs.
+        let seam = mode.readsBottomEdge
+            ? bounds.height
+            : min(bounds.height, max(0.0, bounds.height - range.edge))
         // The band starts at the seam and runs towards the bottom of the picture, because the block's
         // blur does: its bottom edge is the page's join and also the edge its kernel is renormalised
         // against, so the last line of it averages rows from inside the block -- up the screen, which
         // over a strip mirrored and stretched threefold is down the photo. See `bandRange`.
-        let bandTop = max(0.0, seam)
-        let bandBottom = min(bounds.height, max(bandTop + 1.0, seam + range.depth))
+        let bandTop = mode.readsBottomEdge
+            ? max(0.0, seam - range.depth)
+            : max(0.0, seam)
+        let bandBottom = mode.readsBottomEdge
+            ? bounds.height
+            : min(bounds.height, max(bandTop + 1.0, seam + range.depth))
         let bandHeight = max(1.0, bandBottom - bandTop)
         let size = AorusGlassProfileTint.sampleSize
         // Where the seam ended up in the buffer, once the band was scaled into it. The first row when

@@ -939,7 +939,7 @@ def main() -> None:
     profile_tint = tg / "submodules" / "AorusGramUI" / "Sources" / "UI" / "GlassMorphism" / "AorusGlassProfileTint.swift"
     if profile_tint.is_file():
         profile_tint_text = profile_tint.read_text(encoding="utf-8")
-        if "static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true)" not in profile_tint_text:
+        if "static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true, readsBottomEdge: false)" not in profile_tint_text:
             err.append("ProfileTint: the photo sampling mode no longer matches the original behaviour")
         if "mode: SampleMode = .photo" not in profile_tint_text:
             err.append("ProfileTint: photo sampling is no longer the default mode")
