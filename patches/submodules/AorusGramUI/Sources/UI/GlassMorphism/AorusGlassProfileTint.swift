@@ -157,7 +157,7 @@ public enum AorusGlassProfileTint {
     /// header shows, and the block's own kernel decides how far either side of it to read; see
     /// `bandRange(tail:)`. The block's height is deliberately not among the arguments -- see the same
     /// place for why it cannot matter.
-    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, backdrop: UIColor? = nil, onUpdate: @escaping () -> Void) {
+    public static func publishAvatarTint(for peerId: Int64, photo: Int, photoCount: Int, view: UIView?, mirroredTail: CGFloat, isFullPhoto: Bool, mode: SampleMode = .photo, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
@@ -186,7 +186,7 @@ public enum AorusGlassProfileTint {
         guard !AorusGlassProfileTint.pendingKeys.contains(key) else {
             return
         }
-        AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: mirroredTail, backdrop: backdrop, read: 1, stable: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: mirroredTail, mode: mode, read: 1, stable: 0, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -254,6 +254,30 @@ public enum AorusGlassProfileTint {
 
     /// One photo's contribution to the page: the colour it averages to, and the same band kept as a
     /// single blurred row. `image` is nil when only the round fallback avatar was available.
+    /// What is being read, which decides two things that always go together.
+    ///
+    /// A photograph is opaque and has Telegram's own bottom block drawn over its last row, so it
+    /// is sampled as stored and the block's darkening is taken off afterwards. A profile
+    /// background is neither: `PeerInfoCoverComponent` fills itself with `.clear` when the peer
+    /// has no `profileColor` and paints only its pattern, so it has to be read over the page it
+    /// shows through -- and there is no block above it to compensate for, because that block
+    /// belongs to the photo gallery and a peer with no photos has none.
+    ///
+    /// One value rather than two flags: the pairing is not a coincidence, and passing "composite
+    /// me over the page, then darken as if a block were there" is not a state that means anything.
+    public struct SampleMode {
+        let backdrop: UIColor?
+        let appliesBlockShadow: Bool
+
+        /// A photograph, sampled as stored. What every caller did before this existed.
+        public static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true)
+
+        /// A header read as it is composited, over the page it is drawn on.
+        public static func composited(over page: UIColor?) -> SampleMode {
+            return SampleMode(backdrop: page, appliesBlockShadow: false)
+        }
+    }
+
     private struct Sample {
         let color: UIColor
         let image: UIImage?
@@ -430,13 +454,13 @@ public enum AorusGlassProfileTint {
     /// block it continues does, blurring whatever is behind it at that moment, placeholder included.
     /// Two identical readings in a row end the loop. One would not do: a placeholder is perfectly
     /// stable for exactly as long as the download takes.
-    private static func sampleAndSettle(key: PhotoKey, view: UIView, tail: CGFloat, backdrop: UIColor?, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
-        guard let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail, backdrop: backdrop) else {
+    private static func sampleAndSettle(key: PhotoKey, view: UIView, tail: CGFloat, mode: SampleMode, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+        guard let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail, mode: mode) else {
             // Nothing drawn yet: the picture is still decoding, or the node has not been laid out at
             // the size the header gives it. Read again on a delay rather than from the next layout
             // pass, because a profile that is simply sitting there gets no further passes, and
             // drawing the avatar on every pass of one being scrolled would cost a snapshot a frame.
-            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, backdrop: backdrop, read: read, stable: stable, onUpdate: onUpdate)
+            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, mode: mode, read: read, stable: stable, onUpdate: onUpdate)
             return
         }
         let previous = AorusGlassProfileTint.sampledColors[key]
@@ -455,11 +479,11 @@ public enum AorusGlassProfileTint {
             AorusGlassProfileTint.settledKeys.insert(key)
             return
         }
-        AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, backdrop: backdrop, read: read, stable: unchanged ? stable + 1 : 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, mode: mode, read: read, stable: unchanged ? stable + 1 : 0, onUpdate: onUpdate)
     }
 
     /// Book the next reading of a photo, or stop when there is nothing left to read for.
-    private static func scheduleRead(key: PhotoKey, view: UIView, tail: CGFloat, backdrop: UIColor?, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+    private static func scheduleRead(key: PhotoKey, view: UIView, tail: CGFloat, mode: SampleMode, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
         guard read < AorusGlassProfileTint.settleReads else {
             // Out of readings. Marked settled rather than left open: the page keeps whatever the last
             // one gave it, and a photo that never finished arriving should not go on costing a
@@ -480,7 +504,7 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: tail, backdrop: backdrop, read: read + 1, stable: stable, onUpdate: onUpdate)
+            AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: tail, mode: mode, read: read + 1, stable: stable, onUpdate: onUpdate)
         }
     }
 
@@ -499,7 +523,7 @@ public enum AorusGlassProfileTint {
     ///
     /// Returns nil when the view has drawn next to nothing, which is how a photo that is still
     /// loading is told apart from one that is genuinely dark -- a dark photo is still opaque.
-    private static func bottomBandSample(of view: UIView, tail: CGFloat, backdrop: UIColor? = nil) -> Sample? {
+    private static func bottomBandSample(of view: UIView, tail: CGFloat, mode: SampleMode = .photo) -> Sample? {
         let bounds = view.bounds
         guard bounds.width >= 8.0, bounds.height >= 8.0 else {
             return nil
@@ -571,7 +595,7 @@ public enum AorusGlassProfileTint {
         // first makes the read what the eye gets: the header as composited.
         //
         // Nil for a photo, so that path is byte for byte what it was.
-        if let backdrop {
+        if let backdrop = mode.backdrop {
             context.setFillColor(backdrop.cgColor)
             context.fill(CGRect(origin: CGPoint(), size: CGSize(width: bounds.width, height: bounds.height)))
         }
@@ -607,7 +631,10 @@ public enum AorusGlassProfileTint {
         // average towards the pixels that are actually opaque. Nothing is pinned afterwards: an
         // earlier version clamped brightness and produced the grey page under a white avatar that
         // was reported, and the block's own shadow already keeps the result away from white.
-        let shade = 1.0 - AorusGlassProfileTint.bandShadow
+        // Only a photograph has the block over it. A header read as composited already shows
+        // whatever darkening it actually has, and taking another third off it is what left the
+        // page a visible step below the header it is meant to continue.
+        let shade = mode.appliesBlockShadow ? 1.0 - AorusGlassProfileTint.bandShadow : 1.0
         let color = UIColor(
             red: CGFloat(min(1.0, totalRed / totalAlpha * shade)),
             green: CGFloat(min(1.0, totalGreen / totalAlpha * shade)),
