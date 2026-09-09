@@ -2988,8 +2988,14 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "    private var aorusLastBackgroundFrame: CGRect?\n"
         "    private var aorusPresentationData: PresentationData?\n"
         "    private var aorusPageObserver: NSObjectProtocol?\n"
-        "    // What the page falls back to for a peer with no photo, which is also what the mask\n"
-        "    // has to be handed back if a photo it was shaping ever goes away.\n"
+        "    // The flat colour the page is when there is no stretched photo to lay under it, and\n"
+        "    // what the mask is handed back if a photo it was shaping ever goes away.\n"
+        "    //\n"
+        "    // The peer\'s own page colour comes first. A profile whose header is a Premium\n"
+        "    // background rather than a photograph publishes a colour and no image, so that\n"
+        "    // colour is the whole of what its page is -- and falling straight to the theme is\n"
+        "    // what left this pane a black rectangle inside a page that was the right colour\n"
+        "    // everywhere around it.\n"
         "    private var aorusPageFallbackColor: UIColor = .clear\n",
         "members pane properties",
     )
@@ -3051,7 +3057,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        if AorusGlassPane.isEnabled {\n"
         "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
         "        }\n"
-        "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
+        "        self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? presentationData.theme.list.blocksBackgroundColor\n"
         "        self.presentationDataPromise.set(.single(presentationData))\n",
         "members pane theme",
     )
@@ -3192,7 +3198,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        }\n"
         "        if let presentationData = self.aorusPresentationData {\n"
         "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
-        "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
+        "            self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? aorusTheme.list.blocksBackgroundColor\n"
         "            self.presentationDataPromise.set(.single(presentationData.withUpdated(theme: aorusTheme)))\n"
         "        }\n"
         "        if let backgroundFrame = self.aorusLastBackgroundFrame {\n"
@@ -3334,8 +3340,14 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "    private var aorusLastBackgroundFrame: CGRect?\n"
         "    private var aorusPresentationData: PresentationData?\n"
         "    private var aorusPageObserver: NSObjectProtocol?\n"
-        "    // What the page falls back to for a peer with no photo, which is also what the mask\n"
-        "    // has to be handed back if a photo it was shaping ever goes away.\n"
+        "    // The flat colour the page is when there is no stretched photo to lay under it, and\n"
+        "    // what the mask is handed back if a photo it was shaping ever goes away.\n"
+        "    //\n"
+        "    // The peer\'s own page colour comes first. A profile whose header is a Premium\n"
+        "    // background rather than a photograph publishes a colour and no image, so that\n"
+        "    // colour is the whole of what its page is -- and falling straight to the theme is\n"
+        "    // what left this pane a black rectangle inside a page that was the right colour\n"
+        "    // everywhere around it.\n"
         "    private var aorusPageFallbackColor: UIColor = .clear\n",
         "groups pane properties",
     )
@@ -3385,7 +3397,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        if AorusGlassPane.isEnabled {\n"
         "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
         "        }\n"
-        "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
+        "        self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? presentationData.theme.list.blocksBackgroundColor\n"
         "        self.currentParams = (size, isScrollingLockedAtTop, presentationData)\n",
         "groups pane theme",
     )
@@ -3524,7 +3536,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        if let presentationData = self.aorusPresentationData, let currentParams = self.currentParams {\n"
         "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
         "            let updated = presentationData.withUpdated(theme: aorusTheme)\n"
-        "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
+        "            self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? aorusTheme.list.blocksBackgroundColor\n"
         "            self.currentParams = (currentParams.size, currentParams.isScrollingLockedAtTop, updated)\n"
         "            if let state = self.state {\n"
         "                self.updatePeers(state: state, presentationData: updated)\n"

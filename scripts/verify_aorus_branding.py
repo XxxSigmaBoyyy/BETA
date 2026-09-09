@@ -946,6 +946,24 @@ def main() -> None:
         if "func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample?" not in profile_tint_text:
             err.append("ProfileTint: the photo sampler's signature changed")
 
+    # A pane's flat page colour must be the peer's own, not the theme's. A profile whose header
+    # is a Premium background publishes a colour and no image, and taking the theme instead
+    # painted the pane a black rectangle inside a page that was right everywhere around it.
+    for pane_name in ("Panes/PeerInfoMembersPane.swift", "Panes/PeerInfoGroupsInCommonPaneNode.swift"):
+        pane = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / pane_name
+        if not pane.is_file():
+            continue
+        pane_text = pane.read_text(encoding="utf-8")
+        if "aorusPageFallbackColor" not in pane_text:
+            continue
+        assignments = pane_text.count("self.aorusPageFallbackColor = ")
+        from_page = pane_text.count("self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ??")
+        if assignments != from_page:
+            err.append(
+                f"InterfaceV2: {pane_name} sets its page fallback from the theme in "
+                f"{assignments - from_page} place(s) instead of the peer's page colour"
+            )
+
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
         err.append("VideoMasks: mask preset controller is missing")
