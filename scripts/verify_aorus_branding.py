@@ -965,6 +965,13 @@ def main() -> None:
             err.append(f"InterfaceV2: {pane_name} no longer resolves its page colour at draw time")
         if "cornerRadius: 26.0" not in pane_text:
             err.append(f"InterfaceV2: {pane_name} lost the glass behind its card")
+        # The material follows the page, not the app's theme. A pale avatar puts a light page
+        # under a dark theme, and dark glass over a light page is the black card again — the
+        # same signal the rows take their ink from, so the two cannot disagree.
+        if "isDark: AorusGlassPane.profilePageIsDark" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} glass no longer follows the page's own ink")
+        if "isDark: true" in pane_text:
+            err.append(f"InterfaceV2: {pane_name} pins its glass dark regardless of the page")
         for number, line in enumerate(pane_text.splitlines(), start=1):
             if "self.listMaskView.tintColor" not in line or "=" not in line:
                 continue
@@ -979,6 +986,38 @@ def main() -> None:
                 f"InterfaceV2: {pane_name}:{number} paints the page frame with "
                 f"{value.strip()[:60]} instead of the colour resolved at draw time"
             )
+
+    # An ItemListPeerItem in the plain style paints `plainBackgroundColor` behind every row —
+    # black under the dark theme — and inside a profile pane that is a black slab over the glass
+    # and over the page. It is what the groups tab was reported as, twice. `displayBackground:
+    # false` reads like the fix and is not one: ItemListPeerItemNode assigns
+    # `backgroundNode.isHidden` from it and then assigns that property again from
+    # `displayDecorations` further down the same apply block, so the fill was never hidden. The
+    # style is what actually decides the colour, so the style is what these panes switch.
+    for pane_name in (
+        "Panes/PeerInfoGroupsInCommonPaneNode.swift",
+        "Panes/PeerInfoRecommendedPeersPane.swift",
+    ):
+        pane = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / pane_name
+        if not pane.is_file():
+            continue
+        pane_text = pane.read_text(encoding="utf-8")
+        if "style: AorusGlassPane.isEnabled ? .blocks : .plain" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} rows are not switched off the plain fill")
+        for number, line in enumerate(pane_text.splitlines(), start=1):
+            if line.lstrip().startswith("//"):
+                continue
+            if "style: .plain" in line:
+                err.append(
+                    f"InterfaceV2: {pane_name}:{number} still builds a row at style: .plain, "
+                    "which paints the theme's own background over the page"
+                )
+            # In code, not in the comment that explains why the parameter is useless.
+            if "displayBackground:" in line:
+                err.append(
+                    f"InterfaceV2: {pane_name}:{number} asks for displayBackground, which the "
+                    "item node overwrites from displayDecorations and therefore ignores"
+                )
 
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
@@ -2945,12 +2984,15 @@ def main() -> None:
         ),
         # The groups tab of a bot or a user. Same band and same fade as the members tab, plus one
         # thing that tab does not have: its rows are ItemListPeerItems in the plain style, and a
-        # plain row paints the list's own background colour over the card unless it is told not to.
-        # That fill is the black rectangle the tab showed under a tinted page.
+        # plain row paints plainBackgroundColor -- black under the dark theme -- straight over the
+        # card. That fill is the black oval the tab was photographed as. The block style takes it
+        # down to the marker; displayBackground: false, which is the parameter that looks like it
+        # does this, is overwritten from displayDecorations later in the same apply block and so
+        # does nothing at all.
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoGroupsInCommonPaneNode.swift",
             (
-                "displayBackground: !AorusGlassPane.isEnabled",
+                "style: AorusGlassPane.isEnabled ? .blocks : .plain",
                 "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
                 "aorusUpdateGlass",
                 "aorusPageFillView",
@@ -2970,7 +3012,7 @@ def main() -> None:
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoRecommendedPeersPane.swift",
             (
-                "displayBackground: !AorusGlassPane.isEnabled",
+                "style: AorusGlassPane.isEnabled ? .blocks : .plain",
                 "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
                 "import AorusGramUI",
                 "aorusGlassProfileTheme",

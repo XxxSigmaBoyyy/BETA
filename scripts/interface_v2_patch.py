@@ -3130,7 +3130,12 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        glassView.update(\n"
         "            size: backgroundFrame.size,\n"
         "            cornerRadius: 26.0,\n"
-        "            isDark: true,\n"
+        "            // The page this pane sits on, not the app's theme. A pale avatar puts a\n"
+        "            // light page under a dark theme, and dark material over a light page is the\n"
+        "            // black card again, one theme along. The same signal the rows take their ink\n"
+        "            // from, so the block and the names on it can never disagree about which side\n"
+        "            // of readable the page is.\n"
+        "            isDark: AorusGlassPane.profilePageIsDark,\n"
         "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
         "            isInteractive: false,\n"
         "            isVisible: true,\n"
@@ -3258,13 +3263,21 @@ def _patch_groups_pane_glass(tg: Path) -> None:
     card becomes real glass at the same 26, and the frame around it paints the page.
 
     What is different is the rows, and it is the whole of what was reported. The members tab is
-    built from `ContactsPeerItem` with `systemStyle: .glass`, which paints no fill of its own; this
-    one is built from `ItemListPeerItem` at `style: .plain`, which paints `plainBackgroundColor`
-    behind every row -- pure black under the dark theme. So the rows covered the card, corners and
-    all, and the tab came out as the black rectangle the reader photographed. Even upstream that is
-    a rough edge: black rows over a near-black card. Here they stop painting a fill entirely
-    (`displayBackground: false`) and take the glass style's own metrics, which is what puts their
-    height and their separator insets where the members tab already has them.
+    built from `ContactsPeerItem` at `hideBackground: true`, which never assigns its background node
+    a colour at all; this one is built from `ItemListPeerItem` at `style: .plain`, which paints
+    `plainBackgroundColor` behind every row -- pure black under the dark theme. So the rows covered
+    the card, corners and all, and the tab came out as the black oval the reader photographed. Even
+    upstream that is a rough edge: black rows over a near-black card. Here they take the block style
+    instead, whose fill is the marker Interface 2.0 paints everywhere else -- a 255th of an alpha,
+    which the glass below shows straight through -- and the glass style's own metrics, which is what
+    puts their height and their separator insets where the members tab already has them.
+
+    `displayBackground: false` is the parameter that looks like it does this, and it does nothing.
+    `ItemListPeerItemNode` sets `backgroundNode.isHidden` from it and then, later in the same apply
+    block, assigns that property again from `displayDecorations`, which defaults to true. The second
+    assignment wins for every caller, so the fill was never hidden. That is why this tab was still
+    being photographed as a black oval after it had supposedly been fixed, and it is worth knowing
+    before anyone reaches for that parameter again.
 
     The rows also have to be told when the ink changes. This pane has no `presentationDataPromise`
     to push a theme through -- its rows are built by `updatePeers` out of `currentParams` -- so the
@@ -3317,18 +3330,31 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        // AorusGram: the glass style's own metrics -- a row a point taller and its separator\n"
         "        // held 16 off the right edge -- so this tab and the members tab, which is built from a\n"
         "        // different item entirely, do not sit at two different rhythms inside the same profile.\n"
-        "        // And no fill of its own: a plain row paints plainBackgroundColor, which is black under\n"
-        "        // the dark theme, and a run of them painted straight over the card -- the black rectangle\n"
-        "        // this tab was reported as. What the row leaves alone, the glass below shows; the\n"
-        "        // separators and the tap highlight still come from the derived theme, so nothing is lost\n"
-        "        // but the sheet of paint.\n"
+        "        //\n"
+        "        // And the block style below, which is the whole of what stops this tab painting itself\n"
+        "        // black. `style` decides two colours inside ItemListPeerItem and nothing else -- the\n"
+        "        // row's fill and its separator. Every inset, corner and stripe comes from the\n"
+        "        // neighbours and from noInsets/noCorners, which are passed either way. Plain fills with\n"
+        "        // plainBackgroundColor, black under the dark theme, and a run of those rows covered the\n"
+        "        // glass card completely: the black oval this tab was photographed as. Blocks fills with\n"
+        "        // itemBlocksBackgroundColor, which under Interface 2.0's derived theme is the block\n"
+        "        // marker -- black at one 255th of an alpha, the same not-quite-nothing every other row\n"
+        "        // on the page paints -- so the glass below shows through. The separator moves from\n"
+        "        // itemPlainSeparatorColor to itemBlocksSeparatorColor, and the derived theme sets both\n"
+        "        // to the same hairline, so that half of the switch is a no-op by construction.\n"
+        "        //\n"
+        "        // Asking for displayBackground: false is what this did before, and it does nothing at\n"
+        "        // all: the item node sets backgroundNode.isHidden from it and then, five hundred lines\n"
+        "        // later in the same apply block, assigns it again from displayDecorations, which\n"
+        "        // defaults to true. The second assignment wins, so the fill was never hidden -- which\n"
+        "        // is why the tab went on being reported as black after it had supposedly been fixed.\n"
         "        return ItemListPeerItem(presentationData: ItemListPresentationData(presentationData), systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy, dateTimeFormat:",
         "groups pane item style",
     )
     text = _replace_once(
         text,
         "        }, hasTopStripe: false, noInsets: true, noCorners: true, style: .plain)\n",
-        "        }, hasTopStripe: false, noInsets: true, noCorners: true, style: .plain, displayBackground: !AorusGlassPane.isEnabled)\n",
+        "        }, hasTopStripe: false, noInsets: true, noCorners: true, style: AorusGlassPane.isEnabled ? .blocks : .plain)\n",
         "groups pane item background",
     )
     text = _replace_once(
@@ -3489,7 +3515,12 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        glassView.update(\n"
         "            size: backgroundFrame.size,\n"
         "            cornerRadius: 26.0,\n"
-        "            isDark: true,\n"
+        "            // The page this pane sits on, not the app's theme. A pale avatar puts a\n"
+        "            // light page under a dark theme, and dark material over a light page is the\n"
+        "            // black card again, one theme along. The same signal the rows take their ink\n"
+        "            // from, so the block and the names on it can never disagree about which side\n"
+        "            // of readable the page is.\n"
+        "            isDark: AorusGlassPane.profilePageIsDark,\n"
         "            tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
         "            isInteractive: false,\n"
         "            isVisible: true,\n"
@@ -3616,8 +3647,10 @@ def _patch_recommended_pane_glass(tg: Path) -> None:
     It needs much less than the groups tab does, because upstream gives it no card: the rows run
     edge to edge over the pane's own background, and that background is already the page, because
     the pane container above it goes transparent under Interface 2.0. So there is no glass to lay
-    and no rounded hole to keep an avatar out of -- only the fill to stop painting, the glass row
-    metrics to match the rest of the profile, and the ink.
+    and no rounded hole to keep an avatar out of -- only the fill to take down to the marker, the
+    glass row metrics to match the rest of the profile, and the ink. Taken down by the block style
+    rather than by `displayBackground: false`, which the item node overwrites from
+    `displayDecorations` a few hundred lines later and so ignores.
 
     The ink is free here. This entry already carries the theme it was built with and compares it by
     identity, which is exactly the test a derived theme answers: deriving for the other ink returns
@@ -3642,16 +3675,22 @@ def _patch_recommended_pane_glass(tg: Path) -> None:
         "            return ItemListPeerItem(presentationData: ItemListPresentationData(presentationData), dateTimeFormat:",
         "            // AorusGram: no fill of its own, and the glass style's own metrics. A plain row\n"
         "            // paints plainBackgroundColor -- black under the dark theme -- and a run of them\n"
-        "            // is a black band over the page the profile is painted with. What the row leaves\n"
-        "            // alone the page shows; its separators and its tap highlight still come from the\n"
-        "            // derived theme, so nothing is lost but the sheet of paint.\n"
+        "            // is a black band over the page the profile is painted with. The block style takes\n"
+        "            // that fill down to the marker instead, which is a 255th of an alpha of black and\n"
+        "            // shows the page; style decides the fill and the separator here and nothing else,\n"
+        "            // and the derived theme gives both separators the same hairline. Its tap highlight\n"
+        "            // comes from that theme too, so nothing is lost but the sheet of paint.\n"
+        "            //\n"
+        "            // Not displayBackground: false, which is the obvious way to ask for this and does\n"
+        "            // nothing: the item node sets backgroundNode.isHidden from it and then assigns it\n"
+        "            // again from displayDecorations, which defaults to true, in the same apply block.\n"
         "            return ItemListPeerItem(presentationData: ItemListPresentationData(presentationData), systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy, dateTimeFormat:",
         "recommended pane item style",
     )
     text = _replace_once(
         text,
         "            }, hasTopStripe: false, noInsets: true, noCorners: true, style: .plain, disableInteractiveTransitionIfNecessary: true)\n",
-        "            }, hasTopStripe: false, noInsets: true, noCorners: true, style: .plain, displayBackground: !AorusGlassPane.isEnabled, disableInteractiveTransitionIfNecessary: true)\n",
+        "            }, hasTopStripe: false, noInsets: true, noCorners: true, style: AorusGlassPane.isEnabled ? .blocks : .plain, disableInteractiveTransitionIfNecessary: true)\n",
         "recommended pane item background",
     )
     text = _replace_once(
