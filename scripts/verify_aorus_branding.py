@@ -937,7 +937,7 @@ def main() -> None:
     profile_tint = tg / "submodules" / "AorusGramUI" / "Sources" / "UI" / "GlassMorphism" / "AorusGlassProfileTint.swift"
     if profile_tint.is_file():
         profile_tint_text = profile_tint.read_text(encoding="utf-8")
-        if "public static func publishPageColor(_ color: UIColor, for peerId: Int64" not in profile_tint_text:
+        if "public static func publishCoverColor(_ color: UIColor, for peerId: Int64" not in profile_tint_text:
             err.append("ProfileTint: the direct page-colour publish is missing")
         # The sampler must stay exactly as upstream left it — every avatar in the app is shaded
         # through it.

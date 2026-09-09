@@ -1158,7 +1158,7 @@ def _patch_avatar_tint_publish(tg: Path) -> None:
             "                aorusBottomEdgeColor = self.context.peerNameColors.getProfile(profileColor, dark: presentationData.theme.overallDarkAppearance).main\n"
             "            }\n"
             "            if let aorusBottomEdgeColor {\n"
-            "                AorusGlassProfileTint.publishPageColor(\n"
+            "                AorusGlassProfileTint.publishCoverColor(\n"
             "                    aorusBottomEdgeColor,\n"
             "                    for: peer.id.id._internalGetInt64Value(),\n"
             "                    onUpdate: { [weak self] in\n"

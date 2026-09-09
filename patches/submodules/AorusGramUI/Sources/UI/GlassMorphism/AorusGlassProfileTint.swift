@@ -169,7 +169,10 @@ public enum AorusGlassProfileTint {
     ///
     /// The caller works out which colour that is from the same subject the cover is given, so the
     /// two cannot disagree.
-    public static func publishPageColor(_ color: UIColor, for peerId: Int64, onUpdate: @escaping () -> Void) {
+    /// Named apart from `publishPageColor(_:)` below on purpose: that one claims the single
+    /// global slot the whole screen reads, this one records a colour for one peer. Two
+    /// methods of the same name doing different things is how the wrong one gets called.
+    public static func publishCoverColor(_ color: UIColor, for peerId: Int64, onUpdate: @escaping () -> Void) {
         guard Thread.isMainThread, AorusInterfaceV2.isEnabled else {
             return
         }
