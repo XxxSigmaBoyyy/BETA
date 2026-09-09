@@ -2996,7 +2996,26 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "    // colour is the whole of what its page is -- and falling straight to the theme is\n"
         "    // what left this pane a black rectangle inside a page that was the right colour\n"
         "    // everywhere around it.\n"
-        "    private var aorusPageFallbackColor: UIColor = .clear\n",
+        "    private var aorusPageFallbackColor: UIColor = .clear\n"
+        "    \n"
+        "    // The colour to paint the page with *right now*, resolved at the moment of drawing\n"
+        "    // rather than remembered.\n"
+        "    //\n"
+        "    // The frame around the card is what gives the block its rounded corners: it is a\n"
+        "    // stretched image of the page with a rounded hole in it, and it only reads as a shape\n"
+        "    // if it is actually painted. Reading a stored property here is what made the tab come\n"
+        "    // out square on one visit and rounded on the next -- the property starts at `.clear`,\n"
+        "    // and whether it had been filled in yet depended on whether `update(presentationData:)`\n"
+        "    // had run before the first layout pass.\n"
+        "    //\n"
+        "    // The peer\'s own colour first, then the slot the screen claims at the top of every\n"
+        "    // `containerLayoutUpdated` -- which is before any pane is laid out, so it is never\n"
+        "    // empty by the time this is read -- and the theme only if both are somehow missing.\n"
+        "    private var aorusResolvedPageColor: UIColor {\n"
+        "        return AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId)\n"
+        "            ?? AorusGlassProfileTint.pageBackgroundColor\n"
+        "            ?? self.aorusPageFallbackColor\n"
+        "    }\n",
         "members pane properties",
     )
     text = _replace_once(
@@ -3057,7 +3076,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        if AorusGlassPane.isEnabled {\n"
         "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
         "        }\n"
-        "        self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? presentationData.theme.list.blocksBackgroundColor\n"
+        "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
         "        self.presentationDataPromise.set(.single(presentationData))\n",
         "members pane theme",
     )
@@ -3071,7 +3090,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        // page fill, where opaque white is what gives the template image an alpha to cut\n"
         "        // with -- updateListBackground above has already decided which of the two it is.\n"
         "        self.listBackgroundView.tintColor = AorusGlassPane.isEnabled ? UIColor.clear : presentationData.theme.list.itemBlocksBackgroundColor\n"
-        "        self.listMaskView.tintColor = self.aorusPageFillView != nil ? UIColor.white : presentationData.theme.list.blocksBackgroundColor\n",
+        "        self.listMaskView.tintColor = self.aorusPageFillView != nil ? UIColor.white : self.aorusResolvedPageColor\n",
         "members pane tints",
     )
     text = _replace_once(
@@ -3198,14 +3217,14 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        }\n"
         "        if let presentationData = self.aorusPresentationData {\n"
         "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
-        "            self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? aorusTheme.list.blocksBackgroundColor\n"
+        "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
         "            self.presentationDataPromise.set(.single(presentationData.withUpdated(theme: aorusTheme)))\n"
         "        }\n"
         "        if let backgroundFrame = self.aorusLastBackgroundFrame {\n"
         "            self.aorusUpdateGlass(backgroundFrame: backgroundFrame, transition: .immediate)\n"
         "        }\n"
         "        if self.aorusPageFillView == nil {\n"
-        "            self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "            self.listMaskView.tintColor = self.aorusResolvedPageColor\n"
         "        }\n"
         "    }\n"
         "    \n"
@@ -3218,7 +3237,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        self.aorusPageImageView = nil\n"
         "        fillView.mask = nil\n"
         "        fillView.removeFromSuperview()\n"
-        "        self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "        self.listMaskView.tintColor = self.aorusResolvedPageColor\n"
         "        self.view.addSubview(self.listMaskView)\n"
         "    }\n",
         "members pane glass",
@@ -3348,7 +3367,26 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "    // colour is the whole of what its page is -- and falling straight to the theme is\n"
         "    // what left this pane a black rectangle inside a page that was the right colour\n"
         "    // everywhere around it.\n"
-        "    private var aorusPageFallbackColor: UIColor = .clear\n",
+        "    private var aorusPageFallbackColor: UIColor = .clear\n"
+        "    \n"
+        "    // The colour to paint the page with *right now*, resolved at the moment of drawing\n"
+        "    // rather than remembered.\n"
+        "    //\n"
+        "    // The frame around the card is what gives the block its rounded corners: it is a\n"
+        "    // stretched image of the page with a rounded hole in it, and it only reads as a shape\n"
+        "    // if it is actually painted. Reading a stored property here is what made the tab come\n"
+        "    // out square on one visit and rounded on the next -- the property starts at `.clear`,\n"
+        "    // and whether it had been filled in yet depended on whether `update(presentationData:)`\n"
+        "    // had run before the first layout pass.\n"
+        "    //\n"
+        "    // The peer\'s own colour first, then the slot the screen claims at the top of every\n"
+        "    // `containerLayoutUpdated` -- which is before any pane is laid out, so it is never\n"
+        "    // empty by the time this is read -- and the theme only if both are somehow missing.\n"
+        "    private var aorusResolvedPageColor: UIColor {\n"
+        "        return AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId)\n"
+        "            ?? AorusGlassProfileTint.pageBackgroundColor\n"
+        "            ?? self.aorusPageFallbackColor\n"
+        "    }\n",
         "groups pane properties",
     )
     text = _replace_once(
@@ -3397,7 +3435,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        if AorusGlassPane.isEnabled {\n"
         "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
         "        }\n"
-        "        self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? presentationData.theme.list.blocksBackgroundColor\n"
+        "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
         "        self.currentParams = (size, isScrollingLockedAtTop, presentationData)\n",
         "groups pane theme",
     )
@@ -3411,7 +3449,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        // where opaque white is what gives the template image an alpha to cut with --\n"
         "        // updateListBackground above has already decided which of the two it is.\n"
         "        self.listBackgroundView.tintColor = AorusGlassPane.isEnabled ? UIColor.clear : presentationData.theme.list.itemBlocksBackgroundColor\n"
-        "        self.listMaskView.tintColor = self.aorusPageFillView != nil ? UIColor.white : presentationData.theme.list.blocksBackgroundColor\n",
+        "        self.listMaskView.tintColor = self.aorusPageFillView != nil ? UIColor.white : self.aorusResolvedPageColor\n",
         "groups pane tints",
     )
     text = _replace_once(
@@ -3536,7 +3574,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        if let presentationData = self.aorusPresentationData, let currentParams = self.currentParams {\n"
         "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
         "            let updated = presentationData.withUpdated(theme: aorusTheme)\n"
-        "            self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ?? aorusTheme.list.blocksBackgroundColor\n"
+        "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
         "            self.currentParams = (currentParams.size, currentParams.isScrollingLockedAtTop, updated)\n"
         "            if let state = self.state {\n"
         "                self.updatePeers(state: state, presentationData: updated)\n"
@@ -3546,7 +3584,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "            self.aorusUpdateGlass(backgroundFrame: backgroundFrame, transition: .immediate)\n"
         "        }\n"
         "        if self.aorusPageFillView == nil {\n"
-        "            self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "            self.listMaskView.tintColor = self.aorusResolvedPageColor\n"
         "        }\n"
         "    }\n"
         "    \n"
@@ -3559,7 +3597,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        self.aorusPageImageView = nil\n"
         "        fillView.mask = nil\n"
         "        fillView.removeFromSuperview()\n"
-        "        self.listMaskView.tintColor = self.aorusPageFallbackColor\n"
+        "        self.listMaskView.tintColor = self.aorusResolvedPageColor\n"
         "        self.view.addSubview(self.listMaskView)\n"
         "    }\n",
         "groups pane glass",

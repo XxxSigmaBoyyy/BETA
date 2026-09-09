@@ -946,23 +946,28 @@ def main() -> None:
         if "func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample?" not in profile_tint_text:
             err.append("ProfileTint: the photo sampler's signature changed")
 
-    # A pane's flat page colour must be the peer's own, not the theme's. A profile whose header
-    # is a Premium background publishes a colour and no image, and taking the theme instead
-    # painted the pane a black rectangle inside a page that was right everywhere around it.
+    # A pane paints the page through a stretched frame with a rounded hole in it — that frame
+    # is what gives the block its corners, so it has to be painted with a colour that is
+    # actually there. Reading a stored property made the tab square on one visit and rounded
+    # on the next, depending on whether the theme had been pushed before the first layout.
     for pane_name in ("Panes/PeerInfoMembersPane.swift", "Panes/PeerInfoGroupsInCommonPaneNode.swift"):
         pane = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / pane_name
-        if not pane.is_file():
+        if not pane.is_file() or "aorusPageFallbackColor" not in pane.read_text(encoding="utf-8"):
             continue
         pane_text = pane.read_text(encoding="utf-8")
-        if "aorusPageFallbackColor" not in pane_text:
-            continue
-        assignments = pane_text.count("self.aorusPageFallbackColor = ")
-        from_page = pane_text.count("self.aorusPageFallbackColor = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) ??")
-        if assignments != from_page:
+        if "private var aorusResolvedPageColor: UIColor {" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} no longer resolves its page colour at draw time")
+        painted = pane_text.count("self.listMaskView.tintColor = ")
+        resolved = pane_text.count("self.listMaskView.tintColor = self.aorusResolvedPageColor")
+        # One assignment is the `.white` the mask takes when it becomes a real mask for the
+        # stretched photo; every other one paints the page and must resolve it.
+        if painted - resolved > 1:
             err.append(
-                f"InterfaceV2: {pane_name} sets its page fallback from the theme in "
-                f"{assignments - from_page} place(s) instead of the peer's page colour"
+                f"InterfaceV2: {pane_name} paints its page frame from a stored colour in "
+                f"{painted - resolved - 1} place(s)"
             )
+        if "cornerRadius: 26.0" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} lost the glass behind its card")
 
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
