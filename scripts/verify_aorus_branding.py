@@ -931,20 +931,20 @@ def main() -> None:
     elif "AorusFakeGiftsStore.remove(instanceId: giftInstanceId)" not in fake_gift_manage_controller.read_text(encoding="utf-8"):
         err.append("FakeGifts: manager does not remove the selected gift instance")
 
-    # The profile page colour. A photograph and a Premium cover are read differently, and the
-    # difference is one value so the two halves cannot drift apart: a cover is composited over
-    # the page it shows through, and carries no block-shadow correction because the block lives
-    # in the avatar gallery, which is hidden for a peer with no photo. `.photo` must stay the
-    # default, or every avatar in the app silently changes shade.
+    # The profile page colour for a header that is a background rather than a photograph.
+    # Taken from the same two colours the cover is drawn between, not read back off the screen:
+    # sampling exists because a photograph has no palette entry, and a background does.
     profile_tint = tg / "submodules" / "AorusGramUI" / "Sources" / "UI" / "GlassMorphism" / "AorusGlassProfileTint.swift"
     if profile_tint.is_file():
         profile_tint_text = profile_tint.read_text(encoding="utf-8")
-        if "static let photo = SampleMode(backdrop: nil, appliesBlockShadow: true, readsBottomEdge: false)" not in profile_tint_text:
-            err.append("ProfileTint: the photo sampling mode no longer matches the original behaviour")
-        if "mode: SampleMode = .photo" not in profile_tint_text:
-            err.append("ProfileTint: photo sampling is no longer the default mode")
-        if "mode.appliesBlockShadow ? 1.0 - AorusGlassProfileTint.bandShadow : 1.0" not in profile_tint_text:
-            err.append("ProfileTint: the block-shadow correction is no longer conditional")
+        if "public static func publishPageColor(_ color: UIColor, for peerId: Int64" not in profile_tint_text:
+            err.append("ProfileTint: the direct page-colour publish is missing")
+        # The sampler must stay exactly as upstream left it — every avatar in the app is shaded
+        # through it.
+        if "let shade = 1.0 - AorusGlassProfileTint.bandShadow" not in profile_tint_text:
+            err.append("ProfileTint: the photo sampler's shade is no longer the plain constant")
+        if "func bottomBandSample(of view: UIView, tail: CGFloat) -> Sample?" not in profile_tint_text:
+            err.append("ProfileTint: the photo sampler's signature changed")
 
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
