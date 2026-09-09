@@ -950,24 +950,35 @@ def main() -> None:
     # is what gives the block its corners, so it has to be painted with a colour that is
     # actually there. Reading a stored property made the tab square on one visit and rounded
     # on the next, depending on whether the theme had been pushed before the first layout.
+    #
+    # Checked line by line rather than by counting substrings: one of these assignments is a
+    # ternary picking between the mask's `.white` and the page, and a count of exact matches
+    # scored it as a stored-colour paint and failed a build on correct code.
     for pane_name in ("Panes/PeerInfoMembersPane.swift", "Panes/PeerInfoGroupsInCommonPaneNode.swift"):
         pane = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / pane_name
-        if not pane.is_file() or "aorusPageFallbackColor" not in pane.read_text(encoding="utf-8"):
+        if not pane.is_file():
             continue
         pane_text = pane.read_text(encoding="utf-8")
+        if "aorusPageFallbackColor" not in pane_text:
+            continue
         if "private var aorusResolvedPageColor: UIColor {" not in pane_text:
             err.append(f"InterfaceV2: {pane_name} no longer resolves its page colour at draw time")
-        painted = pane_text.count("self.listMaskView.tintColor = ")
-        resolved = pane_text.count("self.listMaskView.tintColor = self.aorusResolvedPageColor")
-        # One assignment is the `.white` the mask takes when it becomes a real mask for the
-        # stretched photo; every other one paints the page and must resolve it.
-        if painted - resolved > 1:
-            err.append(
-                f"InterfaceV2: {pane_name} paints its page frame from a stored colour in "
-                f"{painted - resolved - 1} place(s)"
-            )
         if "cornerRadius: 26.0" not in pane_text:
             err.append(f"InterfaceV2: {pane_name} lost the glass behind its card")
+        for number, line in enumerate(pane_text.splitlines(), start=1):
+            if "self.listMaskView.tintColor" not in line or "=" not in line:
+                continue
+            value = line.split("=", 1)[1]
+            # Legitimate: the page resolved at draw time, or the plain white the view takes
+            # when it stops being a frame and becomes a mask for the stretched photo.
+            if "aorusResolvedPageColor" in value:
+                continue
+            if value.strip() in (".white", "UIColor.white"):
+                continue
+            err.append(
+                f"InterfaceV2: {pane_name}:{number} paints the page frame with "
+                f"{value.strip()[:60]} instead of the colour resolved at draw time"
+            )
 
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
