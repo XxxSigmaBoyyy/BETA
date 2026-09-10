@@ -378,10 +378,24 @@ public extension PresentationTheme {
     /// than by the theme: that page is the colour sampled off the avatar, so a pale photo gets
     /// black letters on it and a dark one white, whichever theme the app is in.
     var aorusGlassProfileTheme: PresentationTheme {
+        return self.aorusGlassTheme(dark: AorusGlassPane.profilePageIsDark)
+    }
+
+    /// The same derivation, for a page whose ink the caller already knows.
+    ///
+    /// `profilePageIsDark` above reads one slot shared by the whole app, and the last profile to
+    /// lay out owns it. A pane belongs to one peer and outlives that ownership: opening a member
+    /// from a group's member list publishes the member's page into the slot, the page notification
+    /// wakes every pane in the stack -- the group's member list among them, still alive behind the
+    /// profile that was just pushed -- and it rebuilt its rows in the member's ink. Nothing ever
+    /// rebuilt them again, so the list came back with black names on a dark page. That was the
+    /// report, and the slot is why: a pane that knows which peer it belongs to has no business
+    /// asking a global what colour its own page is.
+    func aorusGlassTheme(dark: Bool) -> PresentationTheme {
         guard UserDefaults.standard.bool(forKey: aorusInterfaceV2Key) else {
             return self
         }
-        return AorusGlassThemeCache.shared.derive(from: self, dark: AorusGlassPane.profilePageIsDark)
+        return AorusGlassThemeCache.shared.derive(from: self, dark: dark)
     }
 
     /// A legible foreground for a badge filled with `fill`.
@@ -513,7 +527,12 @@ def _patch_profile_section_glass(tg: Path) -> None:
         "                // Telegram uses for a glass block, and a pane rounded any tighter shows\n"
         "                // its own square shoulders outside theirs.\n"
         "                cornerRadius: hasCorners ? 26.0 : 0.0,\n"
-        "                isDark: true,\n"
+        "                // The page this block sits on, not the app's theme. A pale avatar puts a\n"
+        "                // light page under a dark theme, and dark material over a light page is a\n"
+        "                // grey slab a shade off the page rather than glass -- which is what a\n"
+        "                // profile with a white photograph was photographed as. The same signal\n"
+        "                // the ink over this page is chosen from, so the two cannot disagree.\n"
+        "                isDark: AorusGlassPane.profilePageIsDark,\n"
         "                tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
         "                isInteractive: false,\n"
         "                isVisible: true,\n"
@@ -654,7 +673,12 @@ def _patch_editing_fields_glass(tg: Path) -> None:
         "            glassView.update(\n"
         "                size: aorusGlassFrame.size,\n"
         "                cornerRadius: AorusGlassPane.blockCornerRadius,\n"
-        "                isDark: true,\n"
+        "                // The page this block sits on, not the app's theme. A pale avatar puts a\n"
+        "                // light page under a dark theme, and dark material over a light page is a\n"
+        "                // grey slab a shade off the page rather than glass -- which is what a\n"
+        "                // profile with a white photograph was photographed as. The same signal\n"
+        "                // the ink over this page is chosen from, so the two cannot disagree.\n"
+        "                isDark: AorusGlassPane.profilePageIsDark,\n"
         "                tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
         "                isInteractive: false,\n"
         "                isVisible: true,\n"
@@ -963,7 +987,12 @@ def _patch_glass_action_buttons(tg: Path) -> None:
             "            glassBackground.update(\n"
             "                size: backgroundFrame.size,\n"
             "                cornerRadius: aorusIsRound ? backgroundFrame.height * 0.5 : min(16.0, backgroundFrame.height * 0.5),\n"
-            "                isDark: true,\n"
+            "                // The page this block sits on, not the app's theme. A pale avatar puts a\n"
+            "                // light page under a dark theme, and dark material over a light page is a\n"
+            "                // grey slab a shade off the page rather than glass -- which is what a\n"
+            "                // profile with a white photograph was photographed as. The same signal\n"
+            "                // the ink over this page is chosen from, so the two cannot disagree.\n"
+            "                isDark: AorusGlassPane.profilePageIsDark,\n"
             "                tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
             "                isInteractive: false,\n"
             "                isVisible: true,\n"
@@ -2850,12 +2879,47 @@ def _patch_pane_container_glass(tg: Path) -> None:
     The tabs themselves are already real glass upstream, but asked for as `.panel`, which is the
     variant that brings a tint and a rim. Interface 2.0 asks for the plain material here for the
     same reason it does behind the navigation buttons.
+
+    The wrapper also gets one line, for a fault that belongs to it rather than to any pane. A pane
+    that draws the page inside itself lays that picture over the screen's backdrop rectangle
+    converted into its own coordinates, and the conversion is only true while the pane is where it
+    was when the conversion was made. Dragging between two tabs moves every pane's frame on every
+    frame of the drag and changes none of the parameters the wrapper memoises, so no pane is ever
+    laid out again and each one's copy of the page slides along with it. The reader sees the frame
+    around a block showing the page's colour from a couple of hundred points further along -- a grey
+    gutter around a card that is otherwise correct, which is what was photographed mid-swipe.
     """
     path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift"
     text = _read(path, "PeerInfoPaneContainerNode.swift")
     if "aorusPlainPanes" in text:
         print("InterfaceV2: pane container already continues the page")
         return
+    text = _replace_once(
+        text,
+        "final class PeerInfoPaneWrapper {\n",
+        "// AorusGram: a pane that draws the profile's page inside itself, and so has a picture whose\n"
+        "// place on screen has to be corrected whenever the pane moves without being laid out.\n"
+        "//\n"
+        "// Declared here because this is where it is called from, and the panes that adopt it are in\n"
+        "// the same module. Answered with one convert and one frame assignment rather than by\n"
+        "// defeating the wrapper's memo: a full pass rebuilds rows and re-runs the list's\n"
+        "// transaction, which is not what a horizontal drag has changed.\n"
+        "protocol AorusPageBackdropPane: AnyObject {\n"
+        "    func aorusUpdatePageBackdropPosition()\n"
+        "}\n"
+        "\n"
+        "final class PeerInfoPaneWrapper {\n",
+        "pane backdrop protocol",
+    )
+    text = _replace_once(
+        text,
+        "        if let (currentSize, currentTopInset, currentSideInset, currentBottomInset, _, currentVisibleHeight, currentIsScrollingLockedAtTop, currentExpandProgress, currentNavigationHeight, currentPresentationData) = self.appliedParams {\n",
+        "        // AorusGram: before the memo, not after it. The whole point is the case where none of\n"
+        "        // the parameters have changed and the pane has moved anyway.\n"
+        "        (self.node as? AorusPageBackdropPane)?.aorusUpdatePageBackdropPosition()\n"
+        "        if let (currentSize, currentTopInset, currentSideInset, currentBottomInset, _, currentVisibleHeight, currentIsScrollingLockedAtTop, currentExpandProgress, currentNavigationHeight, currentPresentationData) = self.appliedParams {\n",
+        "pane backdrop position hook",
+    )
     text = _replace_once(
         text,
         "        self.backgroundColor = backgroundColor\n",
@@ -2966,6 +3030,12 @@ def _patch_members_pane_glass(tg: Path) -> None:
         )
     text = _replace_once(
         text,
+        "final class PeerInfoMembersPaneNode: ASDisplayNode, PeerInfoPaneNode {\n",
+        "final class PeerInfoMembersPaneNode: ASDisplayNode, PeerInfoPaneNode, AorusPageBackdropPane {\n",
+        "members pane backdrop conformance",
+    )
+    text = _replace_once(
+        text,
         "    private let listBackgroundView: UIImageView\n"
         "    private let listMaskView: UIImageView\n",
         "    private let listBackgroundView: UIImageView\n"
@@ -3015,6 +3085,22 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        return AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId)\n"
         "            ?? AorusGlassProfileTint.pageBackgroundColor\n"
         "            ?? self.aorusPageFallbackColor\n"
+        "    }\n"
+        "    \n"
+        "    // Which way this pane's rows have to read, asked of this pane's own peer rather\n"
+        "    // than of the slot the whole app shares.\n"
+        "    //\n"
+        "    // The slot belongs to whichever profile laid out last. Opening a member from this\n"
+        "    // list publishes the member's page into it and posts the page notification, which\n"
+        "    // wakes every pane in the stack -- this one included, still alive behind the profile\n"
+        "    // that was just pushed -- and it rebuilt its rows in the member's ink. Nothing ever\n"
+        "    // rebuilt them again, so the list came back with black names on a dark page. Asking\n"
+        "    // this peer removes the question rather than answering it later.\n"
+        "    private var aorusPageIsDark: Bool {\n"
+        "        if let color = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) {\n"
+        "            return !AorusGlassPane.isLight(color)\n"
+        "        }\n"
+        "        return AorusGlassPane.profilePageIsDark\n"
         "    }\n",
         "members pane properties",
     )
@@ -3074,7 +3160,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        self.aorusPresentationData = presentationData\n"
         "        var presentationData = presentationData\n"
         "        if AorusGlassPane.isEnabled {\n"
-        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark))\n"
         "        }\n"
         "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
         "        self.presentationDataPromise.set(.single(presentationData))\n",
@@ -3213,6 +3299,26 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "        return nil\n"
         "    }\n"
         "    \n"
+        "    // AorusGram: put the page back where the screen has it, without a layout pass.\n"
+        "    //\n"
+        "    // The picture is laid over the screen's backdrop rectangle converted into this\n"
+        "    // pane's coordinates, and that conversion stops being true the moment the pane\n"
+        "    // moves. Dragging between two tabs moves it on every frame of the drag and changes\n"
+        "    // none of the parameters PeerInfoPaneWrapper.update memoises, so the pane is never\n"
+        "    // laid out again and the picture slides along with it -- the frame around the block\n"
+        "    // then shows the page's colour from a couple of hundred points further along, which\n"
+        "    // is the grey gutter that was photographed mid-swipe. Called from the wrapper ahead\n"
+        "    // of its memo; one convert and one frame, so it costs nothing to call per frame.\n"
+        "    func aorusUpdatePageBackdropPosition() {\n"
+        "        guard let imageView = self.aorusPageImageView, let backdropView = self.aorusPageBackdrop() else {\n"
+        "            return\n"
+        "        }\n"
+        "        let imageFrame = self.view.convert(backdropView.bounds, from: backdropView)\n"
+        "        if imageView.frame != imageFrame {\n"
+        "            imageView.frame = imageFrame\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
         "    // AorusGram: the page changed under a pane nobody is laying out -- an avatar was swiped.\n"
         "    // Both halves have to follow it: the picture, and the ink the rows are drawn in, which is\n"
         "    // derived from the page and so is not the same ink for a pale photo as for a dark one.\n"
@@ -3221,7 +3327,7 @@ def _patch_members_pane_glass(tg: Path) -> None:
         "            return\n"
         "        }\n"
         "        if let presentationData = self.aorusPresentationData {\n"
-        "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
+        "            let aorusTheme = presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark)\n"
         "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
         "            self.presentationDataPromise.set(.single(presentationData.withUpdated(theme: aorusTheme)))\n"
         "        }\n"
@@ -3298,6 +3404,12 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         )
     text = _replace_once(
         text,
+        "final class PeerInfoGroupsInCommonPaneNode: ASDisplayNode, PeerInfoPaneNode {\n",
+        "final class PeerInfoGroupsInCommonPaneNode: ASDisplayNode, PeerInfoPaneNode, AorusPageBackdropPane {\n",
+        "groups pane backdrop conformance",
+    )
+    text = _replace_once(
+        text,
         "private struct GroupsInCommonListEntry: Comparable, Identifiable {\n"
         "    var index: Int\n"
         "    var peer: EnginePeer\n",
@@ -3309,10 +3421,19 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "    // so a pale photo wants near-black labels where a dark one wants white. The list's merge\n"
         "    // only rebuilds an entry it can see a difference in, and without this it can see none --\n"
         "    // the group has not changed -- so paging to a photo the other side of readable would leave\n"
-        "    // the labels behind. Defaulted rather than passed in, so the one place that builds these\n"
-        "    // does not have to know about it.\n"
-        "    var aorusPageIsDark: Bool = AorusGlassPane.profilePageIsDark\n",
+        "    // the labels behind.\n"
+        "    //\n"
+        "    // Passed in rather than defaulted from the shared page slot. That slot belongs to\n"
+        "    // whichever profile laid out last, and an entry that reads it is stamped with a stranger's\n"
+        "    // ink the moment another profile is pushed over this one.\n"
+        "    var aorusPageIsDark: Bool\n",
         "groups pane entry page",
+    )
+    text = _replace_once(
+        text,
+        "                entries.append(GroupsInCommonListEntry(index: entries.count, peer: EnginePeer(peer)))\n",
+        "                entries.append(GroupsInCommonListEntry(index: entries.count, peer: EnginePeer(peer), aorusPageIsDark: self.aorusPageIsDark))\n",
+        "groups pane entry ink",
     )
     text = _replace_once(
         text,
@@ -3412,6 +3533,22 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        return AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId)\n"
         "            ?? AorusGlassProfileTint.pageBackgroundColor\n"
         "            ?? self.aorusPageFallbackColor\n"
+        "    }\n"
+        "    \n"
+        "    // Which way this pane's rows have to read, asked of this pane's own peer rather\n"
+        "    // than of the slot the whole app shares.\n"
+        "    //\n"
+        "    // The slot belongs to whichever profile laid out last. Opening a member from this\n"
+        "    // list publishes the member's page into it and posts the page notification, which\n"
+        "    // wakes every pane in the stack -- this one included, still alive behind the profile\n"
+        "    // that was just pushed -- and it rebuilt its rows in the member's ink. Nothing ever\n"
+        "    // rebuilt them again, so the list came back with black names on a dark page. Asking\n"
+        "    // this peer removes the question rather than answering it later.\n"
+        "    private var aorusPageIsDark: Bool {\n"
+        "        if let color = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) {\n"
+        "            return !AorusGlassPane.isLight(color)\n"
+        "        }\n"
+        "        return AorusGlassPane.profilePageIsDark\n"
         "    }\n",
         "groups pane properties",
     )
@@ -3459,7 +3596,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        self.aorusPresentationData = presentationData\n"
         "        var presentationData = presentationData\n"
         "        if AorusGlassPane.isEnabled {\n"
-        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark))\n"
         "        }\n"
         "        self.aorusPageFallbackColor = presentationData.theme.list.blocksBackgroundColor\n"
         "        self.currentParams = (size, isScrollingLockedAtTop, presentationData)\n",
@@ -3593,6 +3730,26 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "        return nil\n"
         "    }\n"
         "    \n"
+        "    // AorusGram: put the page back where the screen has it, without a layout pass.\n"
+        "    //\n"
+        "    // The picture is laid over the screen's backdrop rectangle converted into this\n"
+        "    // pane's coordinates, and that conversion stops being true the moment the pane\n"
+        "    // moves. Dragging between two tabs moves it on every frame of the drag and changes\n"
+        "    // none of the parameters PeerInfoPaneWrapper.update memoises, so the pane is never\n"
+        "    // laid out again and the picture slides along with it -- the frame around the block\n"
+        "    // then shows the page's colour from a couple of hundred points further along, which\n"
+        "    // is the grey gutter that was photographed mid-swipe. Called from the wrapper ahead\n"
+        "    // of its memo; one convert and one frame, so it costs nothing to call per frame.\n"
+        "    func aorusUpdatePageBackdropPosition() {\n"
+        "        guard let imageView = self.aorusPageImageView, let backdropView = self.aorusPageBackdrop() else {\n"
+        "            return\n"
+        "        }\n"
+        "        let imageFrame = self.view.convert(backdropView.bounds, from: backdropView)\n"
+        "        if imageView.frame != imageFrame {\n"
+        "            imageView.frame = imageFrame\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
         "    // AorusGram: the page changed under a pane nobody is laying out -- an avatar was swiped.\n"
         "    // Both halves have to follow it: the picture, and the ink the rows are drawn in, which is\n"
         "    // derived from the page and so is not the same ink for a pale photo as for a dark one.\n"
@@ -3603,7 +3760,7 @@ def _patch_groups_pane_glass(tg: Path) -> None:
         "            return\n"
         "        }\n"
         "        if let presentationData = self.aorusPresentationData, let currentParams = self.currentParams {\n"
-        "            let aorusTheme = presentationData.theme.aorusGlassProfileTheme\n"
+        "            let aorusTheme = presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark)\n"
         "            let updated = presentationData.withUpdated(theme: aorusTheme)\n"
         "            self.aorusPageFallbackColor = aorusTheme.list.blocksBackgroundColor\n"
         "            self.currentParams = (currentParams.size, currentParams.isScrollingLockedAtTop, updated)\n"
@@ -3704,8 +3861,35 @@ def _patch_recommended_pane_glass(tg: Path) -> None:
         "    // peer's photos are not all light or all dark, so a swipe has to re-derive from this\n"
         "    // rather than from a theme whose labels were already white for the photo before it.\n"
         "    private var aorusPresentationData: PresentationData?\n"
-        "    private var aorusPageObserver: NSObjectProtocol?\n",
+        "    private var aorusPageObserver: NSObjectProtocol?\n"
+        "    // The peer whose page this pane sits on. Upstream keeps no reference to it -- the pane\n"
+        "    // asks the context for its recommendations and never needs the id again -- but the ink\n"
+        "    // does need it: it is a property of this peer's page and not of whichever profile the\n"
+        "    // app laid out last.\n"
+        "    private let aorusPeerId: Int64\n"
+        "    \n"
+        "    // Which way this pane's rows have to read, asked of this pane's own peer rather than of\n"
+        "    // the slot the whole app shares. The slot belongs to whichever profile laid out last,\n"
+        "    // and a pane woken by the page notification while another profile is on top of it would\n"
+        "    // otherwise rebuild its rows in that profile's ink and keep them.\n"
+        "    private var aorusPageIsDark: Bool {\n"
+        "        if let color = AorusGlassProfileTint.pageBackgroundColor(for: self.aorusPeerId) {\n"
+        "            return !AorusGlassPane.isLight(color)\n"
+        "        }\n"
+        "        return AorusGlassPane.profilePageIsDark\n"
+        "    }\n",
         "recommended pane properties",
+    )
+    text = _replace_once(
+        text,
+        "        self.context = context\n"
+        "        self.chatControllerInteraction = chatControllerInteraction\n"
+        "        self.openPeerContextAction = openPeerContextAction\n",
+        "        self.context = context\n"
+        "        self.chatControllerInteraction = chatControllerInteraction\n"
+        "        self.openPeerContextAction = openPeerContextAction\n"
+        "        self.aorusPeerId = peerId.id._internalGetInt64Value()\n",
+        "recommended pane peer id",
     )
     text = _replace_once(
         text,
@@ -3752,7 +3936,7 @@ def _patch_recommended_pane_glass(tg: Path) -> None:
         "        self.aorusPresentationData = presentationData\n"
         "        var presentationData = presentationData\n"
         "        if AorusGlassPane.isEnabled {\n"
-        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "            presentationData = presentationData.withUpdated(theme: presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark))\n"
         "        }\n"
         "        self.currentParams = (size, sideInset, bottomInset, isScrollingLockedAtTop, presentationData)\n",
         "recommended pane theme",
@@ -3768,7 +3952,7 @@ def _patch_recommended_pane_glass(tg: Path) -> None:
         "        guard AorusGlassPane.isEnabled, let presentationData = self.aorusPresentationData else {\n"
         "            return\n"
         "        }\n"
-        "        let updated = presentationData.withUpdated(theme: presentationData.theme.aorusGlassProfileTheme)\n"
+        "        let updated = presentationData.withUpdated(theme: presentationData.theme.aorusGlassTheme(dark: self.aorusPageIsDark))\n"
         "        if let currentParams = self.currentParams {\n"
         "            self.currentParams = (currentParams.size, currentParams.sideInset, currentParams.bottomInset, currentParams.isScrollingLockedAtTop, updated)\n"
         "        }\n"
@@ -3953,6 +4137,40 @@ def _patch_overlay_palette(tg: Path) -> None:
         "        let collapsedHeaderNavigationContentsSecondaryColor: UIColor = aorusOverlayPalette ? aorusOverlaySecondaryInk : presentationData.theme.list.itemSecondaryTextColor\n"
         "        let expandedAvatarNavigationContentsSecondaryColor: UIColor = aorusOverlayInk\n",
         "overlay palette collapsed secondary",
+    )
+    text = _replace_once(
+        text,
+        "        } else if self.isAvatarExpanded {\n"
+        "            navigationContentsAccentColor = expandedAvatarNavigationContentsAccentColor\n"
+        "            navigationContentsPrimaryColor = expandedAvatarNavigationContentsPrimaryColor\n"
+        "            navigationContentsSecondaryColor = expandedAvatarNavigationContentsSecondaryColor\n",
+        "        } else if self.isAvatarExpanded {\n"
+        "            // AorusGram: while the banner is still drawn these labels are over Telegram's\n"
+        "            // own photograph and the dark gradient it lays across the top of it, not over\n"
+        "            // the page. The page's ink answers the page and nothing else: on a peer whose\n"
+        "            // photograph is white it is near-black, and scrolling such a profile put a\n"
+        "            // near-black name and status into that darkening, where they could not be read.\n"
+        "            // White is what the gradient exists to make legible, and white is what stock\n"
+        "            // uses for this whole palette for exactly that reason.\n"
+        "            //\n"
+        "            // Keyed to the banner rather than to a fraction, because the banner is already\n"
+        "            // the answer: `backgroundBannerAlpha` is 1 for precisely as long as it is drawn\n"
+        "            // and 0 the moment the page takes over, which is the same line these labels\n"
+        "            // cross. Past it the page is behind them again and the page's ink is right --\n"
+        "            // which is the state a collapsed profile spends its time in.\n"
+        "            //\n"
+        "            // Only inside this branch: it runs when the photo gallery is open, so there is\n"
+        "            // always a photograph and always a gradient over it. The branch below covers a\n"
+        "            // peer with no photo at all, where the banner is the theme's own background and\n"
+        "            // white would be white on white.\n"
+        "            //\n"
+        "            // Chosen here rather than corrected afterwards: these three are `let`, and\n"
+        "            // a second assignment to one of them is not a fix, it is a build failure.\n"
+        "            let aorusBannerInk = aorusOverlayPalette && backgroundBannerAlpha > 0.5\n"
+        "            navigationContentsAccentColor = aorusBannerInk ? UIColor.white : expandedAvatarNavigationContentsAccentColor\n"
+        "            navigationContentsPrimaryColor = aorusBannerInk ? UIColor.white : expandedAvatarNavigationContentsPrimaryColor\n"
+        "            navigationContentsSecondaryColor = aorusBannerInk ? UIColor(white: 1.0, alpha: 0.7) : expandedAvatarNavigationContentsSecondaryColor\n",
+        "overlay palette banner ink",
     )
     text = _replace_once(
         text,

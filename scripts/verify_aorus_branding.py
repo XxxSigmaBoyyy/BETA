@@ -972,6 +972,14 @@ def main() -> None:
             err.append(f"InterfaceV2: {pane_name} glass no longer follows the page's own ink")
         if "isDark: true" in pane_text:
             err.append(f"InterfaceV2: {pane_name} pins its glass dark regardless of the page")
+        # The page inside a pane is laid over the screen's backdrop converted into the pane's
+        # own coordinates, and a horizontal drag between two tabs moves the pane without laying
+        # it out again. Without this the picture slides with the pane and the frame around the
+        # block shows the page from a couple of hundred points further along.
+        if "func aorusUpdatePageBackdropPosition()" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} cannot follow the page while it is dragged")
+        if "AorusPageBackdropPane" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} no longer declares itself a page-backdrop pane")
         for number, line in enumerate(pane_text.splitlines(), start=1):
             if "self.listMaskView.tintColor" not in line or "=" not in line:
                 continue
@@ -1018,6 +1026,62 @@ def main() -> None:
                     f"InterfaceV2: {pane_name}:{number} asks for displayBackground, which the "
                     "item node overwrites from displayDecorations and therefore ignores"
                 )
+
+    # A pane's ink is a property of the peer whose page it sits on, and of nothing else.
+    #
+    # `profilePageIsDark` reads one slot the whole app shares, owned by whichever profile laid
+    # out last. Opening a member from a group's member list publishes that member's page into it
+    # and posts the page notification, which wakes every pane in the stack — the group's member
+    # list among them, still alive behind the profile that was just pushed. It rebuilt its rows in
+    # the member's ink, nothing ever rebuilt them again, and the list came back with black names
+    # on a dark page. That was the report; a pane that asks its own peer cannot have it.
+    for pane_name in (
+        "Panes/PeerInfoMembersPane.swift",
+        "Panes/PeerInfoGroupsInCommonPaneNode.swift",
+        "Panes/PeerInfoRecommendedPeersPane.swift",
+    ):
+        pane = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / pane_name
+        if not pane.is_file():
+            continue
+        pane_text = pane.read_text(encoding="utf-8")
+        if "private var aorusPageIsDark: Bool {" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} no longer knows its own peer's ink")
+        if "aorusGlassTheme(dark: self.aorusPageIsDark)" not in pane_text:
+            err.append(f"InterfaceV2: {pane_name} does not build its rows from its own peer's ink")
+        for number, line in enumerate(pane_text.splitlines(), start=1):
+            if line.lstrip().startswith("//"):
+                continue
+            if "aorusGlassProfileTheme" in line:
+                err.append(
+                    f"InterfaceV2: {pane_name}:{number} derives its theme from the shared page "
+                    "slot, which belongs to whichever profile laid out last"
+                )
+
+    # The glass on a profile page follows that page, not the app's theme: a pale avatar puts a
+    # light page under a dark theme, and dark material over a light page is a grey slab a shade
+    # off the page rather than glass. Reported as "different shades" on a channel with a white
+    # photograph, and it is the same signal the ink over that page is already chosen from.
+    for glass_name in (
+        "PeerInfoScreenItemSectionContainerNode.swift",
+        "PeerInfoHeaderEditingContentNode.swift",
+        "PeerInfoHeaderButtonNode.swift",
+    ):
+        glass = tg / "submodules" / "TelegramUI" / "Components" / "PeerInfo" / "PeerInfoScreen" / "Sources" / glass_name
+        if not glass.is_file():
+            continue
+        glass_text = glass.read_text(encoding="utf-8")
+        if "GlassBackgroundView" not in glass_text:
+            continue
+        if "isDark: AorusGlassPane.profilePageIsDark" not in glass_text:
+            err.append(f"InterfaceV2: {glass_name} glass no longer follows the page it sits on")
+        if "isDark: true" in glass_text:
+            err.append(f"InterfaceV2: {glass_name} pins its glass dark regardless of the page")
+
+    presentation_theme = tg / "submodules" / "TelegramPresentationData" / "Sources" / "PresentationTheme.swift"
+    if presentation_theme.is_file():
+        presentation_theme_text = presentation_theme.read_text(encoding="utf-8")
+        if "func aorusGlassTheme(dark: Bool) -> PresentationTheme {" not in presentation_theme_text:
+            err.append("InterfaceV2: the per-page glass derivation is missing")
 
     masks_controller = tg / "submodules" / "AorusGramUI" / "Sources" / "AorusMasksController.swift"
     if not masks_controller.is_file():
@@ -2937,6 +3001,11 @@ def main() -> None:
                 # Interface 2.0, so the expandedAvatar* branch is the one every profile with a
                 # picture takes, and it has to be inked like the other two.
                 "aorusOverlayInk",
+                # And the one state the page's ink is the wrong answer for: while the banner is
+                # still drawn, the name and the status are over Telegram's photograph and the dark
+                # gradient across the top of it, not over the page. On a white avatar the page's
+                # ink is near-black and the name vanished into that darkening while scrolling.
+                "let aorusBannerInk = aorusOverlayPalette && backgroundBannerAlpha > 0.5",
                 # The photo stands still and the capsule under it is the small one, lifted clear of
                 # the join between the picture and the page.
                 "aorusStaticAvatar",
@@ -3026,6 +3095,18 @@ def main() -> None:
         # Editing a profile keeps the page behind the header, and the name fields were the last
         # block on it still painted as an opaque card: upstream fills them with the list's block
         # colour and rounds them through cornersImage, which Interface 2.0 returns nil for.
+        # The wrapper memoises its parameters, and a horizontal drag between two tabs changes
+        # none of them while moving every pane's frame on every frame. A pane that draws the
+        # page inside itself has to be told, or its copy of the page slides with it and the
+        # frame around its block shows the page from a couple of hundred points further along.
+        (
+            "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoPaneContainerNode.swift",
+            (
+                "aorusPlainPanes",
+                "protocol AorusPageBackdropPane",
+                "(self.node as? AorusPageBackdropPane)?.aorusUpdatePageBackdropPosition()",
+            ),
+        ),
         (
             "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderEditingContentNode.swift",
             (
