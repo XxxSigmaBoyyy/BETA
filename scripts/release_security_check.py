@@ -522,6 +522,53 @@ def main() -> int:
         if "effectiveOfflineStatus().allowsAppAccess" not in (root / gf).read_text(encoding="utf-8"):
             fail(errors, f"{gf} no longer re-derives the signed license snapshot")
 
+    # The lock cover may lift on ONE condition only: the signed, device-bound license
+    # snapshot says access is allowed. A prior "fix" to the black-screen on the locked
+    # purchase route made the Buy button call hideLock() and open the bot in the MAIN
+    # navigation — which put a fully working, fully unlocked Telegram on screen and only
+    # re-locked on the next foreground. These invariants keep that from ever returning:
+    #   • hideLock() must gate on the signed snapshot, so no caller can lift the cover
+    #     or re-enable features without a real active license;
+    #   • the locked-purchase route must NOT lift the cover and must NOT reveal the main
+    #     navigation (it opens the bot above the lock instead).
+    gate_src = (root / "AorusGram/Sources/Features/Subscription/LicenseGate.swift").read_text(encoding="utf-8")
+
+    def _swift_body(source: str, signature: str) -> str:
+        start = source.find(signature)
+        if start == -1:
+            return ""
+        brace = source.find("{", start)
+        if brace == -1:
+            return ""
+        depth, i = 0, brace
+        while i < len(source):
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[brace : i + 1]
+            i += 1
+        return ""
+
+    hide_lock_body = _swift_body(gate_src, "private func hideLock()")
+    if not hide_lock_body:
+        fail(errors, "LicenseGate.hideLock() is missing — the lock cover has no single authority")
+    elif "effectiveOfflineStatus().allowsAppAccess" not in hide_lock_body:
+        fail(errors, "LicenseGate.hideLock() no longer gates on the signed license snapshot — "
+                     "any caller could lift the cover without a real subscription")
+
+    locked_purchase_body = _swift_body(gate_src, "private func openPurchaseBotFromLock()")
+    if not locked_purchase_body:
+        fail(errors, "LicenseGate.openPurchaseBotFromLock() is missing")
+    else:
+        if "hideLock()" in locked_purchase_body:
+            fail(errors, "the locked purchase route lifts the cover (hideLock) — buying must never "
+                         "reveal the app")
+        if "inMainNav: true" in locked_purchase_body:
+            fail(errors, "the locked purchase route opens the bot in the MAIN navigation — that "
+                         "reveals a fully unlocked Telegram behind the bot")
+
     # AorusEnvGuard is the detector on the license/proxy path, so its indicators must not
     # ship as readable literals either. It is generated and obfuscated; pin that, and keep
     # the API and server-contract surface intact.

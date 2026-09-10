@@ -286,6 +286,22 @@ final class LicenseGate {
     }
 
     private func hideLock() {
+        // DEFENSE IN DEPTH — the single authority for lifting the cover.
+        //
+        // The lock lifts on ONE condition: the signed, device-bound license snapshot
+        // says access is allowed. Every legitimate caller (a trial/paid verdict, a key
+        // activation) has already written that snapshot to LicenseStore before reaching
+        // here, so this never blocks a real unlock. What it does block is every OTHER
+        // caller: a UI path that lifts the lock to show the purchase bot, a future edit
+        // that forgets the invariant, a replayed notification. None of them can drop the
+        // cover or re-enable the client, because none of them can forge the HMAC-signed
+        // snapshot. This is why "tap Buy" could never again reveal a working Telegram.
+        guard LicenseStore.shared.effectiveOfflineStatus().allowsAppAccess else {
+            // Not actually licensed — keep the cover exactly as it is and make sure the
+            // feature kill-switch stays engaged, in case a caller expected a grant.
+            setFeatureAccess(active: false)
+            return
+        }
         lockKind = .none
         setFeatureAccess(active: true)   // access granted → re-enable AorusGram features
         guard let window = lockWindow else { return }
@@ -487,13 +503,19 @@ final class LicenseGate {
 
     // MARK: - Locked purchase
 
-    // From the lock screen: reveal the app so the bot chat is visible, open the bot in
-    // the main navigation (reliable, no black sheet), and arm a re-lock for the next
-    // foreground in case the user returns without activating.
+    // From the lock screen: open the purchase bot ABOVE the lock as the only reachable
+    // screen, WITHOUT lifting the cover.
+    //
+    // This used to call hideLock() and open the bot in the main navigation. hideLock()
+    // now refuses without a signed active license, so it would be a no-op — but the real
+    // fault was the intent: revealing the main navigation put a fully working, fully
+    // unlocked Telegram on screen behind (and instead of) the bot, and only re-locked on
+    // the next foreground. The bot is opened in its own presentation over the lock window
+    // instead (AppDelegate, inMainNav:false); the app behind the cover is never revealed,
+    // and dismissing the bot returns to the lock. pendingRelock re-verifies on foreground.
     private func openPurchaseBotFromLock() {
         pendingRelock = true
-        hideLock()
-        openPurchaseBot(inMainNav: true)
+        openPurchaseBot(inMainNav: false)
     }
 
     private func relockIfNeeded() {
