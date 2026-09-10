@@ -3039,7 +3039,11 @@ def main() -> None:
             (
                 "aorusUpdateGlass",
                 "aorusPageFillView",
-                "aorusGlassProfileTheme",
+                # Its own peer's ink, not the slot the whole app shares — see the per-peer rule
+                # above, which forbids the shared one by name. Two rules over one string have to
+                # agree: this table asked for the very spelling that rule rejects, and the build
+                # failed on the contradiction rather than on the code.
+                "aorusGlassTheme(dark: self.aorusPageIsDark)",
                 "import GlassBackgroundComponent",
                 # The pane draws the screen's own backdrop rectangle, found by tag, so page and tab
                 # stretch one image over one frame and cannot meet in a seam.
@@ -3065,7 +3069,11 @@ def main() -> None:
                 "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
                 "aorusUpdateGlass",
                 "aorusPageFillView",
-                "aorusGlassProfileTheme",
+                # Its own peer's ink, not the slot the whole app shares — see the per-peer rule
+                # above, which forbids the shared one by name. Two rules over one string have to
+                # agree: this table asked for the very spelling that rule rejects, and the build
+                # failed on the contradiction rather than on the code.
+                "aorusGlassTheme(dark: self.aorusPageIsDark)",
                 "import GlassBackgroundComponent",
                 "aorusPageBackdrop",
                 "AorusGlassProfileTint.pageDidChangeNotification",
@@ -3084,7 +3092,11 @@ def main() -> None:
                 "style: AorusGlassPane.isEnabled ? .blocks : .plain",
                 "systemStyle: AorusGlassPane.isEnabled ? .glass : .legacy",
                 "import AorusGramUI",
-                "aorusGlassProfileTheme",
+                # Its own peer's ink, not the slot the whole app shares — see the per-peer rule
+                # above, which forbids the shared one by name. Two rules over one string have to
+                # agree: this table asked for the very spelling that rule rejects, and the build
+                # failed on the contradiction rather than on the code.
+                "aorusGlassTheme(dark: self.aorusPageIsDark)",
                 "AorusGlassProfileTint.pageDidChangeNotification",
                 "aorusPageDidChange",
                 # The entry holds the theme it was built with and compares it by identity, so the
@@ -3590,6 +3602,28 @@ def main() -> None:
         for marker in markers:
             if marker not in target_text:
                 err.append(f"InterfaceV2: {relative_path} is missing {marker}")
+
+    # This checker's own consistency, which has now cost two builds.
+    #
+    # Neither was a fault in the code. Both were two rules in this file disagreeing about one
+    # string: the per-peer ink rule above rejects `aorusGlassProfileTheme` inside a profile pane,
+    # because that spelling reads the slot the whole app shares, while the table above went on
+    # demanding exactly that spelling in the same three files. A contradiction like that fails
+    # every build and passes every test of the code, so it is tested here instead of there.
+    aorus_pane_expectations = {
+        "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoMembersPane.swift",
+        "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoGroupsInCommonPaneNode.swift",
+        "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/Panes/PeerInfoRecommendedPeersPane.swift",
+    }
+    for relative_path, markers in interface_v2_expectations:
+        if relative_path not in aorus_pane_expectations:
+            continue
+        for marker in markers:
+            if "aorusGlassProfileTheme" in marker:
+                err.append(
+                    f"InterfaceV2: the expectations table demands {marker!r} in {relative_path}, "
+                    "which the per-peer ink rule in this same file rejects"
+                )
 
     undo_build = tg / "submodules" / "UndoUI" / "BUILD"
     if not undo_build.is_file():
