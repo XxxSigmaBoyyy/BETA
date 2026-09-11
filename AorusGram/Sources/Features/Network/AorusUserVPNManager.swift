@@ -40,6 +40,7 @@ public final class AorusUserVPNManager {
 
     private let lock = NSLock()
     private var configsBeingUpdated = Set<String>()
+    private var refreshWaiters: [String: [(AorusVlessImportError?) -> Void]] = [:]
     private var serversBeingProbed = Set<String>()
     private var lastVisibleSweepAt: TimeInterval = 0.0
     /// The tick that makes "Обновлять автоматически" mean something while the app is open.
@@ -109,6 +110,11 @@ public final class AorusUserVPNManager {
     /// own tunnel inside a second one, doubling latency on a link that calls are supposed to
     /// survive, and both would be fighting over the same core.
     public func setEnabled(_ value: Bool) {
+        guard !value || AorusLicenseAccess.isAllowed else {
+            AorusUserVPNStore.shared.setEnabled(false)
+            AorusRealityManager.shared.userLaneStop(reason: "license_locked")
+            return
+        }
         guard value else {
             AorusUserVPNStore.shared.setEnabled(false)
             AorusRealityManager.shared.userLaneStop(reason: "user_disabled")
@@ -282,6 +288,7 @@ public final class AorusUserVPNManager {
 
     /// Refresh every subscription that has gone stale and is allowed to update itself.
     public func refreshStaleSubscriptions() {
+        guard AorusLicenseAccess.isAllowed else { return }
         let now = Date().timeIntervalSince1970
         for config in AorusUserVPNStore.shared.configs {
             guard config.isSubscription, config.autoUpdate else { continue }
@@ -291,12 +298,19 @@ public final class AorusUserVPNManager {
     }
 
     public func refreshSubscription(configId: String, completion: ((AorusVlessImportError?) -> Void)?) {
+        guard AorusLicenseAccess.isAllowed else {
+            self.deliver(.unsupported, to: completion)
+            return
+        }
         guard let config = AorusUserVPNStore.shared.config(id: configId),
               let url = config.subscriptionUrl, !url.isEmpty else {
             self.deliver(.unsupported, to: completion)
             return
         }
         self.lock.lock()
+        if let completion {
+            self.refreshWaiters[configId, default: []].append(completion)
+        }
         let alreadyRunning = self.configsBeingUpdated.contains(configId)
         if !alreadyRunning {
             self.configsBeingUpdated.insert(configId)
@@ -307,14 +321,9 @@ public final class AorusUserVPNManager {
 
         self.fetchSubscription(url: url) { [weak self] result in
             guard let self else { return }
-            self.lock.lock()
-            self.configsBeingUpdated.remove(configId)
-            self.lock.unlock()
-            self.postActivity()
-
             switch result {
             case let .failure(error):
-                self.deliver(error, to: completion)
+                self.finishRefresh(configId: configId, error: error)
             case let .success(payload):
                 AorusUserVPNStore.shared.replaceServers(
                     configId: configId,
@@ -328,8 +337,19 @@ public final class AorusUserVPNManager {
                 } else {
                     self.restartIfServing(configId: configId)
                 }
-                self.deliver(nil, to: completion)
+                self.finishRefresh(configId: configId, error: nil)
             }
+        }
+    }
+
+    private func finishRefresh(configId: String, error: AorusVlessImportError?) {
+        self.lock.lock()
+        self.configsBeingUpdated.remove(configId)
+        let waiters = self.refreshWaiters.removeValue(forKey: configId) ?? []
+        self.lock.unlock()
+        self.postActivity()
+        for waiter in waiters {
+            self.deliver(error, to: waiter)
         }
     }
 
@@ -358,6 +378,7 @@ public final class AorusUserVPNManager {
     /// past the ones that will not answer, and moving the tick as well is how the chosen server
     /// appeared to change on its own with auto-select switched off.
     public func measureVisibleServers() {
+        guard AorusLicenseAccess.isAllowed else { return }
         let configs = AorusUserVPNStore.shared.configs
         guard !configs.isEmpty else { return }
         // A sweep is one TCP handshake per server and a screen can be pushed and popped as fast as a
@@ -387,6 +408,7 @@ public final class AorusUserVPNManager {
     /// through the core would mean starting it once per server and interrupting whatever the
     /// user is doing on the one that already works.
     public func probeAllServers(configId: String, selectFastest: Bool) {
+        guard AorusLicenseAccess.isAllowed else { return }
         guard let config = AorusUserVPNStore.shared.config(id: configId) else { return }
         let servers = config.servers
         guard !servers.isEmpty else { return }
@@ -716,10 +738,13 @@ public final class AorusUserVPNManager {
         configuration.timeoutIntervalForRequest = self.requestTimeout
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
-        let session = URLSession(configuration: configuration)
+        let redirectDelegate = AorusUserVPNRedirectDelegate()
+        let session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             session.finishTasksAndInvalidate()
-            guard let http = response as? HTTPURLResponse, error == nil else {
+            guard let http = response as? HTTPURLResponse,
+                  http.url?.scheme?.lowercased() == "https",
+                  error == nil else {
                 // Nothing answered. Asking again as a different client would only spend another
                 // timeout on the same unreachable host.
                 completion(.failure(firstError ?? .malformed))
@@ -813,7 +838,10 @@ public final class AorusUserVPNManager {
         }
         var used: Int64?
         if fields["upload"] != nil || fields["download"] != nil {
-            used = (fields["upload"] ?? 0) + (fields["download"] ?? 0)
+            let upload = max(0, fields["upload"] ?? 0)
+            let download = max(0, fields["download"] ?? 0)
+            let sum = upload.addingReportingOverflow(download)
+            used = sum.overflow ? nil : sum.partialValue
         }
         var total: Int64?
         if let value = fields["total"], value > 0 {
@@ -837,6 +865,25 @@ public final class AorusUserVPNManager {
             return String(decoded.prefix(64))
         }
         return String(trimmed.prefix(64))
+    }
+}
+
+/// URLSession follows redirects by default. A subscription URL is required to be HTTPS at
+/// import, and every redirect must preserve that property so device headers and credentials
+/// can never be downgraded onto a clear-text request.
+private final class AorusUserVPNRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard request.url?.scheme?.lowercased() == "https" else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
 

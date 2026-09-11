@@ -504,14 +504,10 @@ public final class AorusRealityManager {
 
     private var authorizationAllowsTunnel: Bool {
         guard AorusConnectionPreferences.shared.bypassEnabled,
-              LicenseKeyProvider.isProvisioned,
-              !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04"),
-              !AorusSessionMetrics.metricFlag,
-              !UserDefaults.standard.bool(forKey: "c0a8b1e2-6f4d-4a9c-b3e7-1d520f8a6b34"),
-              !AorusSessionCounter.shared.isTripped else {
+              AorusLicenseAccess.isAllowed else {
             return false
         }
-        return LicenseStore.shared.effectiveOfflineStatus().allowsAppAccess
+        return true
     }
 
     /// Same question, asked by the route decision, which has to know whether escalating is

@@ -280,6 +280,10 @@ public enum AorusVlessImportError: Error, Equatable {
 
 /// Everything that turns text into servers, and servers into Xray configurations.
 public enum AorusVlessLink {
+    /// A subscription is untrusted input. Bounding its fan-out keeps parsing,
+    /// persistence, latency probes and the settings UI at a predictable cost.
+    static let maximumServersPerImport = 256
+    private static let maximumSubscriptionsPerImport = 32
     /// Xray transports this client can build a working outbound for. A key using anything else
     /// is refused at import: accepting it would produce a configuration the core rejects, and
     /// the user would see "does not connect" instead of "not supported".
@@ -360,7 +364,8 @@ public enum AorusVlessLink {
             guard !candidate.isEmpty, candidate.contains("://") else { continue }
             let lowerCandidate = candidate.lowercased()
             if lowerCandidate.hasPrefix("https://") {
-                if let url = URL(string: candidate), url.host != nil, !subscriptions.contains(candidate) {
+                if subscriptions.count < maximumSubscriptionsPerImport,
+                   let url = URL(string: candidate), url.host != nil, !subscriptions.contains(candidate) {
                     subscriptions.append(candidate)
                 }
                 continue
@@ -382,6 +387,7 @@ public enum AorusVlessLink {
             guard !seen.contains(server.id) else { continue }
             seen.insert(server.id)
             servers.append(server)
+            if servers.count == maximumServersPerImport { break }
         }
 
         // Keys win over subscription URLs when a paste has both: the keys are already usable, and
@@ -905,6 +911,7 @@ public enum AorusVlessLink {
         var servers: [AorusVlessServer] = []
         var seen = Set<String>()
         for link in links {
+            guard servers.count < maximumServersPerImport else { break }
             guard let server = parseKey(link), !seen.contains(server.id) else { continue }
             seen.insert(server.id)
             servers.append(server)
@@ -923,7 +930,9 @@ public enum AorusVlessLink {
         if let array = root as? [Any] {
             var result: [DocumentOutbound] = []
             for element in array {
-                result.append(contentsOf: documentOutbounds(element, name: name, depth: depth + 1))
+                guard result.count < maximumServersPerImport else { break }
+                let nested = documentOutbounds(element, name: name, depth: depth + 1)
+                result.append(contentsOf: nested.prefix(maximumServersPerImport - result.count))
             }
             return result
         }
@@ -931,9 +940,10 @@ public enum AorusVlessLink {
         var result: [DocumentOutbound] = []
         let documentName = jsonString(object["remarks"]) ?? jsonString(object["name"]) ?? name
         if let nested = object["outbounds"] {
-            result.append(contentsOf: documentOutbounds(nested, name: documentName, depth: depth + 1))
+            result.append(contentsOf: documentOutbounds(nested, name: documentName, depth: depth + 1).prefix(maximumServersPerImport))
         }
-        if object["protocol"] != nil || object["type"] != nil {
+        if result.count < maximumServersPerImport
+            && (object["protocol"] != nil || object["type"] != nil) {
             result.append(DocumentOutbound(fields: object, name: documentName))
         }
         return result
@@ -1176,7 +1186,7 @@ public enum AorusVlessLink {
         var lastKey: String?
 
         func flush() {
-            if open, !current.isEmpty {
+            if open, !current.isEmpty, blocks.count < maximumServersPerImport {
                 blocks.append(current)
             }
             current = [:]

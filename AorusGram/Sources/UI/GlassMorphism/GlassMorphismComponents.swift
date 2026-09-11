@@ -28,7 +28,8 @@ private final class AorusGlassEffectsPreference: ObservableObject {
     }
 
     private static func currentValue() -> Bool {
-        UserDefaults.standard.object(forKey: "aorusgram_feature_glass_ui") as? Bool ?? true
+        return AorusLicenseAccess.isAllowed
+            && (UserDefaults.standard.object(forKey: "aorusgram_feature_glass_ui") as? Bool ?? true)
     }
 }
 

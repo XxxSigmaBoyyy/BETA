@@ -3,6 +3,7 @@ import UIKit
 import QuartzCore
 import Darwin
 import Display
+import AorusGram
 
 private struct AorusPerformanceSnapshot {
     var ramMB: Double
@@ -402,8 +403,9 @@ public final class AorusPerformanceHUDManager {
         }
 
         let manager = AorusGramManager.shared
-        applyHUD(enabled: manager.performanceStatsEnabled)
-        applyCleanup(enabled: manager.ramAutoClean, intervalSeconds: manager.ramCleanInterval)
+        let licensed = AorusLicenseAccess.isAllowed
+        applyHUD(enabled: licensed && manager.performanceStatsEnabled)
+        applyCleanup(enabled: licensed && manager.ramAutoClean, intervalSeconds: manager.ramCleanInterval)
     }
 
     @objc private func onSettingsChanged() {
@@ -532,18 +534,20 @@ public final class AorusPerformanceHUDManager {
     }
 
     private func scheduleHUDStartupRetry() {
-        guard AorusGramManager.shared.performanceStatsEnabled, scheduledHUDRetryCount < 6 else { return }
+        guard AorusLicenseAccess.isAllowed,
+              AorusGramManager.shared.performanceStatsEnabled,
+              scheduledHUDRetryCount < 6 else { return }
         let delays: [TimeInterval] = [0.15, 0.35, 0.75, 1.5, 3.0, 6.0]
         let delay = delays[min(scheduledHUDRetryCount, delays.count - 1)]
         scheduledHUDRetryCount += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard AorusGramManager.shared.performanceStatsEnabled else { return }
+            guard AorusLicenseAccess.isAllowed, AorusGramManager.shared.performanceStatsEnabled else { return }
             self?._refresh()
         }
     }
 
     private func scheduleLaunchRestorationPasses() {
-        guard AorusGramManager.shared.performanceStatsEnabled else { return }
+        guard AorusLicenseAccess.isAllowed, AorusGramManager.shared.performanceStatsEnabled else { return }
         launchRestorationToken += 1
         let token = launchRestorationToken
         let delays: [TimeInterval] = [0.2, 0.6, 1.2, 2.5, 5.0, 10.0, 20.0, 40.0, 60.0]
@@ -551,6 +555,7 @@ public final class AorusPerformanceHUDManager {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self,
                       token == self.launchRestorationToken,
+                      AorusLicenseAccess.isAllowed,
                       AorusGramManager.shared.performanceStatsEnabled else {
                     return
                 }
@@ -666,7 +671,9 @@ public final class AorusPerformanceHUDManager {
             return
         }
         guard UIApplication.shared.applicationState != .background else { return }
-        guard let hud = hudView, AorusGramManager.shared.performanceStatsEnabled else { return }
+        guard let hud = hudView,
+              AorusLicenseAccess.isAllowed,
+              AorusGramManager.shared.performanceStatsEnabled else { return }
         guard let root = window?.rootViewController?.view, hud.superview === root else {
             discardHUDWindow()
             return

@@ -42,11 +42,29 @@ enum DeviceFingerprint {
 
     // Get-or-create the persistent install id, self-healing across all slots.
     static func keychainInstallId() -> String {
-        let values = slots.map { readInstallId(service: $0.service, account: $0.account) }
+        // Reject malformed slot contents before voting. One damaged or edited slot
+        // must not become the identity merely because it happens to be first.
+        let values = slots.map { slot -> String? in
+            guard let raw = readInstallId(service: slot.service, account: slot.account),
+                  let uuid = UUID(uuidString: raw) else { return nil }
+            return uuid.uuidString
+        }
+        let valid = values.compactMap { $0 }
+        let counts = Dictionary(grouping: valid, by: { $0 }).mapValues(\.count)
 
-        // Use the first surviving value (majority would be even stronger, but any
-        // single survivor is enough to keep the same identity).
-        if let value = values.compactMap({ $0 }).first {
+        // Prefer the two-out-of-three value. If only one valid slot survived, it is
+        // still the best continuity signal and heals the missing copies. If several
+        // valid slots disagree without a majority, generate a fresh identity instead
+        // of trusting an attacker-controlled slot order.
+        let value: String?
+        if let majority = counts.first(where: { $0.value >= 2 })?.key {
+            value = majority
+        } else if valid.count == 1 {
+            value = valid[0]
+        } else {
+            value = nil
+        }
+        if let value {
             for (i, slot) in slots.enumerated() where values[i] != value {
                 writeInstallId(value, service: slot.service, account: slot.account)
             }

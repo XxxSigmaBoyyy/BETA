@@ -2,6 +2,7 @@ import UIKit
 import Photos
 import AVFoundation
 import ImageIO
+import AorusGram
 
 // MARK: - AorusGram animated GIF chat wallpaper
 //
@@ -35,10 +36,11 @@ public enum AorusGifWallpaperStore {
     }
 
     public static var isActive: Bool {
-        return UserDefaults.standard.bool(forKey: activeKey)
+        return AorusLicenseAccess.isAllowed && UserDefaults.standard.bool(forKey: activeKey)
     }
 
     public static func activate(mp4: URL) {
+        guard AorusLicenseAccess.isAllowed else { return }
         UserDefaults.standard.set(true, forKey: activeKey)
         UserDefaults.standard.set(mp4.path, forKey: pathKey)
         NotificationCenter.default.post(name: changedNotification, object: nil)
@@ -209,6 +211,7 @@ public final class AorusGifWallpaperPicker: UIViewController, UICollectionViewDa
     private var onClose: (() -> Void)?
 
     public static func present(russian: Bool) {
+        guard AorusLicenseAccess.isAllowed else { return }
         let picker = AorusGifWallpaperPicker(russian: russian)
         let nav = UINavigationController(rootViewController: picker)
 

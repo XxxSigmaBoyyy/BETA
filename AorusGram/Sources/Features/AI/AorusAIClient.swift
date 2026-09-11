@@ -367,7 +367,8 @@ public final class AorusAIClient {
     }
 
     fileprivate func signedRequest(method: String, path: String, body: Data, contentType: String?, accept: String?) -> URLRequest? {
-        guard LicenseKeyProvider.isProvisioned, AorusEnvGuard.enforceBeforeRequest() else { return nil }
+        guard AorusLicenseAccess.isAllowed,
+              AorusEnvGuard.enforceBeforeRequest() else { return nil }
         guard path.hasPrefix("/"),
               let url = URL(string: path, relativeTo: Self.baseURL)?.absoluteURL,
               url.scheme == "https",

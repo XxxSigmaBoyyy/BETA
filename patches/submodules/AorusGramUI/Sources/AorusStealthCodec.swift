@@ -1,4 +1,5 @@
 import Foundation
+import AorusGram
 
 // MARK: - AorusCode — Unicode Steganography
 //
@@ -23,13 +24,13 @@ public final class AorusStealthCodec {
 
     public var isEnabled: Bool {
         get {
-            if UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") {
+            if !AorusLicenseAccess.isAllowed {
                 return false
             }
             return UserDefaults.standard.bool(forKey: "aorusgram_aorus_code_enabled")
         }
         set {
-            let effectiveValue = UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") ? false : newValue
+            let effectiveValue = AorusLicenseAccess.isAllowed ? newValue : false
             UserDefaults.standard.set(effectiveValue, forKey: "aorusgram_aorus_code_enabled")
         }
     }

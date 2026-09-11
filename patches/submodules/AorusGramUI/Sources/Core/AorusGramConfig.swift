@@ -1,4 +1,5 @@
 import Foundation
+import AorusGram
 
 enum AorusGramConfig {
     static let appName = "AorusGram"
@@ -30,16 +31,12 @@ enum AorusGramConfig {
     }
 
     static func isEnabled(_ feature: Feature) -> Bool {
-        // License kill-switch: when the subscription lock is active (set by
-        // LicenseGate on an expired/banned/no-access verdict) every AorusGram feature
-        // reads as disabled — so the background logic stops too, not just the UI.
-        // Fail-open: absent/false key = normal behaviour → an active user is never hit.
-        if UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") { return false }
+        guard AorusLicenseAccess.isAllowed else { return false }
         return UserDefaults.standard.object(forKey: "aorusgram_feature_\(feature.rawValue)") as? Bool ?? defaultEnabled(feature)
     }
 
     static func setEnabled(_ feature: Feature, _ value: Bool) {
-        let effectiveValue = UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") ? false : value
+        let effectiveValue = AorusLicenseAccess.isAllowed ? value : false
         UserDefaults.standard.set(effectiveValue, forKey: "aorusgram_feature_\(feature.rawValue)")
     }
 

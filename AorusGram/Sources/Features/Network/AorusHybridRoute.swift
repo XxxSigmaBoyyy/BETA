@@ -75,6 +75,9 @@ public final class AorusHybridRoute {
     private let lock = NSLock()
     private var currentMode: AorusRouteMode = .unknown
     private var evaluationInFlight = false
+    /// A forced re-evaluation requested while the previous network's probe is still
+    /// finishing. Keeping the latest reason prevents a path change from being lost.
+    private var pendingForcedEvaluationReason: String?
     private var lastEvaluationAt: TimeInterval = 0
     private var directUnreliableUntil: TimeInterval = 0
     private var preferencesObserver: NSObjectProtocol?
@@ -190,6 +193,9 @@ public final class AorusHybridRoute {
         let now = Date().timeIntervalSince1970
         self.lock.lock()
         if self.evaluationInFlight {
+            if force {
+                self.pendingForcedEvaluationReason = reason
+            }
             self.lock.unlock()
             return
         }
@@ -224,7 +230,21 @@ public final class AorusHybridRoute {
         self.lock.lock()
         self.evaluationInFlight = false
         self.lastEvaluationAt = Date().timeIntervalSince1970
+        let pendingReason = self.pendingForcedEvaluationReason
+        self.pendingForcedEvaluationReason = nil
         self.lock.unlock()
+
+        // The callback belongs to the network on which its sockets were opened. If a
+        // path/preference change arrived meanwhile, do not publish this stale verdict;
+        // immediately measure the latest state instead.
+        if let pendingReason {
+            self.beginEvaluation(reason: pendingReason, force: true)
+            return
+        }
+        guard AorusConnectionPreferences.shared.bypassEnabled else {
+            self.setMode(.unavailable, reason: "bypass_disabled_during_probe")
+            return
+        }
 
         guard directWorks else {
             AorusRealityManager.shared.recordProxyEvent(

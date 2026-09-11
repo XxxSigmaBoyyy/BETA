@@ -1,8 +1,9 @@
 import Foundation
 import ObjectiveC
+import AorusGram
 
 private func aorusLicenseLocked() -> Bool {
-    UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04")
+    !AorusLicenseAccess.isAllowed
 }
 
 // Ghost Mode: blocks outgoing online presence, read receipts, and typing indicators.

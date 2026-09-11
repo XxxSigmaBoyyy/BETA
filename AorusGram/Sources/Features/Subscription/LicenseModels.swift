@@ -58,17 +58,43 @@ public struct LicenseResponse {
     }
 
     private static func int64(_ any: Any?) -> Int64? {
+        if let number = any as? NSNumber,
+           CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
         if let value = any as? Int64 { return value }
         if let value = any as? Int { return Int64(value) }
-        if let value = any as? Double { return Int64(value) }
-        if let value = any as? NSNumber { return value.int64Value }
+        if let value = any as? Double {
+            guard value.isFinite,
+                  value.rounded(.towardZero) == value,
+                  value >= Double(Int64.min), value < Double(Int64.max) else { return nil }
+            return Int64(value)
+        }
+        if let value = any as? NSNumber {
+            let number = value.doubleValue
+            guard number.isFinite,
+                  number.rounded(.towardZero) == number,
+                  number >= Double(Int64.min), number < Double(Int64.max) else { return nil }
+            return value.int64Value
+        }
         return nil
     }
 
     private static func int(_ any: Any?) -> Int? {
+        if let number = any as? NSNumber,
+           CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
         if let value = any as? Int { return value }
-        if let value = any as? Double { return Int(value) }
-        if let value = any as? NSNumber { return value.intValue }
+        if let value = any as? Double {
+            guard value.isFinite,
+                  value.rounded(.towardZero) == value,
+                  value >= Double(Int.min), value < Double(Int.max) else { return nil }
+            return Int(value)
+        }
+        if let value = any as? NSNumber {
+            let number = value.doubleValue
+            guard number.isFinite,
+                  number.rounded(.towardZero) == number,
+                  number >= Double(Int.min), number < Double(Int.max) else { return nil }
+            return value.intValue
+        }
         return nil
     }
 }

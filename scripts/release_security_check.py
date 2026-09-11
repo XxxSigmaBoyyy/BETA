@@ -289,7 +289,7 @@ def main() -> int:
             '"127.0.0.1"',
             "publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)",
             '"required": required',
-            "AorusSessionMetrics.metricFlag",
+            "AorusLicenseAccess.isAllowed",
             "isReadyForAuthorizedTraffic",
             "waitForCoreAndLocalSocks(",
             "localSocksIsReady(port:",
@@ -502,25 +502,113 @@ def main() -> int:
     branding = (root / "scripts/aorus_branding.py").read_text(encoding="utf-8")
     if "aorusgram_license_locked" in branding:
         fail(errors, "aorus_branding.py still injects the plaintext license-lock key")
+    if "aorusRequestedMainNav && AorusLicenseAccess.isAllowed" not in branding:
+        fail(errors, "purchase-bot routing must require the authenticated entitlement verdict")
     profile_patch = (root / "scripts/profile_personalization_patch.py").read_text(encoding="utf-8")
     if "aorusgram_license_locked" in profile_patch:
         fail(errors, "profile_personalization_patch.py still injects the plaintext license-lock key")
     if LOCK_KEY_OPAQUE not in profile_patch:
         fail(errors, "profile_personalization_patch.py does not use the opaque license-lock key")
-    # The single writer and the two crown-jewel gates must use the opaque value.
-    gate_files = [
-        "AorusGram/Sources/Features/Subscription/LicenseGate.swift",
+    # The opaque mirror remains an immediate kill switch, while every protected path
+    # delegates its grant decision to one read-only authority that also re-derives the
+    # authenticated, device-bound snapshot. This prevents the checks from drifting.
+    access_file = root / "AorusGram/Sources/Core/AorusGramConfig.swift"
+    access_text = access_file.read_text(encoding="utf-8")
+    for marker in (
+        LOCK_KEY_OPAQUE,
+        "public enum AorusLicenseAccess",
+        "public static var canUnlock: Bool",
+        "LicenseKeyProvider.isProvisioned",
+        "AorusSessionMetrics.metricFlag",
+        "AorusSessionCounter.shared.isTripped",
+        "effectiveOfflineStatus().allowsAppAccess",
+    ):
+        if marker not in access_text:
+            fail(errors, f"central entitlement authority is missing {marker}")
+    gate_src_path = root / "AorusGram/Sources/Features/Subscription/LicenseGate.swift"
+    if LOCK_KEY_OPAQUE not in gate_src_path.read_text(encoding="utf-8"):
+        fail(errors, "LicenseGate does not publish the opaque license-lock key")
+    for gf in (
         "AorusGram/Sources/Features/Network/AorusProxyManager.swift",
         "AorusGram/Sources/Features/Network/AorusRealityManager.swift",
-    ]
-    for gf in gate_files:
-        if LOCK_KEY_OPAQUE not in (root / gf).read_text(encoding="utf-8"):
-            fail(errors, f"{gf} does not use the opaque license-lock key")
-    # The paid resource must not rest on the client bool alone: both proxy gates re-derive
-    # the HMAC-signed, device-bound snapshot, which a client-side patch cannot forge.
-    for gf in gate_files[1:]:
-        if "effectiveOfflineStatus().allowsAppAccess" not in (root / gf).read_text(encoding="utf-8"):
-            fail(errors, f"{gf} no longer re-derives the signed license snapshot")
+        "AorusGram/Sources/Features/AI/AorusAIClient.swift",
+        "AorusGram/Sources/Features/AorusVideoMaskProcessor.swift",
+        "AorusGram/Sources/Features/AorusVideoMaskOverlayView.swift",
+        "AorusGram/Sources/Features/AorusVoiceTwin.swift",
+        "AorusGram/Sources/Features/GhostMode/GhostModeManager.swift",
+        "AorusGram/Sources/Features/AntiSpam/AntiSpamManager.swift",
+        "AorusGram/Sources/Features/Profile/AorusBannerService.swift",
+        "AorusGram/Sources/Features/Network/AorusUserVPNManager.swift",
+        "AorusGram/Sources/Features/Network/AorusUserVPNStore.swift",
+        "AorusGram/Sources/Features/UI/AorusPerformanceHUDManager.swift",
+        "AorusGram/Sources/UI/GlassMorphism/GlassMorphismComponents.swift",
+        "patches/submodules/AorusGramUI/Sources/AorusGramController.swift",
+        "patches/submodules/AorusGramUI/Sources/Core/AorusGramConfig.swift",
+        "patches/submodules/AorusGramUI/Sources/Core/AorusLocalPremium.swift",
+        "patches/submodules/AorusGramUI/Sources/AorusStealthCodec.swift",
+        "patches/submodules/AorusGramUI/Sources/Security/AorusLinkProtection.swift",
+        "patches/submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusInterfaceV2.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/GhostMode/GhostModeManager.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/AntiSpam/AntiSpamManager.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/Privacy/AorusChatLock.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/UI/AorusAnimatedProfileBackground.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/UI/AorusCacheManager.swift",
+        "patches/submodules/AorusGramUI/Sources/Features/UI/AorusGifWallpaper.swift",
+        "patches/submodules/AorusGramUI/Sources/UI/GlassMorphism/GlassMorphismComponents.swift",
+    ):
+        if "AorusLicenseAccess.isAllowed" not in (root / gf).read_text(encoding="utf-8"):
+            fail(errors, f"{gf} bypasses the central entitlement authority")
+
+    # Source injected below AorusGramUI cannot import the high-level entitlement module.
+    # Every low-level premium/media bypass therefore has to combine its preference with
+    # the opaque lock mirror, and late branding passes must preserve native Telegram
+    # protection while locked instead of undoing the earlier guarded patch.
+    for marker in (
+        "_AG_LICENSE_LOCK_KEY =",
+        "def _licensed_flag_expr(key: str)",
+        "if defaults.bool(forKey:",
+        "_licensed_flag_expr(_AG_K_BYPASS_PAID)",
+        "_licensed_flag_expr(_AG_K_BYPASS_ONCE)",
+        "_licensed_flag_expr(_AG_K_BYPASS_STORY)",
+    ):
+        if marker not in branding:
+            fail(errors, f"low-level feature entitlement guard is missing {marker}")
+    raw_low_level_flag = re.compile(
+        r'UserDefaults\.standard\.bool\(forKey:\s*[\\\"]+\{(?:_AG_K_BYPASS|once|paid)'
+    )
+    if raw_low_level_flag.search(branding):
+        fail(errors, "a low-level media bypass still reads its toggle without the license guard")
+
+    channel_start = branding.find("def patch_bypass_channel_copy_protection")
+    channel_end = branding.find("def patch_bypass_story_download", channel_start)
+    channel_block = branding[channel_start:channel_end]
+    for marker in ("lock_expr =", "return {lock_expr}", "({lock_expr} &&"):
+        if marker not in channel_block:
+            fail(errors, f"channel copy bypass does not restore native protection while locked: {marker}")
+
+    late_start = branding.find("def patch_disable_copy_protection")
+    late_end = branding.find("\ndef ", late_start + 4)
+    late_block = branding[late_start:late_end if late_end >= 0 else len(branding)]
+    for marker in ("lock_expr =", "guard {lock_expr} else", "({lock_expr} &&"):
+        if marker not in late_block:
+            fail(errors, f"late copy-protection patch can bypass the license guard: {marker}")
+    story_start = branding.find("def patch_bypass_story_screenshot")
+    story_end = branding.find("_AORUS_AMOLED_HELPER", story_start)
+    if story_start < 0 or story_end < 0:
+        fail(errors, "story screenshot patch is missing")
+    elif "_AG_LICENSE_LOCK_KEY" not in branding[story_start:story_end]:
+        fail(errors, "story screenshot bypass remains active while the license is locked")
+    one_time_start = branding.find("def patch_one_time_voice_bypass")
+    one_time_end = branding.find("def patch_license_key_provider", one_time_start)
+    if one_time_start < 0 or one_time_end < 0:
+        fail(errors, "one-time voice patch is missing")
+    elif branding[one_time_start:one_time_end].count("_AG_LICENSE_LOCK_KEY") < 5:
+        fail(errors, "one-time voice bypass does not fully restore native behavior while locked")
+    for helper in ("aorusAmoledEnabled", "aorusInterfaceV2Enabled"):
+        helper_index = branding.find(helper, branding.find("_AORUS_AMOLED_HELPER"))
+        helper_tail = branding[helper_index:helper_index + 400]
+        if helper_index < 0 or "_AG_LICENSE_LOCK_KEY" not in helper_tail:
+            fail(errors, f"generated theme helper bypasses the license lock: {helper}")
 
     # The lock cover may lift on ONE condition only: the signed, device-bound license
     # snapshot says access is allowed. A prior "fix" to the black-screen on the locked
@@ -554,7 +642,7 @@ def main() -> int:
     hide_lock_body = _swift_body(gate_src, "private func hideLock()")
     if not hide_lock_body:
         fail(errors, "LicenseGate.hideLock() is missing — the lock cover has no single authority")
-    elif "effectiveOfflineStatus().allowsAppAccess" not in hide_lock_body:
+    elif "AorusLicenseAccess.canUnlock" not in hide_lock_body:
         fail(errors, "LicenseGate.hideLock() no longer gates on the signed license snapshot — "
                      "any caller could lift the cover without a real subscription")
 
@@ -650,6 +738,8 @@ def main() -> int:
         fail(errors, "artifact.ready must be decoded through AorusAIArtifactFlow")
     if "AorusAIArtifactFlow.signingPath(for: artifact)" not in ai_client:
         fail(errors, "artifact downloads must use the sanitized signing path")
+    if "AorusLicenseAccess.isAllowed" not in ai_client:
+        fail(errors, "AorusAI signed requests must require an active local entitlement")
     for marker in ("vaultToken", "vault_token", "?token=", "&token="):
         if marker in ai_client:
             fail(errors, f"AorusAI client must not deal in vault tokens — found {marker}")
@@ -662,6 +752,62 @@ def main() -> int:
             fail(errors, f"persisted artifact metadata is missing {marker}")
     if "vaultToken" in ai_models:
         fail(errors, "the artifact model must have no token field")
+
+    # Offline access must never be extended by rolling the device clock backwards,
+    # and a single corrupted Keychain replica must not win the install-id vote.
+    license_store = (root / "AorusGram/Sources/Features/Subscription/LicenseStore.swift").read_text(encoding="utf-8")
+    if "guard elapsed >= 0" not in license_store:
+        fail(errors, "offline licence time must fail closed after a wall-clock rollback")
+    if "serverNow.addingReportingOverflow" not in license_store:
+        fail(errors, "offline licence time must fail closed on server-time overflow")
+    for marker in ("private let lock = NSLock()", "private var snapshotValue", "lock.lock()"):
+        if marker not in license_store:
+            fail(errors, f"license snapshot concurrency guard is missing {marker}")
+    fingerprint = (root / "AorusGram/Sources/Features/Subscription/DeviceFingerprint.swift").read_text(encoding="utf-8")
+    for marker in ("UUID(uuidString: raw)", "counts.first(where: { $0.value >= 2 })"):
+        if marker not in fingerprint:
+            fail(errors, f"device fingerprint majority validation is missing {marker}")
+    se_binder = (root / "AorusGram/Sources/Security/AorusSeKeyBinder.swift").read_text(encoding="utf-8")
+    if "static var hasDeviceKey: Bool" not in se_binder:
+        fail(errors, "Secure Enclave wrapper must expose authenticated migration state")
+    if "!AorusSeKeyBinder.hasDeviceKey" not in license_store:
+        fail(errors, "a failed Secure Enclave decrypt must not fall back to plaintext")
+
+    user_vpn_store = (root / "AorusGram/Sources/Features/Network/AorusUserVPNStore.swift").read_text(encoding="utf-8")
+    for marker in ("stateEnvelopePrefix", "AorusSeKeyBinder.bind(clear)", "AorusSeKeyBinder.unbind(payload)"):
+        if marker not in user_vpn_store:
+            fail(errors, f"user VPN credentials are not device-wrapped — missing {marker}")
+    user_vpn_manager = (root / "AorusGram/Sources/Features/Network/AorusUserVPNManager.swift").read_text(encoding="utf-8")
+    for marker in ("refreshWaiters", "AorusUserVPNRedirectDelegate", "addingReportingOverflow"):
+        if marker not in user_vpn_manager:
+            fail(errors, f"user VPN runtime hardening is missing {marker}")
+    hybrid_route = (root / "AorusGram/Sources/Features/Network/AorusHybridRoute.swift").read_text(encoding="utf-8")
+    for marker in ("pendingForcedEvaluationReason", "bypass_disabled_during_probe"):
+        if marker not in hybrid_route:
+            fail(errors, f"hybrid route stale-probe protection is missing {marker}")
+    vless_parser = (root / "AorusGram/Sources/Features/Network/AorusVlessLink.swift").read_text(encoding="utf-8")
+    if "maximumServersPerImport = 256" not in vless_parser:
+        fail(errors, "untrusted VPN subscriptions must have a bounded server count")
+    vless_tests = root / "scripts/tests/AorusVlessLinkTests.swift"
+    if not vless_tests.is_file():
+        fail(errors, "AorusVlessLink regression tests are missing")
+    build_workflow = (root / ".github/workflows/build-aorusgram.yml").read_text(encoding="utf-8")
+    if "AorusVlessLinkTests.swift" not in build_workflow:
+        fail(errors, "VLESS parser regression tests are not wired into the preflight")
+    license_models = (root / "AorusGram/Sources/Features/Subscription/LicenseModels.swift").read_text(encoding="utf-8")
+    for marker in ("CFBooleanGetTypeID()", "rounded(.towardZero) =="):
+        if marker not in license_models:
+            fail(errors, f"strict license-number decoding is missing {marker}")
+    license_model_tests = root / "scripts/tests/LicenseModelsTests.swift"
+    if not license_model_tests.is_file():
+        fail(errors, "LicenseModels regression tests are missing")
+    if "LicenseModelsTests.swift" not in build_workflow:
+        fail(errors, "LicenseModels regression tests are not wired into the preflight")
+
+    profile_tint = (root / "patches/submodules/AorusGramUI/Sources/UI/GlassMorphism/AorusGlassProfileTint.swift").read_text(encoding="utf-8")
+    for marker in ("contentSignatures", "contentSignature(of: view.layer)"):
+        if marker not in profile_tint:
+            fail(errors, f"Interface 2.0 avatar sampling optimization is missing {marker}")
 
     ai_flow = root / "AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift"
     if not ai_flow.is_file():
@@ -861,7 +1007,10 @@ _MIRROR_DIVERGENCE_ALLOWED = {
     "AorusTamperGuard.swift": "AorusSessionCounter is core-only, so the UI copy reports through the mirrored flag",
     "VoiceTranscriberView.swift": "each module localises through its own table (SubL10n / aorusL)",
     "AorusGramBootstrap.swift": "different entry points: the core one runs at launch, before the account stack",
+    "GhostModeManager.swift": "core resolves AorusLicenseAccess directly; the UI mirror imports the core module",
+    "AntiSpamManager.swift": "core resolves AorusLicenseAccess directly; the UI mirror imports the core module",
     "AorusPerformanceHUDManager.swift": "two implementations, not one drifted: the UI copy is written against AorusGramManager/AorusL10n",
+    "GlassMorphismComponents.swift": "the UI copy imports AorusGram for the shared entitlement authority",
     "AntiSpoofManager.swift": "status separator differs per module (• / -)",
 }
 

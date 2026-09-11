@@ -78,7 +78,7 @@ public final class AorusVideoMaskOverlayView: UIView {
     }
 
     public func refreshEnabledState() {
-        let enabled = !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04")
+        let enabled = AorusLicenseAccess.isAllowed
             && UserDefaults.standard.bool(forKey: AorusVideoMaskProcessor.enabledKey)
         if !enabled {
             self.setMaskHidden(true, animated: false)
@@ -86,7 +86,7 @@ public final class AorusVideoMaskOverlayView: UIView {
     }
 
     private func update(_ notification: Notification) {
-        guard !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04"),
+        guard AorusLicenseAccess.isAllowed,
               UserDefaults.standard.bool(forKey: AorusVideoMaskProcessor.enabledKey),
               let info = notification.userInfo,
               let rect = (info["rect"] as? NSValue)?.cgRectValue,

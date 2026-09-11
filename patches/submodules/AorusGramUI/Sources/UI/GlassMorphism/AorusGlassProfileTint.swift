@@ -213,7 +213,7 @@ public enum AorusGlassProfileTint {
         guard !AorusGlassProfileTint.pendingKeys.contains(key) else {
             return
         }
-        AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: mirroredTail, read: 1, stable: 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: mirroredTail, read: 1, onUpdate: onUpdate)
     }
 
     /// Make `sample` the page for this peer, and ask for a repaint if that is a change.
@@ -407,6 +407,9 @@ public enum AorusGlassProfileTint {
     /// What each individual photo has sampled to so far, so paging back and forth costs nothing once
     /// the photo has settled.
     private static var sampledColors: [PhotoKey: Sample] = [:]
+    /// Cheap fingerprints of the layer tree used to avoid rendering the same avatar
+    /// sixteen times while waiting for its full-resolution contents to arrive.
+    private static var contentSignatures: [PhotoKey: Int] = [:]
     private static var pendingKeys = Set<PhotoKey>()
     /// Photos whose picture has stopped changing. Their sample is the last word, and no further
     /// reading is booked for them. Cleared together with `sampledColors`, which they are receipts
@@ -419,9 +422,9 @@ public enum AorusGlassProfileTint {
 
     /// How many times the band is read before the page settles for what it has.
     ///
-    /// A reading is one `layer.render(in:)` of the avatar into a ninety-six pixel buffer and a box
-    /// blur across that, and the loop stops the moment two of them agree -- so a photo already in the
-    /// cache costs exactly two, and the cap is only ever reached by one that never finishes arriving.
+    /// A changed reading is one `layer.render(in:)` of the avatar into a ninety-six pixel buffer and
+    /// a gaussian blur across that. Unchanged probes compare the layer tree's content identities and
+    /// geometry without rendering, so the full five-second placeholder window stays cheap.
     private static let settleReads = 16
 
     /// How long to wait before reading again: close together at first, then further apart.
@@ -436,7 +439,7 @@ public enum AorusGlassProfileTint {
         return read < 8 ? 0.12 : 0.5
     }
 
-    /// Read the band, give the page what it says, and keep reading until the picture stops changing.
+    /// Read the band, give the page what it says, and keep probing until the full-photo window ends.
     ///
     /// The loop is the correction, and it is worth writing down why the single reading it replaces
     /// could not have worked. Telegram hands a gallery item its picture in two stages:
@@ -453,40 +456,42 @@ public enum AorusGlassProfileTint {
     /// at the join, and permanent. That is the seam that was reported three times over, and every
     /// attempt to close it by correcting the geometry was reading the right rows of the wrong picture.
     ///
-    /// So the page follows the photo rather than guessing when it has arrived -- which is what the
-    /// block it continues does, blurring whatever is behind it at that moment, placeholder included.
-    /// Two identical readings in a row end the loop. One would not do: a placeholder is perfectly
-    /// stable for exactly as long as the download takes.
-    private static func sampleAndSettle(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+    /// So the page follows the photo rather than guessing when it has arrived. A placeholder may be
+    /// stable for seconds, therefore equality cannot settle the loop early. Instead the cheap layer
+    /// signature is polled for the whole bounded window and the expensive render runs only when the
+    /// layer contents or geometry actually changed.
+    private static func sampleAndSettle(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, onUpdate: @escaping () -> Void) {
+        let signature = AorusGlassProfileTint.contentSignature(of: view.layer)
+        if read > 1, AorusGlassProfileTint.contentSignatures[key] == signature {
+            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, onUpdate: onUpdate)
+            return
+        }
         guard let sample = AorusGlassProfileTint.bottomBandSample(of: view, tail: tail) else {
             // Nothing drawn yet: the picture is still decoding, or the node has not been laid out at
             // the size the header gives it. Read again on a delay rather than from the next layout
             // pass, because a profile that is simply sitting there gets no further passes, and
             // drawing the avatar on every pass of one being scrolled would cost a snapshot a frame.
-            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, stable: stable, onUpdate: onUpdate)
+            AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, onUpdate: onUpdate)
             return
         }
+        AorusGlassProfileTint.contentSignatures[key] = signature
         let previous = AorusGlassProfileTint.sampledColors[key]
         let unchanged = previous?.color == sample.color && (previous?.image != nil) == (sample.image != nil)
         if !unchanged {
             // Capped for the same reason as pageColors, with room for a few photos per peer.
             if AorusGlassProfileTint.sampledColors.count > 96 {
                 AorusGlassProfileTint.sampledColors.removeAll()
+                AorusGlassProfileTint.contentSignatures.removeAll()
                 AorusGlassProfileTint.settledKeys.removeAll()
             }
             AorusGlassProfileTint.sampledColors[key] = sample
             AorusGlassProfileTint.adopt(sample, for: key.peerId, onUpdate: onUpdate)
         }
-        guard stable + (unchanged ? 1 : 0) < 2 else {
-            AorusGlassProfileTint.pendingKeys.remove(key)
-            AorusGlassProfileTint.settledKeys.insert(key)
-            return
-        }
-        AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, stable: unchanged ? stable + 1 : 0, onUpdate: onUpdate)
+        AorusGlassProfileTint.scheduleRead(key: key, view: view, tail: tail, read: read, onUpdate: onUpdate)
     }
 
     /// Book the next reading of a photo, or stop when there is nothing left to read for.
-    private static func scheduleRead(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, stable: Int, onUpdate: @escaping () -> Void) {
+    private static func scheduleRead(key: PhotoKey, view: UIView, tail: CGFloat, read: Int, onUpdate: @escaping () -> Void) {
         guard read < AorusGlassProfileTint.settleReads else {
             // Out of readings. Marked settled rather than left open: the page keeps whatever the last
             // one gave it, and a photo that never finished arriving should not go on costing a
@@ -507,8 +512,33 @@ public enum AorusGlassProfileTint {
                 AorusGlassProfileTint.pendingKeys.remove(key)
                 return
             }
-            AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: tail, read: read + 1, stable: stable, onUpdate: onUpdate)
+            AorusGlassProfileTint.sampleAndSettle(key: key, view: view, tail: tail, read: read + 1, onUpdate: onUpdate)
         }
+    }
+
+    /// Identity and geometry of the small layer tree that draws the avatar. CGImage contents are
+    /// immutable, so Telegram replaces the object when the stripped thumbnail is replaced by the
+    /// full photo. Walking at most four levels and 32 children per level is bounded and far cheaper
+    /// than rasterising and blurring the hierarchy when nothing changed.
+    private static func contentSignature(of layer: CALayer, depth: Int = 0) -> Int {
+        var hasher = Hasher()
+        hasher.combine(ObjectIdentifier(layer))
+        hasher.combine(layer.bounds.origin.x)
+        hasher.combine(layer.bounds.origin.y)
+        hasher.combine(layer.bounds.size.width)
+        hasher.combine(layer.bounds.size.height)
+        hasher.combine(layer.position.x)
+        hasher.combine(layer.position.y)
+        if let contents = layer.contents {
+            hasher.combine(ObjectIdentifier(contents as AnyObject))
+        }
+        if depth < 4, let sublayers = layer.sublayers {
+            hasher.combine(sublayers.count)
+            for sublayer in sublayers.prefix(32) {
+                hasher.combine(AorusGlassProfileTint.contentSignature(of: sublayer, depth: depth + 1))
+            }
+        }
+        return hasher.finalize()
     }
 
     /// Both halves of a sample -- the row and the colour -- from one render of the view.

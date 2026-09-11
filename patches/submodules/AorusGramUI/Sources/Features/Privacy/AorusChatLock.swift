@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import LocalAuthentication
+import AorusGram
 
 // AorusGram: account-scoped Chat Protection.
 //
@@ -63,6 +64,7 @@ public final class AorusChatLock {
     // MARK: - State
 
     public static func isEnabled(accountId: Int64) -> Bool {
+        guard AorusLicenseAccess.isAllowed else { return false }
         return withStateLock {
             migrateLegacyIfNeeded(accountId: accountId)
             if let cached = cachedEnabled[accountId] {
@@ -75,11 +77,12 @@ public final class AorusChatLock {
     }
 
     public static func setEnabled(_ value: Bool, accountId: Int64) {
+        let effectiveValue = AorusLicenseAccess.isAllowed ? value : false
         withStateLock {
             migrateLegacyIfNeeded(accountId: accountId)
-            UserDefaults.standard.set(value, forKey: enabledKey(accountId: accountId))
-            cachedEnabled[accountId] = value
-            if value {
+            UserDefaults.standard.set(effectiveValue, forKey: enabledKey(accountId: accountId))
+            cachedEnabled[accountId] = effectiveValue
+            if effectiveValue {
                 markUnlocked(accountId: accountId)
             } else {
                 resetGracePeriod(accountId: accountId)

@@ -41,6 +41,13 @@ enum AorusSeKeyBinder {
         return pt as Data
     }
 
+    /// Whether this installation already owns the private key used by `unbind`.
+    /// Callers use this to distinguish a legitimate legacy plaintext migration
+    /// from ciphertext that failed authentication while a key is present.
+    static var hasDeviceKey: Bool {
+        return seKey() != nil
+    }
+
     // MARK: - Key management
 
     // Application tag stored as raw bytes — XOR so no plaintext literal in binary.

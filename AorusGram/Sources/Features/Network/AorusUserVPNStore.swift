@@ -108,10 +108,9 @@ public struct AorusVlessCandidate: Equatable {
 
 /// The user's own VLESS configurations, their selected server, and whether the lane is on.
 ///
-/// Stored in `UserDefaults`, deliberately, and not in the keychain that
-/// `AorusConnectionPreferences` uses. The two have opposite requirements: the connection
-/// switches are meant to survive a reinstall so a user who is being filtered does not lose
-/// their way back in, while an imported VPN is meant to be gone once the app is gone.
+/// Stored as a Secure-Enclave-wrapped envelope in the app's `UserDefaults` suite. This keeps
+/// imported credentials bound to this installation while preserving the existing uninstall
+/// behaviour; only the two non-sensitive live-state mirrors remain plain booleans.
 public final class AorusUserVPNStore {
     public static let shared = AorusUserVPNStore()
 
@@ -130,6 +129,7 @@ public final class AorusUserVPNStore {
     /// does not survive reinstall is the whole migration story.
     private static let stateKey = "aorusgram_uservpn_state_v1"
     private static let latencyKey = "aorusgram_uservpn_latency_v1"
+    private static let stateEnvelopePrefix = Data([0x41, 0x55, 0x56, 0x50, 0x4E, 0x01])
 
     private struct Stored: Codable, Equatable {
         var enabled: Bool
@@ -159,12 +159,18 @@ public final class AorusUserVPNStore {
     private init() {
         let store = UserDefaults(suiteName: Self.suiteName)
         var loaded = Stored(enabled: false, configs: [], selectedServerId: nil)
-        if let data = store?.data(forKey: Self.stateKey),
+        var needsMigration = false
+        if let persisted = store?.data(forKey: Self.stateKey),
+           let data = Self.openState(persisted),
            let decoded = try? JSONDecoder().decode(Stored.self, from: data) {
             loaded = decoded
+            needsMigration = !persisted.starts(with: Self.stateEnvelopePrefix)
         }
         self.cached = loaded
         self.latencies = (store?.dictionary(forKey: Self.latencyKey) as? [String: Double]) ?? [:]
+        if needsMigration {
+            Self.persistState(loaded, store: store)
+        }
         // The mirrors are rewritten from the loaded state before anything can read them, so a
         // launch that follows a crash cannot leave a stale "on" behind.
         Self.writeMirrors(loaded, store: store)
@@ -175,7 +181,7 @@ public final class AorusUserVPNStore {
     public var isEnabled: Bool {
         self.lock.lock()
         defer { self.lock.unlock() }
-        return self.cached.enabled
+        return AorusLicenseAccess.isAllowed && self.cached.enabled
     }
 
     public var configs: [AorusVlessConfig] {
@@ -211,7 +217,9 @@ public final class AorusUserVPNStore {
     public var isActive: Bool {
         self.lock.lock()
         defer { self.lock.unlock() }
-        return self.cached.enabled && Self.server(id: self.cached.selectedServerId, in: self.cached.configs) != nil
+        return AorusLicenseAccess.isAllowed
+            && self.cached.enabled
+            && Self.server(id: self.cached.selectedServerId, in: self.cached.configs) != nil
     }
 
     public func latency(serverId: String) -> Double? {
@@ -245,9 +253,10 @@ public final class AorusUserVPNStore {
     /// Turning it on with nothing selected picks a server rather than leaving the switch on and
     /// the connection absent — the user asked for a VPN, not for a second decision.
     public func setEnabled(_ value: Bool) {
+        let effectiveValue = AorusLicenseAccess.isAllowed ? value : false
         self.update { stored in
-            stored.enabled = value
-            if value, Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
+            stored.enabled = effectiveValue
+            if effectiveValue, Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
                 // The lowest measured handshake across everything imported, and the first row only
                 // when nothing has ever been measured. Turning the switch on used to pin the very
                 // first server of the very first configuration, which in a twelve-server
@@ -572,9 +581,7 @@ public final class AorusUserVPNStore {
         self.lock.unlock()
 
         let store = UserDefaults(suiteName: Self.suiteName)
-        if let data = try? JSONEncoder().encode(stored) {
-            store?.set(data, forKey: Self.stateKey)
-        }
+        Self.persistState(stored, store: store)
         // Written after the state, so a reader that sees the mirror on always finds a
         // configuration behind it.
         Self.writeMirrors(stored, store: store)
@@ -592,6 +599,28 @@ public final class AorusUserVPNStore {
             calls = false
         }
         store?.set(calls, forKey: Self.callsMirrorKey)
+    }
+
+    private static func persistState(_ stored: Stored, store: UserDefaults?) {
+        guard let clear = try? JSONEncoder().encode(stored) else { return }
+        let protected = AorusSeKeyBinder.bind(clear)
+        var envelope = Self.stateEnvelopePrefix
+        envelope.append(protected)
+        store?.set(envelope, forKey: Self.stateKey)
+    }
+
+    private static func openState(_ persisted: Data) -> Data? {
+        guard persisted.starts(with: Self.stateEnvelopePrefix) else {
+            // Legacy v1 was raw JSON. It is accepted once and immediately rewritten.
+            return persisted
+        }
+        let payload = Data(persisted.dropFirst(Self.stateEnvelopePrefix.count))
+        if let clear = AorusSeKeyBinder.unbind(payload) {
+            return clear
+        }
+        // Simulator/old hardware fallback: `bind` deliberately returns plaintext
+        // when no device key can exist. With a key present, failure is corruption.
+        return AorusSeKeyBinder.hasDeviceKey ? nil : payload
     }
 
     private static func server(id: String?, in configs: [AorusVlessConfig]) -> AorusVlessServer? {

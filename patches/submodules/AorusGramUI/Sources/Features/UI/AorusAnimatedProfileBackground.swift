@@ -56,6 +56,7 @@ public enum AorusAnimatedProfileBackgroundStore {
     }
 
     public static func isEnabled(accountId: Int64) -> Bool {
+        guard AorusLicenseAccess.isAllowed else { return false }
         if UserDefaults.standard.bool(forKey: key(enabledPrefix, accountId: accountId)) {
             return true
         }
@@ -64,7 +65,7 @@ public enum AorusAnimatedProfileBackgroundStore {
     }
 
     public static func isEffectivelyEnabled(accountId: Int64) -> Bool {
-        return !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04")
+        return AorusLicenseAccess.isAllowed
             && UserDefaults.standard.bool(forKey: key(enabledPrefix, accountId: accountId))
             && hasMedia(accountId: accountId)
     }
@@ -93,6 +94,10 @@ public enum AorusAnimatedProfileBackgroundStore {
         accountId: Int64,
         completion: @escaping (Result<Void, AorusBannerServiceError>) -> Void
     ) {
+        guard AorusLicenseAccess.isAllowed else {
+            completion(.failure(.licenseRequired))
+            return
+        }
         guard enabled != isEnabled(accountId: accountId) else {
             completion(.success(()))
             return
@@ -232,6 +237,10 @@ public enum AorusAnimatedProfileBackgroundStore {
         accountId: Int64,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        guard AorusLicenseAccess.isAllowed else {
+            completion(.failure(AorusBannerServiceError.licenseRequired))
+            return
+        }
         let installLocally = {
             do {
                 try installProcessedFile(mediaURL, posterTemporaryURL: posterURL, accountId: accountId)

@@ -11,6 +11,7 @@ final class LicenseStore {
     static let shared = LicenseStore()
     private init() {}
 
+    private let lock = NSLock()
     private let kcService = "com.aorusgram.license"
     private let kcAccount = "cache_v1"
     private let udTelegramKey = "aorusgram_lic_tg_uid"   // non-sensitive UI/id mirror
@@ -28,25 +29,41 @@ final class LicenseStore {
         var sig: String?               // HMAC over the fields above (key = license key)
     }
 
-    private(set) var snapshot: Snapshot?
+    private var snapshotValue: Snapshot?
+
+    var snapshot: Snapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshotValue
+    }
 
     func load() {
-        guard let stored = readKeychain() else { snapshot = nil; return }
+        guard let stored = readKeychain() else {
+            lock.lock()
+            snapshotValue = nil
+            lock.unlock()
+            return
+        }
         let s = stored.snapshot
         // Integrity + device binding: a tampered blob, or one lifted from another
         // device, is ignored. This only forces a fresh online check — it can never
         // lock out a legitimate user (the server verdict restores access).
         if s.sig == sign(s), s.deviceHash == DeviceFingerprint.deviceHash() {
-            snapshot = s
+            lock.lock()
+            snapshotValue = s
+            lock.unlock()
             if stored.needsMigration {
                 writeKeychain(s)
             }
         } else {
-            snapshot = nil
+            lock.lock()
+            snapshotValue = nil
+            lock.unlock()
         }
     }
 
     func save(response: LicenseResponse, telegramUserId: Int64?) {
+        lock.lock()
         let snap = Snapshot(
             statusRaw: response.status.rawValue,
             plan: response.plan,
@@ -54,10 +71,13 @@ final class LicenseStore {
             serverNow: response.serverNow,
             daysLeft: response.daysLeft,
             lastCheckWall: Date().timeIntervalSince1970,
-            telegramUserId: telegramUserId ?? snapshot?.telegramUserId
+            telegramUserId: telegramUserId ?? snapshotValue?.telegramUserId
         )
-        snapshot = snap
+        snapshotValue = snap
+        // Keep the persisted blob in the same order as the in-memory snapshot. A
+        // concurrent account-id update must not be overwritten by an older write.
         writeKeychain(snap)
+        lock.unlock()
 
         // UI mirror — non-sensitive only.
         let ud = UserDefaults.standard
@@ -66,13 +86,15 @@ final class LicenseStore {
     }
 
     func clear() {
-        snapshot = nil
+        lock.lock()
+        snapshotValue = nil
         let base: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: kcService,
             kSecAttrAccount as String: kcAccount,
         ]
         SecItemDelete(base as CFDictionary)
+        lock.unlock()
         let ud = UserDefaults.standard
         ud.removeObject(forKey: "aorusgram_lic_status")
         ud.removeObject(forKey: "aorusgram_lic_days_left")
@@ -92,11 +114,16 @@ final class LicenseStore {
     func setTelegramUserId(_ id: Int64) {
         guard id != 0 else { return }
         UserDefaults.standard.set(NSNumber(value: id), forKey: udTelegramKey)
-        if var snap = snapshot {
-            snap.telegramUserId = id
-            snapshot = snap
+        lock.lock()
+        var snap = snapshotValue
+        if snap != nil {
+            snap?.telegramUserId = id
+            snapshotValue = snap
+        }
+        if let snap {
             writeKeychain(snap)
         }
+        lock.unlock()
     }
 
     // Estimated current server time = server anchor + elapsed wall clock since the
@@ -104,8 +131,12 @@ final class LicenseStore {
     private func estimatedServerNow(_ snap: Snapshot) -> Int64? {
         guard let serverNow = snap.serverNow else { return nil }
         let elapsed = Date().timeIntervalSince1970 - snap.lastCheckWall
-        if elapsed < 0 { return serverNow }
-        return serverNow + Int64(elapsed)
+        // A wall-clock rollback is not elapsed time. Returning the old anchor here
+        // froze the licence at the last successful check and could extend offline
+        // access indefinitely. Fail closed and require a fresh signed verdict.
+        guard elapsed >= 0, elapsed < Double(Int64.max) else { return nil }
+        let estimate = serverNow.addingReportingOverflow(Int64(elapsed))
+        return estimate.overflow ? nil : estimate.partialValue
     }
 
     // Offline effective status: an active cache is trusted only while active_until
@@ -192,7 +223,10 @@ final class LicenseStore {
         }
 
         // One-time migration for caches written before Secure Enclave wrapping.
-        if let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
+        // If this installation already has a device key, failed decryption means
+        // tampering/corruption, not a legacy blob, and must fail closed.
+        if !AorusSeKeyBinder.hasDeviceKey,
+           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
             return (snapshot, true)
         }
         return nil

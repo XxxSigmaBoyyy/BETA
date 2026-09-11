@@ -33,8 +33,9 @@ private struct AorusPerformanceHUDSettings {
 
     static var current: AorusPerformanceHUDSettings {
         let d = UserDefaults.standard.dictionary(forKey: "aorusgram_settings_v1") ?? [:]
+        let licensed = AorusLicenseAccess.isAllowed
         return AorusPerformanceHUDSettings(
-            performanceStatsEnabled: d["performanceStatsEnabled"] as? Bool ?? false,
+            performanceStatsEnabled: licensed && (d["performanceStatsEnabled"] as? Bool ?? false),
             performanceShowUptime: d["performanceShowUptime"] as? Bool ?? true,
             performanceShowRAM: d["performanceShowRAM"] as? Bool ?? true,
             performanceShowCPU: d["performanceShowCPU"] as? Bool ?? true,
@@ -44,7 +45,7 @@ private struct AorusPerformanceHUDSettings {
             performanceShowDisk: d["performanceShowDisk"] as? Bool ?? true,
             performanceShowThermal: d["performanceShowThermal"] as? Bool ?? true,
             performanceShowGraph: d["performanceShowGraph"] as? Bool ?? true,
-            ramAutoClean: d["ramAutoClean"] as? Bool ?? false,
+            ramAutoClean: licensed && (d["ramAutoClean"] as? Bool ?? false),
             ramCleanInterval: d["ramCleanInterval"] as? Int ?? 60
         )
     }

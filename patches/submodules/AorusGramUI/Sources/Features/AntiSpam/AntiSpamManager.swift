@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import AorusGram
 
 final class AntiSpamManager {
     static let shared = AntiSpamManager()
@@ -569,7 +570,7 @@ final class AntiSpamManager {
     }
 
     private var effectiveEnabled: Bool {
-        if UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") {
+        if !AorusLicenseAccess.isAllowed {
             return false
         }
         if let value = UserDefaults.standard.object(forKey: "aorusgram_feature_anti_spam") as? Bool {

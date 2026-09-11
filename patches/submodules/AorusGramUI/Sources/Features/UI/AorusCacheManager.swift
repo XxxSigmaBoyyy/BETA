@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AorusGram
 
 // MARK: - AorusCacheManager
 //
@@ -61,7 +62,7 @@ public final class AorusCacheManager {
 
     private func _applyAutoClean(enabled: Bool, intervalHours: Int) {
         cleanTimer?.invalidate(); cleanTimer = nil
-        guard enabled else { return }
+        guard AorusLicenseAccess.isAllowed, enabled else { return }
         let hours = max(1, intervalHours)
         let t = Timer.scheduledTimer(withTimeInterval: TimeInterval(hours * 3600),
                                      repeats: true) { [weak self] _ in self?.performCleanup() }
@@ -82,6 +83,7 @@ public final class AorusCacheManager {
     }
 
     private func _performCleanup() {
+        guard AorusLicenseAccess.isAllowed else { return }
         DeletedMessagesCache.shared.clearAll()
         URLCache.shared.removeAllCachedResponses()
         URLSession.shared.configuration.urlCache?.removeAllCachedResponses()

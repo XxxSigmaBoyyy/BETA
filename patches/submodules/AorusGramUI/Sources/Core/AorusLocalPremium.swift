@@ -1,4 +1,5 @@
 import Foundation
+import AorusGram
 
 // Local Telegram Premium toggle. Stored in UserDefaults under a plain key so the
 // low-level premium gate (PeerUtils.isPremium / AccountContextImpl, in the Telegram
@@ -11,6 +12,9 @@ public enum AorusLocalPremium {
     public static let changedNotification = Notification.Name("aorusgram_local_premium_changed")
 
     public static var isEnabled: Bool {
+        guard AorusLicenseAccess.isAllowed else {
+            return false
+        }
         let defaults = UserDefaults.standard
         if defaults.object(forKey: key) == nil {
             return true
@@ -20,10 +24,11 @@ public enum AorusLocalPremium {
 
     public static func setEnabled(_ value: Bool) {
         let defaults = UserDefaults.standard
-        guard isEnabled != value else {
+        let effectiveValue = AorusLicenseAccess.isAllowed ? value : false
+        guard isEnabled != effectiveValue else {
             return
         }
-        defaults.set(value, forKey: key)
+        defaults.set(effectiveValue, forKey: key)
         NotificationCenter.default.post(name: changedNotification, object: nil)
         // AccountContext refreshes its cached premium state first. Rebuild visible
         // controllers on the next run-loop turn so they read the refreshed value.

@@ -296,7 +296,7 @@ final class LicenseGate {
         // that forgets the invariant, a replayed notification. None of them can drop the
         // cover or re-enable the client, because none of them can forge the HMAC-signed
         // snapshot. This is why "tap Buy" could never again reveal a working Telegram.
-        guard LicenseStore.shared.effectiveOfflineStatus().allowsAppAccess else {
+        guard AorusLicenseAccess.canUnlock else {
             // Not actually licensed — keep the cover exactly as it is and make sure the
             // feature kill-switch stays engaged, in case a caller expected a grant.
             setFeatureAccess(active: false)

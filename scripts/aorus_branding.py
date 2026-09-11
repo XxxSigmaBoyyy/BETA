@@ -32,6 +32,15 @@ _AG_K_BYPASS_ONCE  = os.environ.get("AORUS_K2", "8d2e1f47-c9a3-4b7d-9e5c-3f1a8b6
 _AG_K_BYPASS_STORY = os.environ.get("AORUS_K3", "2b9f4e16-7a8c-4d3f-b2e1-c5d7a9f3b8e6")
 _AG_K_SPOOF_DEVICE = os.environ.get("AORUS_K4", "a1c4e7f9-3b6d-4e2a-c8f5-7d1b3e9a5c2f")
 _AG_K_SPOOF_SYSVER = os.environ.get("AORUS_K5", "6e3b1d8a-4f2c-4a7e-b9d1-5c8f2a4e7b3d")
+_AG_LICENSE_LOCK_KEY = "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04"
+
+
+def _licensed_flag_expr(key: str) -> str:
+    """Swift expression for a low-level feature that must fail closed."""
+    return (
+        f'(!UserDefaults.standard.bool(forKey: "{_AG_LICENSE_LOCK_KEY}") '
+        f'&& UserDefaults.standard.bool(forKey: "{key}"))'
+    )
 
 # Match http(s), tg://, and t.me/… segments so we never edit URLs inside .strings values.
 _URL_GUARD = re.compile(r"(https?://[^\s\"]+)|(tg://[^\s\"]+)|(t\.me/[^\s\"]+)", re.IGNORECASE)
@@ -4164,7 +4173,8 @@ def patch_app_delegate_open_purchase_bot(tg: Path) -> None:
         "        NotificationCenter.default.addObserver(forName: NSNotification.Name(\"aorusgram.openPurchaseBotInApp\"),\n"
         "            object: nil, queue: .main) { [weak self] note in\n"
         "            let aorusBotUrl = (note.userInfo?[\"url\"] as? String) ?? \"https://t.me/AorusGram_bot?start=buy\"\n"
-        "            let aorusMainNav = (note.userInfo?[\"mainNav\"] as? NSNumber)?.boolValue ?? false\n"
+        "            let aorusRequestedMainNav = (note.userInfo?[\"mainNav\"] as? NSNumber)?.boolValue ?? false\n"
+        "            let aorusMainNav = aorusRequestedMainNav && AorusLicenseAccess.isAllowed\n"
         "            guard let app = self?.contextValue else {\n"
         "                if let u = URL(string: aorusBotUrl) { UIApplication.shared.open(u, options: [:], completionHandler: nil) }\n"
         "                return\n"
@@ -8548,6 +8558,9 @@ def patch_one_time_voice_bypass(tg: Path) -> None:
             )
             new = (
                 "        public func markMessageContentAsConsumedInteractively(messageId: MessageId) -> Signal<Void, NoError> {\n"
+                f"            if UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") {{\n"
+                "                return _internal_markMessageContentAsConsumedInteractively(postbox: self.account.postbox, messageId: messageId)\n"
+                "            }\n"
                 "            // AorusGram: a one-time voice or round video is never reported as listened.\n"
                 "            // Consuming it is exactly what tells the server to destroy it, so skipping\n"
                 "            // that leaves the recording in the chat, playable again. Its appearance is\n"
@@ -8605,7 +8618,7 @@ def patch_one_time_voice_bypass(tg: Path) -> None:
         "        // burns it down and the counter that ticks it away are both behind this, and\n"
         "        // nothing writes it — the stock behaviour is one default away rather than one\n"
         "        // patch away, and the code that draws it keeps its readers.\n"
-        "        let aorusBurnsWhilePlaying = UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\")\n"
+        f"        let aorusBurnsWhilePlaying = UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") || UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\")\n"
     )
     if text.count(old_flag) != 1:
         raise RuntimeError(f"OneTimeVoice: flag anchor not unique ({text.count(old_flag)})")
@@ -8725,7 +8738,7 @@ def patch_one_time_voice_bypass(tg: Path) -> None:
         "                let isViewOnceMessage = isVoice && arguments.message.minAutoremoveOrClearTimeout == viewOnceTimeout\n"
         "                // AorusGram: see the playback branch below — a one-time recording is\n"
         "                // listened to like any other, and the waveform has to be told so.\n"
-        "                let aorusBurnsWhilePlaying = UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\")\n"
+        f"                let aorusBurnsWhilePlaying = UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") || UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\")\n"
         "                // The bypass deliberately never consumes the recording, so its\n"
         "                // ConsumableContentMessageAttribute stays unread for good. Upstream\n"
         "                // reads that in two places: it draws the blue unread dot, and — the\n"
@@ -8797,7 +8810,7 @@ def patch_one_time_voice_playlist(tg: Path) -> None:
         "                // history, so a playlist built over that view never holds it and the\n"
         "                // bubble is never told it is playing. It gets its own single-message\n"
         "                // playlist below, which is what upstream's view-once route passes in.\n"
-        "                if (file.isVoice || file.isInstantVideo) && params.message.tags.contains(.voiceOrInstantVideo) && params.message.minAutoremoveOrClearTimeout != viewOnceTimeout {\n"
+        f"                if (file.isVoice || file.isInstantVideo) && params.message.tags.contains(.voiceOrInstantVideo) && (params.message.minAutoremoveOrClearTimeout != viewOnceTimeout || UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\")) {{\n"
     )
     if text.count(old) != 1:
         raise RuntimeError(f"OneTimeVoice: playlist anchor not unique ({text.count(old)})")
@@ -8834,7 +8847,7 @@ def patch_one_time_voice_route(tg: Path) -> None:
         "                        // This route is what puts the conversation behind a blur, lifts the\n"
         "                        // bubble into an overlay with \"close and delete\" under it, and\n"
         "                        // refuses to play while the screen is being recorded.\n"
-        "                        if (file.isVoice || file.isInstantVideo) && message.minAutoremoveOrClearTimeout == viewOnceTimeout && UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\") {\n"
+        f"                        if (file.isVoice || file.isInstantVideo) && message.minAutoremoveOrClearTimeout == viewOnceTimeout && (UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") || UserDefaults.standard.bool(forKey: \"aorusgram_one_time_voice_burn\")) {{\n"
         "                            self.openViewOnceMediaMessage(EngineMessage(message))\n"
         "                            return false\n"
         "                        }\n"
@@ -8871,7 +8884,7 @@ def patch_view_once_no_consume(tg: Path) -> None:
     )
 
     def _repl(m: "re.Match[str]") -> str:
-        return (f"if !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\") {{ "
+        return (f"if !{_licensed_flag_expr(_AG_K_BYPASS_ONCE)} {{ "
                 f"{m.group(0)} }}  {SENTINEL}")
 
     new_t, n = pat.subn(_repl, t, count=1)
@@ -8993,6 +9006,7 @@ def patch_local_premium(tg: Path) -> None:
         "    // a fresh install (key absent) keeps premium enabled.\n"
         "    public static var isEnabled: Bool {\n"
         "        let defaults = UserDefaults.standard\n"
+        f"        if defaults.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") {{ return false }}\n"
         "        if defaults.object(forKey: \"aorusgram_local_premium\") == nil { return true }\n"
         "        return defaults.bool(forKey: \"aorusgram_local_premium\")\n"
         "    }\n"
@@ -14416,7 +14430,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new = (
             "    func isCopyProtected() -> Bool {\n"
-            f"        if UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\") {{ return false }}\n"
+            f"        if {_licensed_flag_expr(_AG_K_BYPASS_PAID)} {{ return false }}\n"
             "        if self.flags.contains(.CopyProtected) {\n"
             "            return true\n"
             "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, group.flags.contains(.copyProtectionEnabled) {\n"
@@ -14449,7 +14463,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new2a = (
             "        guard let message = self.message, "
-            f"!message.isCopyProtected() && (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) else {{"
+            f"!message.isCopyProtected() && (message.paidContent == nil || {_licensed_flag_expr(_AG_K_BYPASS_PAID)}) else {{"
         )
         if old2a in t:
             t = t.replace(old2a, new2a, 1); changed = True
@@ -14459,7 +14473,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new2b = (
             "                if !message.isCopyProtected() && !self.peerIsCopyProtected "
-            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")), let media = self.contextAndMedia?.1 {{"
+            f"&& (message.paidContent == nil || {_licensed_flag_expr(_AG_K_BYPASS_PAID)}), let media = self.contextAndMedia?.1 {{"
         )
         if old2b in t:
             t = t.replace(old2b, new2b, 1); changed = True
@@ -14486,7 +14500,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         new3a = (
             "                if let (message, maybeFile, _) = strongSelf.contentInfo(), "
             "let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected "
-            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) {{"
+            f"&& (message.paidContent == nil || {_licensed_flag_expr(_AG_K_BYPASS_PAID)}) {{"
         )
         if old3a in t:
             t = t.replace(old3a, new3a, 1); changed = True
@@ -14499,7 +14513,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
             "                if let (message, _, _) = strongSelf.contentInfo(), "
             "let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, "
             "!message.isCopyProtected() && !item.peerIsCopyProtected "
-            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) {{"
+            f"&& (message.paidContent == nil || {_licensed_flag_expr(_AG_K_BYPASS_PAID)}) {{"
         )
         if old3b in t:
             t = t.replace(old3b, new3b, 1); changed = True
@@ -14515,8 +14529,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
 
 
 def patch_bypass_channel_copy_protection(tg: Path) -> None:
-    """Always-on (stock, no settings entry) bypass of CHANNEL/GROUP content
-    protection (the `.copyProtectionEnabled` peer flag — "restrict saving content").
+    """Licensed bypass of CHANNEL/GROUP content protection.
 
     Scope is deliberately narrow: only the channel/group peer-flag path is
     neutralised. Secret chats (SecretChat namespace / verification codes) and the
@@ -14535,7 +14548,10 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
       D. ChatControllerNode full-chat screenshot isSecret -> drop term
       E. ChatController pinch-zoom screenshot isSecret     -> drop term (graceful)
       F. ChatController gallery-open copyProtected param    -> drop term (graceful)
+    An unlicensed or locked build restores Telegram's native protection at every
+    patched source and consumer, including already-running processes.
     """
+    lock_expr = f'UserDefaults.standard.bool(forKey: "{_AG_LICENSE_LOCK_KEY}")'
     # --- A. Peer-level source of truth (PeerUtils.isCopyProtectionEnabled) -----
     peer_utils = tg / "submodules/TelegramCore/Sources/Utils/PeerUtils.swift"
     if peer_utils.is_file():
@@ -14551,11 +14567,11 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
             # the immediately preceding case line and replace only that one.
             for ret_anchor, case_old, case_new, ret_new in [
                 (a_group,
-                 "case let group as TelegramGroup:", "case is TelegramGroup:",
-                 "return false // AorusGram: channel copy bypass (peer)"),
+                 "case let group as TelegramGroup:", "case let group as TelegramGroup:",
+                 f"return {lock_expr} ? group.flags.contains(.copyProtectionEnabled) : false // AorusGram: channel copy bypass (peer)"),
                 (a_chan,
-                 "case let channel as TelegramChannel:", "case is TelegramChannel:",
-                 "return false"),
+                 "case let channel as TelegramChannel:", "case let channel as TelegramChannel:",
+                 f"return {lock_expr} ? channel.flags.contains(.copyProtectionEnabled) : false"),
             ]:
                 idx = t.find(ret_anchor)
                 if idx >= 0:
@@ -14588,7 +14604,7 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         b_group_new = (
             "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, "
             "group.flags.contains(.copyProtectionEnabled) {\n"
-            "            return false // AorusGram: channel copy bypass (msg group)\n"
+            f"            return {lock_expr} // AorusGram: channel copy bypass (msg group)\n"
         )
         b_chan_old = (
             "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, "
@@ -14598,7 +14614,7 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         b_chan_new = (
             "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, "
             "channel.flags.contains(.copyProtectionEnabled) {\n"
-            "            return false // AorusGram: channel copy bypass (msg channel)\n"
+            f"            return {lock_expr} // AorusGram: channel copy bypass (msg channel)\n"
         )
         if "channel copy bypass (msg channel)" in t:
             print("ChannelCopyBypass: MessageUtils branches already patched")
@@ -14621,7 +14637,7 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
     if ctx.is_file():
         t = ctx.read_text(encoding="utf-8")
         c_old = "let isCopyProtected = chatPresentationInterfaceState.copyProtectionEnabled || message.isCopyProtected()"
-        c_new = "let isCopyProtected = message.isCopyProtected()  // AorusGram: channel copy bypass (menu)"
+        c_new = f"let isCopyProtected = ({lock_expr} && chatPresentationInterfaceState.copyProtectionEnabled) || message.isCopyProtected()  // AorusGram: channel copy bypass (menu)"
         if "channel copy bypass (menu)" in t:
             print("ChannelCopyBypass: context menu already patched")
         elif c_old in t:
@@ -14639,7 +14655,8 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         d_old = ("let isSecret = self.chatPresentationInterfaceState.copyProtectionEnabled "
                  "|| self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
                  "|| self.chatLocation.peerId?.isVerificationCodes == true")
-        d_new = ("let isSecret = self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
+        d_new = (f"let isSecret = ({lock_expr} && self.chatPresentationInterfaceState.copyProtectionEnabled) "
+                 "|| self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
                  "|| self.chatLocation.peerId?.isVerificationCodes == true  // AorusGram: channel copy bypass (screenshot)")
         if "channel copy bypass (screenshot)" in t:
             print("ChannelCopyBypass: ChatControllerNode already patched")
@@ -14659,7 +14676,8 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         # E. pinch-zoom screenshot
         e_old = ("let isSecret = strongSelf.presentationInterfaceState.copyProtectionEnabled "
                  "|| strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat")
-        e_new = ("let isSecret = strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
+        e_new = (f"let isSecret = ({lock_expr} && strongSelf.presentationInterfaceState.copyProtectionEnabled) "
+                 "|| strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
                  "/* AorusGram: channel copy bypass (pinch) */")
         if "channel copy bypass (pinch)" in t:
             print("ChannelCopyBypass: ChatController pinch already patched")
@@ -14671,7 +14689,8 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         # F. gallery-open copyProtected param
         f_old = ("copyProtected: self.presentationInterfaceState.copyProtectionEnabled "
                  "|| self.presentationInterfaceState.myCopyProtectionEnabled,")
-        f_new = ("copyProtected: self.presentationInterfaceState.myCopyProtectionEnabled,"
+        f_new = (f"copyProtected: ({lock_expr} && self.presentationInterfaceState.copyProtectionEnabled) "
+                 "|| self.presentationInterfaceState.myCopyProtectionEnabled,"
                  "  /* AorusGram: channel copy bypass (gallery) */")
         if "channel copy bypass (gallery)" in t:
             print("ChannelCopyBypass: ChatController gallery-open already patched")
@@ -14701,7 +14720,7 @@ def patch_bypass_story_download(tg: Path) -> None:
     old = "                    } else if !component.slice.item.storyItem.isForwardingDisabled {"
     new = (
         "                    } else if !component.slice.item.storyItem.isForwardingDisabled "
-        f"|| UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_STORY}\") {{"
+        f"|| {_licensed_flag_expr(_AG_K_BYPASS_STORY)} {{"
     )
     if SENTINEL in t:
         print("StoryDownload: already patched")
@@ -14726,7 +14745,7 @@ def patch_save_view_once(tg: Path) -> None:
     t = ctrl.read_text(encoding="utf-8")
     old = "peerIsCopyProtected: true, tempFilePath: tempFilePath"
     new = (
-        f"peerIsCopyProtected: !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\"), "
+        f"peerIsCopyProtected: !{_licensed_flag_expr(_AG_K_BYPASS_ONCE)}, "
         "tempFilePath: tempFilePath"
     )
     if SENTINEL in t:
@@ -14790,9 +14809,9 @@ def patch_view_once_capture(tg: Path) -> None:
                 if not all(term in expression for term in required):
                     return m.group(0)
                 return (ind + "let captureProtected = "
-                        f"(message.containsSecretMedia && !UserDefaults.standard.bool(forKey: \"{once}\")) "
-                        f"|| (message.minAutoremoveOrClearTimeout == viewOnceTimeout && !UserDefaults.standard.bool(forKey: \"{once}\")) "
-                        f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\"))  {SENTINEL}")
+                        f"(message.containsSecretMedia && !{_licensed_flag_expr(once)}) "
+                        f"|| (message.minAutoremoveOrClearTimeout == viewOnceTimeout && !{_licensed_flag_expr(once)}) "
+                        f"|| (message.paidContent != nil && !{_licensed_flag_expr(paid)})  {SENTINEL}")
 
             new_t, n = pat.subn(_cap_repl, t)
             if n > 0:
@@ -14814,8 +14833,8 @@ def patch_view_once_capture(tg: Path) -> None:
         new = (
             "        self.imageNode.captureProtected = message.id.peerId.namespace == Namespaces.Peer.SecretChat "
             "|| message.isCopyProtected() || peerIsCopyProtected "
-            f"|| (isSecret && !UserDefaults.standard.bool(forKey: \"{once}\")) "
-            f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\"))  {SENTINEL}"
+            f"|| (isSecret && !{_licensed_flag_expr(once)}) "
+            f"|| (message.paidContent != nil && !{_licensed_flag_expr(paid)})  {SENTINEL}"
         )
         if SENTINEL in t:
             print("ViewOnceCapture: ChatImageGalleryItem already patched")
@@ -14854,7 +14873,7 @@ def patch_view_once_save_button(tg: Path) -> None:
         "&& !Namespaces.Message.allNonRegular.contains(message.id.namespace) && message.adAttribute == nil"
     )
     new = (
-        f"        var canShare = (!message.containsSecretMedia || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\")) "
+        f"        var canShare = (!message.containsSecretMedia || {_licensed_flag_expr(_AG_K_BYPASS_ONCE)}) "
         f"&& !Namespaces.Message.allNonRegular.contains(message.id.namespace) && message.adAttribute == nil  {SENTINEL}"
     )
     if SENTINEL in t:
@@ -14929,7 +14948,7 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "                            self.tempFile = tempFile\n"
         "                            tempFilePath = tempFile.path\n"
         "                            self.currentNodeMessageIsVideo = true\n"
-        f'                            if UserDefaults.standard.bool(forKey: "{once}") {{ UserDefaults.standard.set(tempFilePath, forKey: "_ag_vo_path") }}  // __aorus_vo_direct__'
+        f'                            if {_licensed_flag_expr(once)} {{ UserDefaults.standard.set(tempFilePath, forKey: "_ag_vo_path") }}  // __aorus_vo_direct__'
     )
     if old3 in t:
         t = t.replace(old3, new3, 1)
@@ -14943,7 +14962,7 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "attributes: MutableMessageHistoryEntryAttributes(authorIsContact: false)))"
     )
     new4 = (
-        f'                if UserDefaults.standard.bool(forKey: "{once}") && tempFilePath == nil {{  // __aorus_vo_direct__\n'
+        f'                if {_licensed_flag_expr(once)} && tempFilePath == nil {{  // __aorus_vo_direct__\n'
         "                    for _m in message.media { if let _img = _m as? TelegramMediaImage,"
         " let _rep = largestImageRepresentation(_img.representations),"
         " let _p = self.context.engine.resources.completedResourcePath("
@@ -15001,13 +15020,13 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         # "icon only appears after the HUD is toggled" glitch.
         "    private var _agVOTries: Int = 0\n"
         f"    @objc private func _aorusInjectVOSaveButton() {{\n"
-        f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
+        f'        guard {_licensed_flag_expr(once)} else {{ return }}\n'
         "        self._agVOTries = 0\n"
         "        self._aorusVOPlaceSaveButton()\n"
         "    }\n"
         "\n"
         f"    @objc private func _aorusVOPlaceSaveButton() {{\n"
-        f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
+        f'        guard {_licensed_flag_expr(once)} else {{ return }}\n'
         "        guard self.view.viewWithTag(0xA0530BEB) == nil else { return }\n"
         "        // Find the native share button INSIDE the gallery footer node.\n"
         "        // The footer exists for both photo and video view-once and holds\n"
@@ -15561,12 +15580,12 @@ final class AorusGhostAvatarNavigationNode: ASDisplayNode {
         let size = self.calculatedSize
         if let glassView = self.glassView {
             glassView.frame = CGRect(origin: .zero, size: size)
-            let aorusGlassOn = (UserDefaults.standard.object(forKey: "aorusgram_feature_glass_ui") as? Bool) ?? true
+            let aorusGlassOn = !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") && ((UserDefaults.standard.object(forKey: "aorusgram_feature_glass_ui") as? Bool) ?? true)
             // Interface 2.0 shows the avatar and the ghost badge bare: this node carries a pill of
             // its own on top of the navigation bar's right-hand pane, so hiding only that one would
             // leave this capsule behind them. The back button's pane is a different view and keeps
             // its own tablet.
-            let aorusHidesNavCapsule = UserDefaults.standard.bool(forKey: "aorusgram_interface_v2")
+            let aorusHidesNavCapsule = !UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") && UserDefaults.standard.bool(forKey: "aorusgram_interface_v2")
             glassView.update(size: size, cornerRadius: size.height / 2.0, isDark: self.isDarkAppearance, tintColor: GlassBackgroundView.TintColor(kind: .panel), isInteractive: true, isVisible: self.ghostVisible && aorusGlassOn && !aorusHidesNavCapsule, transition: .immediate)
         }
         if self.ghostVisible {
@@ -17211,7 +17230,7 @@ def patch_voice_twin_calls(tg: Path) -> None:
 
 
 def patch_bypass_story_screenshot(tg: Path) -> None:
-    """Always-on (stock, no UI entry) bypass of story screenshot protection.
+    """Licensed (stock, no UI entry) bypass of story screenshot protection.
 
     A protected story (`isForwardingDisabled`) feeds `captureProtected:` /
     `isCaptureProtected:` into the story media views. Those flags both blank the
@@ -17233,7 +17252,9 @@ def patch_bypass_story_screenshot(tg: Path) -> None:
                 "isCaptureProtected: component.item.isForwardingDisabled,"):
         cnt = t.count(key)
         if cnt:
-            repl = key.split(":", 1)[0] + ": false, // AorusGram: story screenshot bypass"
+            repl = (key.split(":", 1)[0]
+                    + f': UserDefaults.standard.bool(forKey: "{_AG_LICENSE_LOCK_KEY}") && component.item.isForwardingDisabled, '
+                    + "// AorusGram: story screenshot bypass")
             t = t.replace(key, repl)
             n += cnt
     if n:
@@ -17249,7 +17270,7 @@ def patch_bypass_story_screenshot(tg: Path) -> None:
 _AORUS_AMOLED_HELPER = (
     "// AorusGram: AMOLED dark mode — force true-black surfaces on dark themes only.\n"
     "private func aorusAmoledEnabled() -> Bool {\n"
-    "    return UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
+    f"    return !UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") && UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
     "}\n"
     "\n"
     "// AorusGram: Interface 2.0 — glass surfaces everywhere the theme reaches.\n"
@@ -17258,7 +17279,7 @@ _AORUS_AMOLED_HELPER = (
     "// behind them stays opaque, which is what a pane of glass needs to read as glass\n"
     "// instead of as a washed-out card.\n"
     "private func aorusInterfaceV2Enabled() -> Bool {\n"
-    "    return UserDefaults.standard.bool(forKey: \"aorusgram_interface_v2\")\n"
+    f"    return !UserDefaults.standard.bool(forKey: \"{_AG_LICENSE_LOCK_KEY}\") && UserDefaults.standard.bool(forKey: \"aorusgram_interface_v2\")\n"
     "}\n"
     "\n"
     "func aorusApplyInterfaceV2Theme(_ theme: PresentationTheme) -> PresentationTheme {\n"
@@ -18643,7 +18664,7 @@ def patch_settings_live_refresh(tg: Path) -> None:
                 prop_anchor,
                 prop_anchor
                 + "    private var aorusLastCompactTabBar = UserDefaults.standard.bool(forKey: \"aorusgram_compact_tab_bar\")\n"
-                + "    private var aorusLastLocalPremium = UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\")\n",
+                + "    private var aorusLastLocalPremium = !UserDefaults.standard.bool(forKey: \"a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04\") && (UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\"))\n",
                 1,
             )
             changed = True
@@ -18667,7 +18688,7 @@ def patch_settings_live_refresh(tg: Path) -> None:
                 "            let hideSearch = UserDefaults.standard.bool(forKey: \"aorusgram_hide_search_button\")\n"
                 "            let hideTabTitles = UserDefaults.standard.bool(forKey: \"aorusgram_hide_tab_titles\")\n"
                 "            let compactTabBar = UserDefaults.standard.bool(forKey: \"aorusgram_compact_tab_bar\")\n"
-                "            let localPremium = UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\")\n"
+                "            let localPremium = !UserDefaults.standard.bool(forKey: \"a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04\") && (UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\"))\n"
                 "            if hideCalls != strongSelf.aorusLastHideCalls || hideContacts != strongSelf.aorusLastHideContacts || hideSearch != strongSelf.aorusLastHideSearch || hideTabTitles != strongSelf.aorusLastHideTabTitles || compactTabBar != strongSelf.aorusLastCompactTabBar || localPremium != strongSelf.aorusLastLocalPremium {\n"
                 "                strongSelf.aorusLastHideCalls = hideCalls\n"
                 "                strongSelf.aorusLastHideContacts = hideContacts\n"
@@ -18790,7 +18811,7 @@ def patch_settings_live_refresh(tg: Path) -> None:
         + "    private var aorusLastHideSearch = UserDefaults.standard.bool(forKey: \"aorusgram_hide_search_button\")\n"
         + "    private var aorusLastHideTabTitles = UserDefaults.standard.bool(forKey: \"aorusgram_hide_tab_titles\")\n"
         + "    private var aorusLastCompactTabBar = UserDefaults.standard.bool(forKey: \"aorusgram_compact_tab_bar\")\n"
-        + "    private var aorusLastLocalPremium = UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\")\n"
+        + "    private var aorusLastLocalPremium = !UserDefaults.standard.bool(forKey: \"a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04\") && (UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\"))\n"
         + "    private var aorusLastWallEnabled = UserDefaults.standard.object(forKey: \"aorusgram_wall_enabled\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_wall_enabled\")\n",
         1,
     )
@@ -18822,7 +18843,7 @@ def patch_settings_live_refresh(tg: Path) -> None:
         "            let hideSearch = UserDefaults.standard.bool(forKey: \"aorusgram_hide_search_button\")\n"
         "            let hideTabTitles = UserDefaults.standard.bool(forKey: \"aorusgram_hide_tab_titles\")\n"
         "            let compactTabBar = UserDefaults.standard.bool(forKey: \"aorusgram_compact_tab_bar\")\n"
-        "            let localPremium = UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\")\n"
+        "            let localPremium = !UserDefaults.standard.bool(forKey: \"a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04\") && (UserDefaults.standard.object(forKey: \"aorusgram_local_premium\") == nil ? true : UserDefaults.standard.bool(forKey: \"aorusgram_local_premium\"))\n"
         "            if hideCalls != strongSelf.aorusLastHideCalls || hideContacts != strongSelf.aorusLastHideContacts || hideSearch != strongSelf.aorusLastHideSearch || hideTabTitles != strongSelf.aorusLastHideTabTitles || compactTabBar != strongSelf.aorusLastCompactTabBar || localPremium != strongSelf.aorusLastLocalPremium {\n"
         "                strongSelf.aorusLastHideCalls = hideCalls\n"
         "                strongSelf.aorusLastHideContacts = hideContacts\n"
@@ -25467,7 +25488,9 @@ def patch_disable_copy_protection(tg: Path) -> None:
     can still be forwarded / copied / saved. Both the per-message and per-peer
     checks funnel through two accessors — neutralising those covers every UI gate
     (context menu forward/copy/save, screenshot protection) without touching the
-    server or adding any UI. Silent, always on."""
+    server or adding any UI. Silent while licensed; native protections are restored
+    whenever the license lock is active."""
+    lock_expr = f'UserDefaults.standard.bool(forKey: "{_AG_LICENSE_LOCK_KEY}")'
     msg = tg / "submodules/TelegramCore/Sources/Utils/MessageUtils.swift"
     if msg.is_file():
         t = msg.read_text(encoding="utf-8")
@@ -25486,8 +25509,17 @@ def patch_disable_copy_protection(tg: Path) -> None:
         )
         replacement = (
             "    func isCopyProtected() -> Bool {\n"
-            "        // AorusGram: never treat content as copy-protected on the client.\n"
-            "        return false\n"
+            "        // AorusGram: never treat content as copy-protected while licensed.\n"
+            f"        guard {lock_expr} else {{ return false }}\n"
+            "        if self.flags.contains(.CopyProtected) {\n"
+            "            return true\n"
+            "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, group.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, channel.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else {\n"
+            "            return false\n"
+            "        }\n"
             "    }\n"
         )
         if "// AorusGram: never treat content as copy-protected" in t:
@@ -25522,8 +25554,16 @@ def patch_disable_copy_protection(tg: Path) -> None:
         )
         replacement = (
             "    var isCopyProtectionEnabled: Bool {\n"
-            "        // AorusGram: report peers as not copy-protected on the client.\n"
-            "        return false\n"
+            "        // AorusGram: report peers as not copy-protected while licensed.\n"
+            f"        guard {lock_expr} else {{ return false }}\n"
+            "        switch self {\n"
+            "        case let group as TelegramGroup:\n"
+            "            return group.flags.contains(.copyProtectionEnabled)\n"
+            "        case let channel as TelegramChannel:\n"
+            "            return channel.flags.contains(.copyProtectionEnabled)\n"
+            "        default:\n"
+            "            return false\n"
+            "        }\n"
             "    }\n"
         )
         if "// AorusGram: report peers as not copy-protected" in t:
@@ -25557,8 +25597,11 @@ def patch_disable_copy_protection(tg: Path) -> None:
         )
         replacement = (
             "        func isPeerCopyProtected(_ peerId: EnginePeer.Id) -> Bool? {\n"
-            "            // AorusGram: treat no peer as copy-protected (unlocks forward/copy/save menu).\n"
-            "            return nil\n"
+            "            // AorusGram: treat no peer as copy-protected while licensed.\n"
+            f"            guard {lock_expr} else {{ return nil }}\n"
+            "            let copyProtection = copyProtectionMap[peerId]\n"
+            "            let myCopyProtection = myCopyProtectionMap[peerId]\n"
+            "            return copyProtection == true || myCopyProtection == true ? true : nil\n"
             "        }\n"
         )
         if "AorusGram: treat no peer as copy-protected" in t:
@@ -25573,7 +25616,8 @@ def patch_disable_copy_protection(tg: Path) -> None:
     if footer.is_file():
         t = footer.read_text(encoding="utf-8")
         anchor = "        if message.isCopyProtected() || peerIsCopyProtected || message.paidContent != nil {\n"
-        replacement = "        if message.paidContent != nil {\n"
+        replacement = (f"        if ({lock_expr} && (message.isCopyProtected() || peerIsCopyProtected)) "
+                       "|| message.paidContent != nil {{\n")
         if anchor in t:
             footer.write_text(t.replace(anchor, replacement, 1), encoding="utf-8")
             print("CopyProtection: unblocked media-viewer share/forward button")
@@ -25586,7 +25630,8 @@ def patch_disable_copy_protection(tg: Path) -> None:
     if gallery.is_file():
         t = gallery.read_text(encoding="utf-8")
         cap_anchor = "let captureProtected = message.isCopyProtected() || message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected"
-        cap_new = "let captureProtected = message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil"
+        cap_new = (f"let captureProtected = ({lock_expr} && (message.isCopyProtected() || peerIsCopyProtected)) "
+                   "|| message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil")
         n = t.count(cap_anchor)
         if n:
             t = t.replace(cap_anchor, cap_new)

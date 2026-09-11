@@ -88,7 +88,7 @@ public final class AorusVoiceTwin {
     private var ringModPhase: Float = 0
 
     public var isEnabled: Bool {
-        if UserDefaults.standard.bool(forKey: "a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04") {
+        if !AorusLicenseAccess.isAllowed {
             return false
         }
         return UserDefaults.standard.bool(forKey: "aorusgram_voice_twin_enabled")
