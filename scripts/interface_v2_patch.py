@@ -4140,40 +4140,6 @@ def _patch_overlay_palette(tg: Path) -> None:
     )
     text = _replace_once(
         text,
-        "        } else if self.isAvatarExpanded {\n"
-        "            navigationContentsAccentColor = expandedAvatarNavigationContentsAccentColor\n"
-        "            navigationContentsPrimaryColor = expandedAvatarNavigationContentsPrimaryColor\n"
-        "            navigationContentsSecondaryColor = expandedAvatarNavigationContentsSecondaryColor\n",
-        "        } else if self.isAvatarExpanded {\n"
-        "            // AorusGram: while the banner is still drawn these labels are over Telegram's\n"
-        "            // own photograph and the dark gradient it lays across the top of it, not over\n"
-        "            // the page. The page's ink answers the page and nothing else: on a peer whose\n"
-        "            // photograph is white it is near-black, and scrolling such a profile put a\n"
-        "            // near-black name and status into that darkening, where they could not be read.\n"
-        "            // White is what the gradient exists to make legible, and white is what stock\n"
-        "            // uses for this whole palette for exactly that reason.\n"
-        "            //\n"
-        "            // Keyed to the banner rather than to a fraction, because the banner is already\n"
-        "            // the answer: `backgroundBannerAlpha` is 1 for precisely as long as it is drawn\n"
-        "            // and 0 the moment the page takes over, which is the same line these labels\n"
-        "            // cross. Past it the page is behind them again and the page's ink is right --\n"
-        "            // which is the state a collapsed profile spends its time in.\n"
-        "            //\n"
-        "            // Only inside this branch: it runs when the photo gallery is open, so there is\n"
-        "            // always a photograph and always a gradient over it. The branch below covers a\n"
-        "            // peer with no photo at all, where the banner is the theme's own background and\n"
-        "            // white would be white on white.\n"
-        "            //\n"
-        "            // Chosen here rather than corrected afterwards: these three are `let`, and\n"
-        "            // a second assignment to one of them is not a fix, it is a build failure.\n"
-        "            let aorusBannerInk = aorusOverlayPalette && backgroundBannerAlpha > 0.5\n"
-        "            navigationContentsAccentColor = aorusBannerInk ? UIColor.white : expandedAvatarNavigationContentsAccentColor\n"
-        "            navigationContentsPrimaryColor = aorusBannerInk ? UIColor.white : expandedAvatarNavigationContentsPrimaryColor\n"
-        "            navigationContentsSecondaryColor = aorusBannerInk ? UIColor(white: 1.0, alpha: 0.7) : expandedAvatarNavigationContentsSecondaryColor\n",
-        "overlay palette banner ink",
-    )
-    text = _replace_once(
-        text,
         "            let isOverlay = self.isAvatarExpanded || hasBackground\n",
         "            // AorusGram: the capsule is over the avatar's colour whether or not the photo is\n"
         "            // expanded, so the track and the artist take the page's ink either way.\n"
@@ -4426,6 +4392,30 @@ def _patch_static_avatar(tg: Path) -> None:
         "            // The only line the island branch owned that this one did not: the shadow that\n"
         "            // keeps the status bar legible over a photo. Skipping the branch must not take it.\n"
         "            self.avatarListNode.listContainerNode.topShadowNode.isHidden = !self.isAvatarExpanded\n"
+        "            // AorusGram: and it is faded out the moment the profile is scrolled.\n"
+        "            //\n"
+        "            // This shadow is laid at the TOP of the avatar list container -- origin zero,\n"
+        "            // navigationHeight + 20 tall -- and it is shown whenever the photo is expanded.\n"
+        "            // Upstream that is safe, because expanded means the photograph fills the top of\n"
+        "            // the screen and the shadow is what keeps white status-bar content legible on it.\n"
+        "            // Interface 2.0 broke that equivalence: it keeps the photo expanded permanently,\n"
+        "            // so the shadow stays on while the container scrolls up, and on the way past it\n"
+        "            // drags a dark gradient across the navigation title. Under a peer whose page is\n"
+        "            // light -- a white avatar -- the title's ink is near-black, and near-black on that\n"
+        "            // gradient is the unreadable name that was photographed. Measured off that shot:\n"
+        "            // glyphs at 15-20 over a background of 42.\n"
+        "            //\n"
+        "            // The answer is not to flip the ink. The ink is right: it is chosen from the page,\n"
+        "            // and the page is what is actually behind the title everywhere except inside this\n"
+        "            // gradient. What is wrong is the gradient being there at all once the photograph\n"
+        "            // has stopped being the backdrop. So it keeps its full strength while the profile\n"
+        "            // sits at the top -- where the photo does fill the screen and the status bar needs\n"
+        "            // it -- and is gone within forty points of scroll, long before the title reaches\n"
+        "            // the navigation bar. Nothing then darkens the page, and the page's own ink reads\n"
+        "            // on it in every state.\n"
+        "            if aorusStaticAvatar {\n"
+        "                self.avatarListNode.listContainerNode.topShadowNode.alpha = 1.0 - max(0.0, min(1.0, contentOffset / 40.0))\n"
+        "            }\n"
         "        }\n",
         "static avatar top shadow",
     )

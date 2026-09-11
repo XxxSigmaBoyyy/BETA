@@ -3001,11 +3001,11 @@ def main() -> None:
                 # Interface 2.0, so the expandedAvatar* branch is the one every profile with a
                 # picture takes, and it has to be inked like the other two.
                 "aorusOverlayInk",
-                # And the one state the page's ink is the wrong answer for: while the banner is
-                # still drawn, the name and the status are over Telegram's photograph and the dark
-                # gradient across the top of it, not over the page. On a white avatar the page's
-                # ink is near-black and the name vanished into that darkening while scrolling.
-                "let aorusBannerInk = aorusOverlayPalette && backgroundBannerAlpha > 0.5",
+                # The darkening that made a near-black name unreadable is the expanded photo's own
+                # top shadow, which Interface 2.0 keeps on permanently because it keeps the photo
+                # expanded. It is faded out as soon as the profile is scrolled, so nothing darkens
+                # the page under the navigation title and the page's ink reads in every state.
+                "self.avatarListNode.listContainerNode.topShadowNode.alpha = 1.0 - max(0.0, min(1.0, contentOffset / 40.0))",
                 # The photo stands still and the capsule under it is the small one, lifted clear of
                 # the join between the picture and the page.
                 "aorusStaticAvatar",
