@@ -25617,7 +25617,7 @@ def patch_disable_copy_protection(tg: Path) -> None:
         t = footer.read_text(encoding="utf-8")
         anchor = "        if message.isCopyProtected() || peerIsCopyProtected || message.paidContent != nil {\n"
         replacement = (f"        if ({lock_expr} && (message.isCopyProtected() || peerIsCopyProtected)) "
-                       "|| message.paidContent != nil {{\n")
+                       "|| message.paidContent != nil {\n")
         if anchor in t:
             footer.write_text(t.replace(anchor, replacement, 1), encoding="utf-8")
             print("CopyProtection: unblocked media-viewer share/forward button")

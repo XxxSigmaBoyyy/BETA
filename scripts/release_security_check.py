@@ -502,6 +502,8 @@ def main() -> int:
     branding = (root / "scripts/aorus_branding.py").read_text(encoding="utf-8")
     if "aorusgram_license_locked" in branding:
         fail(errors, "aorus_branding.py still injects the plaintext license-lock key")
+    if '"|| message.paidContent != nil {{\\n")' in branding:
+        fail(errors, "media footer patch emits a doubled Swift opening brace")
     if "aorusRequestedMainNav && AorusLicenseAccess.isAllowed" not in branding:
         fail(errors, "purchase-bot routing must require the authenticated entitlement verdict")
     profile_patch = (root / "scripts/profile_personalization_patch.py").read_text(encoding="utf-8")
