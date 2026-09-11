@@ -1467,7 +1467,7 @@ def main() -> None:
             # without it -- so what is published here is the route and nothing else.
             "publishRequirement(required: AorusHybridRoute.shared.tunnelIsRequired)",
             '"required": required',
-            "AorusSessionMetrics.metricFlag",
+            "AorusLicenseAccess.isAllowed",
             "waitForCoreAndLocalSocks(",
             "localSocksIsReady(port:",
             "realityPreflight(port:",

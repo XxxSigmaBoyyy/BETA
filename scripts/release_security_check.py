@@ -528,6 +528,12 @@ def main() -> int:
     gate_src_path = root / "AorusGram/Sources/Features/Subscription/LicenseGate.swift"
     if LOCK_KEY_OPAQUE not in gate_src_path.read_text(encoding="utf-8"):
         fail(errors, "LicenseGate does not publish the opaque license-lock key")
+    branding_verifier = (root / "scripts/verify_aorus_branding.py").read_text(encoding="utf-8")
+    reality_marker_anchor = branding_verifier.find('"import LibXray"')
+    reality_marker_start = branding_verifier.rfind('for marker in (', 0, reality_marker_anchor)
+    reality_marker_end = branding_verifier.find('):', reality_marker_anchor)
+    if "AorusLicenseAccess.isAllowed" not in branding_verifier[reality_marker_start:reality_marker_end]:
+        fail(errors, "branding verifier must accept the central entitlement authority in RealityManager")
     for gf in (
         "AorusGram/Sources/Features/Network/AorusProxyManager.swift",
         "AorusGram/Sources/Features/Network/AorusRealityManager.swift",
