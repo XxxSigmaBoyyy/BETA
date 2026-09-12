@@ -5577,7 +5577,13 @@ private enum AorusAIMarkdown {
               delimiter.count == headers.count else {
             return nil
         }
-        let delimiterPattern = #"^:?-{3,}:?$"#
+        // One dash or more, which is what GFM actually defines a delimiter cell as
+        // (`:?-+:?`). Requiring three silently rejected every table whose separator the
+        // model wrote compactly -- `|:-:|`, `|--|`, `|-|` are all legal and all used --
+        // and the whole block then fell through to raw text with the pipes showing. That
+        // is the "works most of the time" part of the report: it depended on how wide the
+        // model happened to draw the rule.
+        let delimiterPattern = #"^:?-+:?$"#
         guard delimiter.allSatisfy({ $0.range(of: delimiterPattern, options: .regularExpression) != nil }) else {
             return nil
         }
@@ -5592,11 +5598,20 @@ private enum AorusAIMarkdown {
         // unbounded number of UIKit views. It still covers full periodic tables and other
         // practical in-chat data sets.
         while cursor < lines.count, rows.count < 160,
-              let row = tableCells(in: lines[cursor]), row.count <= headers.count {
-            // During SSE the last row often arrives cell by cell. Padding it keeps the
-            // answer a single stable table instead of flashing a raw pipe line underneath
-            // until the final delimiter arrives.
-            rows.append(row + Array(repeating: "", count: headers.count - row.count))
+              let row = tableCells(in: lines[cursor]) {
+            // GFM: a body row may carry any number of cells. Short rows are padded, long
+            // rows have the excess ignored — the row is never a reason to stop.
+            //
+            // Aborting on a long row is the other half of the report. One stray trailing
+            // pipe, or one cell the model split in two, ended the table at that line and
+            // dumped every remaining row as raw pipes underneath a correct-looking header.
+            // During SSE the last row also arrives cell by cell, and padding keeps the
+            // answer one stable table instead of flashing a raw line while it lands.
+            if row.count >= headers.count {
+                rows.append(Array(row.prefix(headers.count)))
+            } else {
+                rows.append(row + Array(repeating: "", count: headers.count - row.count))
+            }
             cursor += 1
         }
         let raw = lines[index ..< cursor].joined(separator: "\n")
@@ -5643,6 +5658,17 @@ private enum AorusAIMarkdown {
     /// The body face. Answers are set at 16.5/26.
     static let bodyFont = UIFont.systemFont(ofSize: 16.5)
 
+    /// Bold and italic together. UIKit has no system constructor for the pair, so the two
+    /// traits are asked of the semibold descriptor; a family that cannot supply them falls
+    /// back to plain semibold rather than losing the emphasis altogether.
+    private static var boldItalicBodyFont: UIFont {
+        let base = UIFont.systemFont(ofSize: 16.5, weight: .semibold)
+        guard let descriptor = base.fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) else {
+            return base
+        }
+        return UIFont(descriptor: descriptor, size: 16.5)
+    }
+
     static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
         let normalized = displayTypography(source)
         // The leading is expressed as line spacing rather than a fixed line height so a
@@ -5650,6 +5676,13 @@ private enum AorusAIMarkdown {
         // a 26pt box.
         let output = NSMutableAttributedString(string: normalized, attributes: [.font: bodyFont, .foregroundColor: color])
         applyMarkdownLinks(in: output, accent: accent)
+        // Both markers at once, and before either single pass.
+        //
+        // `apply` strips the delimiters and *sets* .font, so ***text*** used to be eaten by
+        // the bold pass into *text* in semibold, and the italic pass then matched what was
+        // left and overwrote the font — the bold was lost on exactly the words the model
+        // had emphasised hardest.
+        apply(pattern: #"\*\*\*(.+?)\*\*\*"#, in: output, font: boldItalicBodyFont)
         apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: 16.5, weight: .semibold))
         apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
         apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
