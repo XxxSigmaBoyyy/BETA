@@ -5719,6 +5719,7 @@ private enum AorusAIMarkdown {
         }
         value = replacing(pattern: #"(?<!\\)\$([^$\n]+)\$"#, in: value) { $0[0] }
         value = replacing(pattern: #"\\text\{([^{}]*)\}"#, in: value) { $0[0] }
+        value = replacing(pattern: #"\\sqrt\{([^{}]+)\}"#, in: value) { "√" + $0[0] }
         value = replacing(pattern: #"\\frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
             return captures[0] + "⁄" + captures[1]
         }
@@ -5750,7 +5751,10 @@ private enum AorusAIMarkdown {
     private static func superscript(_ source: String) -> String {
         let map: [Character: Character] = [
             "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
-            "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾"
+            "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+            "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ", "h": "ʰ", "i": "ⁱ",
+            "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ", "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ",
+            "t": "ᵗ", "u": "ᵘ", "v": "ᵛ", "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ"
         ]
         guard source.allSatisfy({ map[$0] != nil }) else { return "^(" + source + ")" }
         return String(source.compactMap { map[$0] })
@@ -5759,7 +5763,9 @@ private enum AorusAIMarkdown {
     private static func subscriptText(_ source: String) -> String {
         let map: [Character: Character] = [
             "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
-            "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎"
+            "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎",
+            "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ", "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ",
+            "o": "ₒ", "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ", "x": "ₓ"
         ]
         guard source.allSatisfy({ map[$0] != nil }) else { return "_(" + source + ")" }
         return String(source.compactMap { map[$0] })
