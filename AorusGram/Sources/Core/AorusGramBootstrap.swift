@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AorusBadge
 
 // Single entry point called once from AppDelegate before Telegram creates the
 // AccountManager or any authorized/unauthorized network.
@@ -39,6 +40,12 @@ public final class AorusGramBootstrap {
         // An active signed cache permits the proxy immediately; every other state is
         // fail-closed until LicenseGate receives a fresh active server response.
         LicenseGate.shared.start()
+        // Publish the badge registries before anything can read them. The native
+        // verified flag lives in TelegramCore and resolves out of a plain registry
+        // key, so on a launch where no badge write happens — a fresh install, or any
+        // launch before the first signed response lands — that key would not exist at
+        // all and every checkmark would be missing until something else wrote one.
+        AorusBadge.bootstrapRegistries()
         BadgeSnapshotService.shared.start()
 
         // The user's own imported VLESS configuration, if they have one enabled. First, and

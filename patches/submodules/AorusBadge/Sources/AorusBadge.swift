@@ -106,6 +106,21 @@ public enum AorusBadge {
         return sanitized
     }
 
+    /// Publish the derived registries once at launch.
+    ///
+    /// `verified` is not rendered by this module: TelegramCore's `isVerified` reads the
+    /// derived registry key directly, and that key is only ever written as a side effect
+    /// of a badge write. On a launch where no badge write happens — a fresh install, or
+    /// any launch before the first signed response lands — the key is absent and every
+    /// checkmark is missing. Called from the bootstrap so the registries exist before the
+    /// first row is drawn.
+    public static func bootstrapRegistries() {
+        registryLock.lock()
+        rebuildVerifiedRegistry(defaults: UserDefaults.standard)
+        registryLock.unlock()
+        notifyChanged()
+    }
+
     private static func rebuildVerifiedRegistry(defaults: UserDefaults) {
         let snapshot = defaults.dictionary(forKey: badgeRegistryKey) ?? [:]
         let own = defaults.dictionary(forKey: selfBadgeRegistryKey) ?? [:]
@@ -144,7 +159,10 @@ public enum AorusBadge {
            let assignments = own[String(id)] as? [String: Any] {
             return assignments
         }
-        return defaults.dictionary(forKey: badgeRegistryKey)?[String(id)] as? [String: Any] ?? [:]
+        if let roster = defaults.dictionary(forKey: badgeRegistryKey)?[String(id)] as? [String: Any] {
+            return roster
+        }
+        return [:]
     }
 
     private static func isActive(_ value: Any?, now: Int64) -> Bool {
