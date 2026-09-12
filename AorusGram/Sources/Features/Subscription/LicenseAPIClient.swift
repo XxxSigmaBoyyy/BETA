@@ -45,6 +45,35 @@ final class LicenseAPIClient {
         post(path: "/license/activate", body: body, completion: completion)
     }
 
+    func badgeSnapshot(completion: @escaping (Result<BadgeSnapshotResponse, LicenseError>) -> Void) {
+        signedPost(path: "/license/badges/snapshot", body: [:]) { result in
+            switch result {
+            case .success(let response):
+                guard (200..<300).contains(response.statusCode) else {
+                    let policy = LicenseResponse(json: response.object)
+                    if response.statusCode == 426, policy.status == .clientOutdated {
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("aorusgram.clientOutdated"),
+                                object: nil,
+                                userInfo: ["response": policy]
+                            )
+                        }
+                    }
+                    completion(.failure(.http(response.statusCode)))
+                    return
+                }
+                guard let snapshot = BadgeSnapshotResponse(json: response.object) else {
+                    completion(.failure(.decode))
+                    return
+                }
+                completion(.success(snapshot))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
     // MARK: - Internals
 
     private func baseBody(telegramUserId: Int64?) -> [String: Any] {
@@ -61,6 +90,51 @@ final class LicenseAPIClient {
     private func post(path: String,
                       body: [String: Any],
                       completion: @escaping (Result<LicenseResponse, LicenseError>) -> Void) {
+        signedPost(path: path, body: body) { result in
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let response):
+                let parsed = LicenseResponse(json: response.object)
+                if !(200..<300).contains(response.statusCode) {
+                    // A revoked build is a signed, authoritative policy verdict. Treat
+                    // unsigned/forged 426 responses as network errors in signedPost.
+                    if response.statusCode == 426, parsed.status == .clientOutdated {
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("aorusgram.clientOutdated"),
+                                object: nil,
+                                userInfo: ["response": parsed]
+                            )
+                        }
+                        completion(.success(parsed))
+                    } else if let code = parsed.errorCode {
+                        completion(.failure(.server(code)))
+                    } else {
+                        completion(.failure(.http(response.statusCode)))
+                    }
+                    return
+                }
+                // 2xx but carrying an explicit error code (defensive).
+                if let code = parsed.errorCode, parsed.status == .networkError {
+                    completion(.failure(.server(code)))
+                    return
+                }
+                completion(.success(parsed))
+            }
+        }
+    }
+
+    private struct SignedJSONResponse {
+        let statusCode: Int
+        let object: [String: Any]
+    }
+
+    // One signing/verification pipeline for every license API operation. The body is
+    // serialized exactly once; its SHA-256 and the URLRequest both use those bytes.
+    private func signedPost(path: String,
+                            body: [String: Any],
+                            completion: @escaping (Result<SignedJSONResponse, LicenseError>) -> Void) {
         guard LicenseKeyProvider.isProvisioned, AorusBuildKeyProvider.isProvisioned else {
             completion(.failure(.notProvisioned)); return
         }
@@ -118,10 +192,9 @@ final class LicenseAPIClient {
             guard let http = response as? HTTPURLResponse else {
                 completion(.failure(.network)); return
             }
-            let isSuccess = (200..<300).contains(http.statusCode)
-            guard let data = data,
+            guard let data = data, data.count <= 2 * 1024 * 1024,
                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-                completion(.failure(isSuccess ? .decode : .http(http.statusCode)))
+                completion(.failure((200..<300).contains(http.statusCode) ? .decode : .http(http.statusCode)))
                 return
             }
 
@@ -142,36 +215,7 @@ final class LicenseAPIClient {
             case .invalid:
                 completion(.failure(.network)); return
             }
-
-            let parsed = LicenseResponse(json: object)
-            if !isSuccess {
-                // A revoked build is a signed, authoritative policy verdict. Treat
-                // unsigned/forged 426 responses as network errors above to prevent
-                // an on-path attacker from permanently locking the client.
-                if http.statusCode == 426, parsed.status == .clientOutdated {
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("aorusgram.clientOutdated"),
-                            object: nil,
-                            userInfo: ["response": parsed]
-                        )
-                    }
-                    completion(.success(parsed))
-                    return
-                }
-                if let code = parsed.errorCode {
-                    completion(.failure(.server(code)))
-                } else {
-                    completion(.failure(.http(http.statusCode)))
-                }
-                return
-            }
-            // 2xx but carrying an explicit error code (defensive).
-            if let code = parsed.errorCode, parsed.status == .networkError {
-                completion(.failure(.server(code)))
-                return
-            }
-            completion(.success(parsed))
+            completion(.success(SignedJSONResponse(statusCode: http.statusCode, object: object)))
         }
         task.resume()
     }

@@ -24,7 +24,9 @@ public enum AorusBadgeKind: Equatable {
 
 public enum AorusBadge {
     private static let badgeRegistryKey = "aorusgram_server_badges_v1"
+    private static let selfBadgeRegistryKey = "aorusgram_server_self_badges_v2"
     private static let verifiedRegistryKey = "aorusgram_server_verified_v1"
+    private static let snapshotRevisionKey = "aorusgram_server_badges_revision_v1"
     private static let registryLock = NSLock()
 
     // Replace, never merge, the signed assignment for one account. This ensures a
@@ -34,6 +36,63 @@ public enum AorusBadge {
                                            serverNow: Int64?) {
         guard id != 0 else { return }
         let now = serverNow ?? Int64(Date().timeIntervalSince1970)
+        let sanitized = sanitize(badges, now: now)
+
+        registryLock.lock()
+        let defaults = UserDefaults.standard
+        var registry = defaults.dictionary(forKey: selfBadgeRegistryKey) ?? [:]
+        registry[String(id)] = sanitized
+        defaults.set(registry, forKey: selfBadgeRegistryKey)
+        rebuildVerifiedRegistry(defaults: defaults)
+        registryLock.unlock()
+        notifyChanged()
+    }
+
+    // Replace the complete signed roster in one critical section. The current
+    // account's /check or /bootstrap assignment lives in a separate overlay and
+    // therefore remains authoritative even when a snapshot arrives concurrently.
+    @discardableResult
+    public static func replaceServerBadgeSnapshot(
+        _ badges: [Int64: [(String, Int64?)]],
+        serverNow: Int64,
+        revision: Int64
+    ) -> Bool {
+        guard serverNow > 0, revision >= 0 else { return false }
+        var snapshot: [String: Any] = [:]
+        snapshot.reserveCapacity(badges.count)
+        for (peerId, assignments) in badges where peerId > 0 {
+            let sanitized = sanitize(assignments, now: serverNow)
+            if !sanitized.isEmpty {
+                snapshot[String(peerId)] = sanitized
+            }
+        }
+
+        registryLock.lock()
+        let defaults = UserDefaults.standard
+        if let storedRevision = defaults.object(forKey: snapshotRevisionKey) as? NSNumber,
+           revision < storedRevision.int64Value {
+            registryLock.unlock()
+            return false
+        }
+        defaults.set(snapshot, forKey: badgeRegistryKey)
+        defaults.set(NSNumber(value: revision), forKey: snapshotRevisionKey)
+        rebuildVerifiedRegistry(defaults: defaults)
+        registryLock.unlock()
+        notifyChanged()
+        return true
+    }
+
+    public static func clearServerBadgeSnapshot() {
+        registryLock.lock()
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: badgeRegistryKey)
+        defaults.removeObject(forKey: snapshotRevisionKey)
+        rebuildVerifiedRegistry(defaults: defaults)
+        registryLock.unlock()
+        notifyChanged()
+    }
+
+    private static func sanitize(_ badges: [(String, Int64?)], now: Int64) -> [String: Int64] {
         var sanitized: [String: Int64] = [:]
         for (rawId, until) in badges {
             let normalized = rawId == "head_admin_cat" ? "meme" : rawId
@@ -44,31 +103,48 @@ public enum AorusBadge {
             // Zero is the property-list-safe representation of no expiry.
             sanitized[normalized] = until ?? 0
         }
+        return sanitized
+    }
 
-        registryLock.lock()
-        let defaults = UserDefaults.standard
-        var registry = defaults.dictionary(forKey: badgeRegistryKey) ?? [:]
-        registry[String(id)] = sanitized
-        defaults.set(registry, forKey: badgeRegistryKey)
+    private static func rebuildVerifiedRegistry(defaults: UserDefaults) {
+        let snapshot = defaults.dictionary(forKey: badgeRegistryKey) ?? [:]
+        let own = defaults.dictionary(forKey: selfBadgeRegistryKey) ?? [:]
+        var verified: [String: Any] = [:]
 
-        var verified = defaults.dictionary(forKey: verifiedRegistryKey) ?? [:]
-        if let until = sanitized["verified"] {
-            verified[String(id)] = until
-        } else {
-            verified.removeValue(forKey: String(id))
+        for (peerId, rawAssignments) in snapshot {
+            if let assignments = rawAssignments as? [String: Any],
+               let until = assignments["verified"] as? NSNumber {
+                verified[peerId] = until
+            }
+        }
+        // A present self entry, including an empty one, overrides the roster.
+        for (peerId, rawAssignments) in own {
+            verified.removeValue(forKey: peerId)
+            if let assignments = rawAssignments as? [String: Any],
+               let until = assignments["verified"] as? NSNumber {
+                verified[peerId] = until
+            }
         }
         defaults.set(verified, forKey: verifiedRegistryKey)
-        registryLock.unlock()
+    }
+
+    private static func notifyChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: NSNotification.Name("aorusgram.serverBadgesChanged"), object: nil
+            )
+        }
     }
 
     private static func activeAssignments(for id: Int64) -> [String: Any] {
         registryLock.lock()
         defer { registryLock.unlock() }
-        guard let registry = UserDefaults.standard.dictionary(forKey: badgeRegistryKey),
-              let assignments = registry[String(id)] as? [String: Any] else {
-            return [:]
+        let defaults = UserDefaults.standard
+        if let own = defaults.dictionary(forKey: selfBadgeRegistryKey),
+           let assignments = own[String(id)] as? [String: Any] {
+            return assignments
         }
-        return assignments
+        return defaults.dictionary(forKey: badgeRegistryKey)?[String(id)] as? [String: Any] ?? [:]
     }
 
     private static func isActive(_ value: Any?, now: Int64) -> Bool {

@@ -92,9 +92,11 @@ jobs:
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateDownloadController.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/ClientOutdatedController.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/BadgeSnapshotService.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/LicenseAPIClient.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/LicenseGate.swift \
-            aorusgram/AorusGram/Sources/Features/Subscription/LicenseStore.swift
+            aorusgram/AorusGram/Sources/Features/Subscription/LicenseStore.swift \
+            aorusgram/patches/submodules/AorusBadge/Sources/AorusBadge.swift
           swiftc -typecheck \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \

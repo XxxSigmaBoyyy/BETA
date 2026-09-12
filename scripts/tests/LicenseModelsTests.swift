@@ -56,6 +56,50 @@ private func parsesSignedPolicyAndBadges() {
             "legacy head_admin_cat is normalized to meme")
 }
 
+private func parsesBoundedBadgeSnapshot() {
+    let snapshot = BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 5,
+        "badges": [
+            "6297603868": [["id": "dev", "until": NSNull()]],
+            "8123825459": [["id": "head_admin_cat", "until": 1_900_000_000]],
+            "3956524111": [["id": "verified", "until": NSNull()]],
+            "123": [["id": "unknown", "until": NSNull()]],
+        ],
+    ])
+    require(snapshot != nil, "valid badge snapshot is decoded")
+    require(snapshot?.revision == 5, "snapshot revision is retained")
+    require(snapshot?.badges[6_297_603_868]?.first?.id == .dev,
+            "peer id keys are decoded as Int64")
+    require(snapshot?.badges[8_123_825_459]?.first?.id == .meme,
+            "legacy head_admin_cat is normalized in snapshots")
+    require(snapshot?.badges[123] == nil, "unknown-only assignments are omitted")
+}
+
+private func rejectsMalformedBadgeSnapshots() {
+    require(BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 1,
+        "badges": ["not-a-peer": []],
+    ]) == nil, "invalid peer ids reject the complete snapshot")
+
+    let malformedExpiry = BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 1,
+        "badges": ["42": [["id": "dev", "until": "forever"]]],
+    ])
+    require(malformedExpiry?.badges[42] == nil,
+            "malformed expiry cannot become an accidental permanent badge")
+
+    let excessive = Array(repeating: ["id": "dev", "until": NSNull()],
+                          count: BadgeSnapshotResponse.maximumBadgesPerPeer + 1)
+    require(BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 1,
+        "badges": ["42": excessive],
+    ]) == nil, "per-peer badge arrays are bounded")
+}
+
 @main
 private enum LicenseModelsTests {
     static func main() {
@@ -63,6 +107,8 @@ private enum LicenseModelsTests {
         rejectsUnknownAccessStates()
         acceptsIntegralServerValues()
         parsesSignedPolicyAndBadges()
+        parsesBoundedBadgeSnapshot()
+        rejectsMalformedBadgeSnapshots()
         print("LicenseModels tests: OK")
     }
 }

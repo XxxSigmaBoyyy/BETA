@@ -152,7 +152,10 @@ def main() -> int:
     license_client = (root / "AorusGram/Sources/Features/Subscription/LicenseAPIClient.swift").read_text(encoding="utf-8")
     if "AorusBuildKeyProvider.applyHeaders" not in license_client:
         fail(errors, "license requests do not carry the build-policy signature")
-    if 'http.statusCode == 426, parsed.status == .clientOutdated' not in license_client:
+    if not any(marker in license_client for marker in (
+        'http.statusCode == 426, parsed.status == .clientOutdated',
+        'response.statusCode == 426, parsed.status == .clientOutdated',
+    )):
         fail(errors, "signed client_outdated verdict is not enforced")
 
     ai_client = (root / "AorusGram/Sources/Features/AI/AorusAIClient.swift").read_text(encoding="utf-8")
@@ -179,6 +182,42 @@ def main() -> int:
             fail(errors, f"badge recipient {raw_id} is still hardcoded in the client module")
     if "replaceServerBadges" not in badge_source:
         fail(errors, "server-controlled badge registry is missing")
+    for marker in (
+        "replaceServerBadgeSnapshot",
+        "snapshotRevisionKey",
+        "selfBadgeRegistryKey",
+    ):
+        if marker not in badge_source:
+            fail(errors, f"server badge snapshot invariant is missing {marker}")
+
+    badge_client = license_client
+    if badge_client.count('"/license/badges/snapshot"') != 1:
+        fail(errors, "badge snapshot endpoint must have exactly one client call site")
+    for marker in (
+        "func badgeSnapshot",
+        "signedPost(path:",
+        "LicenseResponseVerifier.verify",
+        "data.count <= 2 * 1024 * 1024",
+    ):
+        if marker not in badge_client:
+            fail(errors, f"signed badge snapshot transport invariant is missing {marker}")
+    badge_service = (root / "AorusGram/Sources/Features/Subscription/BadgeSnapshotService.swift").read_text(encoding="utf-8")
+    for marker in (
+        "UIApplication.willEnterForegroundNotification",
+        "ProcessInfo.processInfo.systemUptime",
+        "nextAllowedUptime",
+        "consecutiveFailures",
+        "requestGeneration == self.generation",
+        "licenseDidBecomeInactive",
+        "replaceServerBadgeSnapshot",
+    ):
+        if marker not in badge_service:
+            fail(errors, f"badge snapshot lifecycle invariant is missing {marker}")
+    if "/license/badges/snapshot" in badge_service:
+        fail(errors, "badge snapshot service must use the central signed API client")
+    for source in ("BadgeSnapshotService.swift", "AorusBadge.swift"):
+        if source not in workflow:
+            fail(errors, f"{source} is missing from the early Swift parse preflight")
 
     proxy = (root / "AorusGram/Sources/Features/Network/AorusProxyManager.swift").read_text(encoding="utf-8")
     if "withRevealedBytes(Obf.k" not in proxy or "Obf.reveal(Obf.k)" in proxy:

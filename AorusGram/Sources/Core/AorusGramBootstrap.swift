@@ -39,6 +39,7 @@ public final class AorusGramBootstrap {
         // An active signed cache permits the proxy immediately; every other state is
         // fail-closed until LicenseGate receives a fresh active server response.
         LicenseGate.shared.start()
+        BadgeSnapshotService.shared.start()
 
         // The user's own imported VLESS configuration, if they have one enabled. First, and
         // deliberately ahead of the signed lane: both drive the one in-process Xray core, and

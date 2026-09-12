@@ -73,15 +73,25 @@ public struct LicenseResponse {
         self.serverNow = LicenseResponse.int64(json["server_now"])
         self.daysLeft = LicenseResponse.int(json["days_left"])
         self.errorCode = errorCode
-        self.badges = (json["badges"] as? [[String: Any]] ?? []).compactMap { item in
-            guard var rawId = item["id"] as? String else { return nil }
-            if rawId == "head_admin_cat" { rawId = "meme" }
-            guard let id = Badge.Identifier(rawValue: rawId) else { return nil }
-            return Badge(id: id, until: LicenseResponse.int64(item["until"]))
-        }
+        self.badges = (json["badges"] as? [[String: Any]] ?? []).compactMap(Self.badge)
     }
 
-    private static func int64(_ any: Any?) -> Int64? {
+    fileprivate static func badge(_ item: [String: Any]) -> Badge? {
+        guard var rawId = item["id"] as? String else { return nil }
+        if rawId == "head_admin_cat" { rawId = "meme" }
+        guard let id = Badge.Identifier(rawValue: rawId) else { return nil }
+
+        let until: Int64?
+        if let rawUntil = item["until"], !(rawUntil is NSNull) {
+            guard let parsed = int64(rawUntil) else { return nil }
+            until = parsed
+        } else {
+            until = nil
+        }
+        return Badge(id: id, until: until)
+    }
+
+    fileprivate static func int64(_ any: Any?) -> Int64? {
         if let number = any as? NSNumber,
            CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
         if let value = any as? Int64 { return value }
@@ -120,6 +130,45 @@ public struct LicenseResponse {
             return value.intValue
         }
         return nil
+    }
+}
+
+// Complete server-owned badge roster. The payload is intentionally bounded before
+// it reaches UI state: a malformed or unexpectedly large signed response fails as a
+// whole instead of consuming unbounded memory on every peer row.
+struct BadgeSnapshotResponse: Equatable {
+    static let maximumPeerCount = 20_000
+    static let maximumBadgesPerPeer = 8
+
+    let serverNow: Int64
+    let revision: Int64
+    let badges: [Int64: [LicenseResponse.Badge]]
+
+    init?(json: [String: Any]) {
+        guard let serverNow = LicenseResponse.int64(json["server_now"]), serverNow > 0,
+              let revision = LicenseResponse.int64(json["revision"]), revision >= 0,
+              let rawBadges = json["badges"] as? [String: Any],
+              rawBadges.count <= Self.maximumPeerCount else {
+            return nil
+        }
+
+        var parsed: [Int64: [LicenseResponse.Badge]] = [:]
+        parsed.reserveCapacity(rawBadges.count)
+        for (rawPeerId, value) in rawBadges {
+            guard let peerId = Int64(rawPeerId), peerId > 0,
+                  let rawItems = value as? [[String: Any]],
+                  rawItems.count <= Self.maximumBadgesPerPeer else {
+                return nil
+            }
+            let items = rawItems.compactMap(LicenseResponse.badge)
+            if !items.isEmpty {
+                parsed[peerId] = items
+            }
+        }
+
+        self.serverNow = serverNow
+        self.revision = revision
+        self.badges = parsed
     }
 }
 

@@ -468,6 +468,9 @@ def main() -> None:
             err.append("Badges: administrator badge text is not production-ready")
         if "peerName) —" in badge_text:
             err.append("Badges: administrator toast must not include the peer nickname")
+        for marker in ("replaceServerBadgeSnapshot", "selfBadgeRegistryKey", "snapshotRevisionKey"):
+            if marker not in badge_text:
+                err.append(f"Badges: signed snapshot registry is missing {marker}")
 
     animated_background = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "UI" / "AorusAnimatedProfileBackground.swift"
     if animated_background.is_file():

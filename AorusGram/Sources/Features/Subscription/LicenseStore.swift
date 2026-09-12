@@ -92,6 +92,12 @@ final class LicenseStore {
                 serverNow: response.serverNow
             )
         }
+        if response.status.allowsAppAccess {
+            BadgeSnapshotService.shared.licenseDidBecomeActive()
+        } else {
+            BadgeSnapshotService.shared.licenseDidBecomeInactive()
+            AorusBadge.clearServerBadgeSnapshot()
+        }
     }
 
     func clear() {
@@ -113,6 +119,8 @@ final class LicenseStore {
                 forPeerRawId: clearedPeerId, badges: [], serverNow: nil
             )
         }
+        BadgeSnapshotService.shared.licenseDidBecomeInactive()
+        AorusBadge.clearServerBadgeSnapshot()
     }
 
     // Prefer the id captured with the last license snapshot; fall back to the
