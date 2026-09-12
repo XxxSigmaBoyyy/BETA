@@ -46,7 +46,7 @@ final class LicenseAPIClient {
     }
 
     func badgeSnapshot(completion: @escaping (Result<BadgeSnapshotResponse, LicenseError>) -> Void) {
-        signedPost(path: "/license/badges/snapshot", body: [:]) { result in
+        signedPost(path: "/license/badges/snapshot", body: [:], allowsUnsignedResponse: true) { result in
             switch result {
             case .success(let response):
                 guard (200..<300).contains(response.statusCode) else {
@@ -132,8 +132,20 @@ final class LicenseAPIClient {
 
     // One signing/verification pipeline for every license API operation. The body is
     // serialized exactly once; its SHA-256 and the URLRequest both use those bytes.
+    /// `allowsUnsignedResponse` relaxes ONE thing and only for routes that grant nothing.
+    ///
+    /// Every verdict that opens the app stays strict: an unsigned licence answer is
+    /// refused. The badge roster is different in kind — it decides which little picture
+    /// sits beside a name and confers no access, no entitlement and no capability — and
+    /// it is a route the server added later, so it need not go through the same response
+    /// signer. With the requirement on, an unsigned roster is discarded as a network
+    /// failure and nobody has a badge, silently, which is exactly what was reported three
+    /// times. A forged roster could at most draw a cosmetic badge, and it would still have
+    /// to get past the pinned connection and the request HMAC. An actively *invalid*
+    /// signature is still refused here, on every route.
     private func signedPost(path: String,
                             body: [String: Any],
+                            allowsUnsignedResponse: Bool = false,
                             completion: @escaping (Result<SignedJSONResponse, LicenseError>) -> Void) {
         guard LicenseKeyProvider.isProvisioned, AorusBuildKeyProvider.isProvisioned else {
             completion(.failure(.notProvisioned)); return
@@ -209,7 +221,7 @@ final class LicenseAPIClient {
             case .ok:
                 break
             case .unsigned:
-                if SubscriptionConfig.requireSignedResponse {
+                if SubscriptionConfig.requireSignedResponse, !allowsUnsignedResponse {
                     completion(.failure(.network)); return
                 }
             case .invalid:

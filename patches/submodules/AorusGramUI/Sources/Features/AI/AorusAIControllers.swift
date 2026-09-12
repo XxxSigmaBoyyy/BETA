@@ -4704,6 +4704,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 view.delegate = self
                 view.linkTextAttributes = [.foregroundColor: accent, .underlineStyle: 0]
                 view.configureMentions(context: context, theme: theme)
+                // The pill is no longer a link, so its tap arrives here instead of through
+                // the text-interaction delegate. Same destination, same URL shape.
+                view.onMentionTap = { [weak self] mention in
+                    guard let url = URL(string: "aorus-peer://\(mention.peerId)") else { return }
+                    self?.onOpenLink?(url)
+                }
                 view.attributedText = AorusAIMarkdown.attributed(value, color: textColor, accent: accent, mentions: mentions)
                 view.refreshMentionImages()
                 bodyStack.addArrangedSubview(view)
@@ -5887,7 +5893,16 @@ private enum AorusAIMarkdown {
             resolved: mentions,
             font: bodyFont,
             accent: accent,
-            link: true
+            // Not a link, deliberately.
+            //
+            // A `.link` attribute is what gives UIKit a target for a long press: it builds
+            // a preview and an action menu for the range, and doing that over a run that
+            // begins with a text attachment is what crashed the app when a pill was held.
+            // Declining the interaction in the delegate did not help, because the preview
+            // is built before the delegate is consulted. Without the attribute there is no
+            // interaction to build at all, and the tap is carried by the text view's own
+            // recogniser instead — same behaviour, none of the machinery.
+            link: false
         )
         return output
     }

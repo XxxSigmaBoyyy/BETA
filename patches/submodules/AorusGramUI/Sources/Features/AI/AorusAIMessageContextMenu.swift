@@ -4,6 +4,9 @@ import Display
 import AccountContext
 import TelegramPresentationData
 import AppBundle
+import PresentationDataUtils
+import TelegramCore
+import Postbox
 import AorusGram
 
 /// AorusAI actions live in one native page sheet after Telegram's message menu has fully
@@ -245,5 +248,80 @@ private final class AorusAIMessageActionsController: UIViewController, UITableVi
 
     @objc private func newChat() {
         run(AorusAIMessageMenu.newChatId)
+    }
+}
+
+/// The same AorusAI menu, for a voice message.
+///
+/// A voice message has no text, so the menu that works on text had nothing to work on and
+/// was never offered. The recording is transcribed on the device first — Apple's Speech
+/// framework, the same path the voice-to-text button already uses — and the transcript is
+/// handed to the ordinary menu as the message's text. Every action behaves exactly as it
+/// does on a written message, because by the time the sheet opens it *is* one.
+///
+/// Nothing is sent anywhere to make this happen: the transcription is local, and only the
+/// action the reader then chooses talks to AorusAI.
+public func aorusAIPresentVoiceMessageActions(
+    context: AccountContext,
+    navigationController: NavigationController?,
+    peerId: Int64,
+    messageNamespace: Int32,
+    messageId: Int32,
+    authorPeerId: Int64?,
+    file: TelegramMediaFile
+) {
+    guard let navigationController else { return }
+    // Resolved here rather than by the caller: the caller is a Telegram chat file that
+    // does not import Postbox, and adding an import to a patched upstream file to reach
+    // one path is more surface than handing the file across.
+    guard let filePath = context.account.postbox.mediaBox.completedResourcePath(file.resource) else {
+        return
+    }
+    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+
+    func present(_ message: String) {
+        let alert = textAlertController(
+            context: context,
+            title: nil,
+            text: message,
+            actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]
+        )
+        navigationController.topViewController.flatMap { $0 as? ViewController }?.present(alert, in: .window(.root))
+    }
+
+    // No progress overlay on purpose: `OverlayStatusController` is not a symbol this
+    // module already links, and adding an unverified import to save a spinner is how a
+    // build is lost. Recognition of a voice message is short and its result is cached,
+    // and the press that opened the menu has already given its own haptic.
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+    VoiceTranscriptionManager.shared.transcribe(fileURL: URL(fileURLWithPath: filePath)) { result in
+        DispatchQueue.main.async {
+            switch result {
+            case let .success(text):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    present(aorusAILocalized(
+                        "Не удалось распознать речь в этом сообщении",
+                        "Could not recognise any speech in this message"
+                    ))
+                    return
+                }
+                aorusAIPresentMessageActions(
+                    context: context,
+                    navigationController: navigationController,
+                    peerId: peerId,
+                    messageNamespace: messageNamespace,
+                    messageId: messageId,
+                    authorPeerId: authorPeerId,
+                    text: trimmed
+                )
+            case .failure:
+                present(aorusAILocalized(
+                    "Не удалось расшифровать голосовое сообщение",
+                    "Could not transcribe the voice message"
+                ))
+            }
+        }
     }
 }

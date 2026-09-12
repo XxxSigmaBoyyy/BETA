@@ -531,6 +531,11 @@ class AorusAIMentionTextView: UITextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(aorusHandleMentionTap(_:)))
+        // Does not fight selection or the caret: it only claims a touch that landed on a
+        // pill, and lets every other tap through untouched.
+        tap.cancelsTouchesInView = false
+        addGestureRecognizer(tap)
         avatarObserver = NotificationCenter.default.addObserver(
             forName: AorusAIMentionAvatarCache.changedNotification,
             object: nil,
@@ -593,39 +598,85 @@ class AorusAIMentionTextView: UITextView {
         var result = ""
         var cursor = range.location
         let end = NSMaxRange(range)
+        let string = textStorage.string as NSString
         while cursor < end {
             var effective = NSRange(location: 0, length: 0)
             let box = textStorage.attribute(.aorusAIMention, at: cursor, effectiveRange: &effective) as? AorusAIMentionBox
-            if let box, effective.location == cursor, box.renderedLength > 0 {
-                let pill = min(box.renderedLength, effective.length)
-                let taken = min(pill, end - cursor)
-                if taken == pill {
-                    // The whole pill is inside the selection: swap it for the handle.
+            if let box, box.renderedLength > 0 {
+                // The pill's own extent, which is not the whole attribute run: characters
+                // typed straight after a pill inherit its attributes and join the run, and
+                // those are the reader's own text.
+                let pill = NSRange(location: effective.location, length: min(box.renderedLength, effective.length))
+                if NSLocationInRange(cursor, pill) || cursor == pill.location {
+                    // ANY overlap is enough, and this is the correction.
                     //
-                    // A pill draws as [attachment][gap][display name], and the gap is a
-                    // real character of the run. Dropping it would turn "Hi @monk" into
-                    // "Hi@monk", so whatever spacing the pill drew in front of the name is
-                    // carried over and only the name itself becomes the handle.
+                    // Long-pressing a mention selects the *word* — "Durov" — not the whole
+                    // pill, so a selection almost never begins on the attachment. Requiring
+                    // that it did meant the common case fell through and the drawn name went
+                    // to the pasteboard instead of the handle that was typed.
                     carriesMention = true
-                    let drawn = (textStorage.string as NSString).substring(
-                        with: NSRange(location: cursor, length: pill)
-                    )
-                    let lead = drawn.drop(while: { $0 == "\u{FFFC}" }).prefix(while: { $0 == " " })
-                    result += lead + "@" + box.mention.username
-                } else {
-                    // A partial pill is the reader's own selection boundary; take it as drawn.
-                    result += (textStorage.string as NSString).substring(with: NSRange(location: cursor, length: taken))
+                    result += "@" + box.mention.username
+                    cursor = min(NSMaxRange(pill), end)
+                    // A selection that ends inside the pill has now consumed all of it; the
+                    // handle is whole or it is nothing.
+                    if cursor >= end { break }
+                    continue
                 }
-                cursor += taken
+                // Past the pill: the tail of the run is ordinary typed text.
+                let tail = min(NSMaxRange(effective), end)
+                let taken = max(1, tail - cursor)
+                result += string.substring(with: NSRange(location: cursor, length: min(taken, end - cursor)))
+                cursor += min(taken, end - cursor)
                 continue
             }
-            let next = box == nil ? min(NSMaxRange(effective), end) : min(cursor + 1, end)
-            let step = max(1, next - cursor)
-            let taken = min(step, end - cursor)
-            result += (textStorage.string as NSString).substring(with: NSRange(location: cursor, length: taken))
-            cursor += taken
+            let next = min(NSMaxRange(effective), end)
+            let taken = max(1, next - cursor)
+            result += string.substring(with: NSRange(location: cursor, length: min(taken, end - cursor)))
+            cursor += min(taken, end - cursor)
         }
         return carriesMention ? result : nil
+    }
+
+    /// Raised when a pill is tapped, carrying the person it stands for.
+    ///
+    /// The pill is no longer a `.link`, so this is how a tap reaches the profile. Doing it
+    /// with a recogniser instead of a link attribute is what removes the long-press preview
+    /// UIKit builds for link ranges — the one that crashed on a run starting with a text
+    /// attachment.
+    var onMentionTap: ((AorusAIMention) -> Void)?
+
+    /// The pill under `point`, in this view's coordinates, or nil.
+    private func mention(at point: CGPoint) -> AorusAIMention? {
+        guard textStorage.length > 0 else { return nil }
+        var location = point
+        location.x -= textContainerInset.left
+        location.y -= textContainerInset.top
+        guard location.x >= 0.0, location.y >= 0.0 else { return nil }
+        let index = layoutManager.characterIndex(
+            for: location,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+        guard index >= 0, index < textStorage.length else { return nil }
+        // `characterIndex(for:...)` answers with the nearest character even when the point
+        // is past the end of a line, so the glyph actually under the finger is confirmed
+        // before a tap is claimed.
+        let glyph = layoutManager.glyphIndexForCharacter(at: index)
+        let rect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyph, length: 1),
+            in: textContainer
+        )
+        guard rect.insetBy(dx: -2.0, dy: -2.0).contains(location) else { return nil }
+        guard let box = textStorage.attribute(.aorusAIMention, at: index, effectiveRange: nil) as? AorusAIMentionBox else {
+            return nil
+        }
+        return box.mention
+    }
+
+    @objc private func aorusHandleMentionTap(_ recognizer: UITapGestureRecognizer) {
+        guard let handler = onMentionTap else { return }
+        guard let mention = mention(at: recognizer.location(in: self)) else { return }
+        handler(mention)
     }
 
     /// Asked before the system deletes anything backwards. Returning true means the pill

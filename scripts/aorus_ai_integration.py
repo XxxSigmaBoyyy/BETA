@@ -169,6 +169,43 @@ def patch_context_menu(root: Path) -> None:
         "            })))\n"
         "            actions.append(.separator)\n"
         "        }\n"
+        # A voice message carries no text, so the block above never offered the menu on
+        # one. It is transcribed on the device first and the transcript becomes the
+        # message text, after which every action behaves exactly as it does on a written
+        # message. Only a recording already on disk is offered: transcription reads a
+        # local file, and there is nothing to read before the voice note is downloaded.
+        "        if messages.count == 1, messages[0].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {\n"
+        "            var aorusVoiceFile: TelegramMediaFile?\n"
+        "            for media in messages[0].media {\n"
+        "                if let file = media as? TelegramMediaFile, file.isVoice {\n"
+        "                    aorusVoiceFile = file\n"
+        "                    break\n"
+        "                }\n"
+        "            }\n"
+        "            if let aorusVoiceFile {\n"
+        "                let aorusVoiceMessage = messages[0]\n"
+        "                actions.append(.action(ContextMenuActionItem(text: aorusAIMessageMenuTitle(), icon: { theme in\n"
+        "                    return generateTintedImage(image: UIImage(bundleImageName: aorusAIMessageMenuIconName()), color: theme.actionSheet.primaryTextColor)\n"
+        "                }, action: { [weak controllerInteraction] c, _ in\n"
+        "                    guard let navigationController = controllerInteraction?.navigationController() else {\n"
+        "                        c?.dismiss(completion: {})\n"
+        "                        return\n"
+        "                    }\n"
+        "                    c?.dismiss(completion: {\n"
+        "                        aorusAIPresentVoiceMessageActions(\n"
+        "                            context: context,\n"
+        "                            navigationController: navigationController,\n"
+        "                            peerId: aorusVoiceMessage.id.peerId.toInt64(),\n"
+        "                            messageNamespace: aorusVoiceMessage.id.namespace,\n"
+        "                            messageId: aorusVoiceMessage.id.id,\n"
+        "                            authorPeerId: aorusVoiceMessage.author?.id.toInt64(),\n"
+        "                            file: aorusVoiceFile\n"
+        "                        )\n"
+        "                    })\n"
+        "                })))\n"
+        "                actions.append(.separator)\n"
+        "            }\n"
+        "        }\n"
     )
     value = replace_once(value, anchor, block + anchor, "message context menu")
     path.write_text(value, encoding="utf-8")
