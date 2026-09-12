@@ -4659,6 +4659,18 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     }
 
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+        // Only a real tap opens anything.
+        //
+        // UIKit calls this for every kind of text interaction, not just taps: a long press
+        // arrives as `.presentActions` and the peek that precedes it as `.preview`. This
+        // ignored `interaction` entirely, so pressing and holding a mention pill pushed a
+        // controller from inside the gesture while UIKit was still building the text
+        // interaction for that same press — which is the crash reported on holding an
+        // avatar-and-name pill in an AI chat. Anything that is not the default action is
+        // declined without side effects, so a long press now does nothing at all.
+        guard interaction == .invokeDefaultAction else {
+            return false
+        }
         onOpenLink?(URL)
         return false
     }

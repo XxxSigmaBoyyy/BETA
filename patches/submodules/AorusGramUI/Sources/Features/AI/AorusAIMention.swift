@@ -553,6 +553,81 @@ class AorusAIMentionTextView: UITextView {
         refreshMentionImages()
     }
 
+    /// Copying a pill yields the handle that was written, not the name that is drawn.
+    ///
+    /// A pill's characters *are* the person's display name — that is what the layout has
+    /// to draw — so the system's own copy puts "Durov" on the pasteboard when what was
+    /// typed, and the only thing that can be pasted back and resolved again, is "@monk".
+    /// Every pill run already carries its `AorusAIMentionBox`, so the handle is there to
+    /// be put back; this walks the selection and swaps each run for it.
+    ///
+    /// Only the pill's own drawn length is swapped. Characters typed straight after a pill
+    /// inherit its attributes and join the run, and those are the reader's own text.
+    override func copy(_ sender: Any?) {
+        guard let text = aorusSourceText(in: selectedRange), !text.isEmpty else {
+            super.copy(sender)
+            return
+        }
+        UIPasteboard.general.string = text
+    }
+
+    /// Cut is a copy and a deletion, and it must put the same thing on the pasteboard.
+    ///
+    /// The deletion is left to UIKit — it owns the caret, the undo stack and the delegate
+    /// round trip — and only what it wrote to the pasteboard is corrected afterwards.
+    override func cut(_ sender: Any?) {
+        let text = aorusSourceText(in: selectedRange)
+        super.cut(sender)
+        if let text, !text.isEmpty {
+            UIPasteboard.general.string = text
+        }
+    }
+
+    /// The selected text with every pill restored to its `@handle`.
+    ///
+    /// Returns nil when the selection carries no pill at all, so the ordinary path is left
+    /// to UIKit rather than reimplemented.
+    func aorusSourceText(in range: NSRange) -> String? {
+        guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return nil }
+        var carriesMention = false
+        var result = ""
+        var cursor = range.location
+        let end = NSMaxRange(range)
+        while cursor < end {
+            var effective = NSRange(location: 0, length: 0)
+            let box = textStorage.attribute(.aorusAIMention, at: cursor, effectiveRange: &effective) as? AorusAIMentionBox
+            if let box, effective.location == cursor, box.renderedLength > 0 {
+                let pill = min(box.renderedLength, effective.length)
+                let taken = min(pill, end - cursor)
+                if taken == pill {
+                    // The whole pill is inside the selection: swap it for the handle.
+                    //
+                    // A pill draws as [attachment][gap][display name], and the gap is a
+                    // real character of the run. Dropping it would turn "Hi @monk" into
+                    // "Hi@monk", so whatever spacing the pill drew in front of the name is
+                    // carried over and only the name itself becomes the handle.
+                    carriesMention = true
+                    let drawn = (textStorage.string as NSString).substring(
+                        with: NSRange(location: cursor, length: pill)
+                    )
+                    let lead = drawn.drop(while: { $0 == "\u{FFFC}" }).prefix(while: { $0 == " " })
+                    result += lead + "@" + box.mention.username
+                } else {
+                    // A partial pill is the reader's own selection boundary; take it as drawn.
+                    result += (textStorage.string as NSString).substring(with: NSRange(location: cursor, length: taken))
+                }
+                cursor += taken
+                continue
+            }
+            let next = box == nil ? min(NSMaxRange(effective), end) : min(cursor + 1, end)
+            let step = max(1, next - cursor)
+            let taken = min(step, end - cursor)
+            result += (textStorage.string as NSString).substring(with: NSRange(location: cursor, length: taken))
+            cursor += taken
+        }
+        return carriesMention ? result : nil
+    }
+
     /// Asked before the system deletes anything backwards. Returning true means the pill
     /// under the caret was taken out whole and UIKit must not act again.
     var onDeleteBackward: (() -> Bool)?

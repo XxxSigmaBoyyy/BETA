@@ -34,10 +34,24 @@ enum AorusBuildKeyProvider {
     }
 
     @discardableResult
+    /// Whether the build-policy headers are put on the wire.
+    ///
+    /// The License API runs with `legacy_allowed = true` and does not expect them yet.
+    /// Sending them is not neutral: a build signature the server does not accept is
+    /// answered with 426 `client_outdated`, and on `/license/badges/snapshot` that means
+    /// the roster never arrives and nobody has a badge. The key is still provisioned and
+    /// the signature is still computed and tested by the same code path, so turning this
+    /// on is a one-line change the day the server's build policy is switched on.
+    static let sendsBuildHeaders = false
+
     static func applyHeaders(to request: inout URLRequest,
                              timestamp: String,
                              nonce: String,
                              device: String) -> Bool {
+        guard sendsBuildHeaders else {
+            // Nothing to add, and that is a success: the request is complete without them.
+            return true
+        }
         let normalizedDevice = device.lowercased()
         let message = "\(timestamp)\n\(nonce)\n\(normalizedDevice)\n\(build)"
         guard let signature = withKey({ key in

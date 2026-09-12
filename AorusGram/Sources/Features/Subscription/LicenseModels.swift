@@ -150,56 +150,27 @@ struct BadgeSnapshotResponse: Equatable {
             return nil
         }
 
-        // Two shapes are accepted, because two were specified.
-        //
-        // The roster design document describes `badges` as a flat ARRAY of
-        // {peer_id, kind, valid_until}. The first client written against it parsed a
-        // DICTIONARY keyed by peer id whose values are {id, until} — the same shape the
-        // per-account badges take in /license/check. Those are not compatible: asking a
-        // JSON array for `as? [String: Any]` yields nil, the initialiser fails, and the
-        // roster is discarded as malformed however correct the server was. Rather than
-        // pick one and make the other a silent outage, both are read here; whichever the
-        // server settles on, the client already understands it.
+        // One shape, the one the server actually serves: `badges` is an OBJECT keyed
+        // by Telegram id, each value an array of {id, until}. The flat array of
+        // {peer_id, kind} from the earlier design plan is explicitly not to be parsed —
+        // it does not exist on the server, and accepting it is surface with nothing
+        // behind it.
+        guard let rawBadges = json["badges"] as? [String: Any],
+              rawBadges.count <= Self.maximumPeerCount else {
+            return nil
+        }
         var parsed: [Int64: [LicenseResponse.Badge]] = [:]
-
-        if let rawBadges = json["badges"] as? [String: Any] {
-            guard rawBadges.count <= Self.maximumPeerCount else { return nil }
-            parsed.reserveCapacity(rawBadges.count)
-            for (rawPeerId, value) in rawBadges {
-                guard let peerId = Int64(rawPeerId), peerId > 0,
-                      let rawItems = value as? [[String: Any]],
-                      rawItems.count <= Self.maximumBadgesPerPeer else {
-                    return nil
-                }
-                let items = rawItems.compactMap(LicenseResponse.badge)
-                if !items.isEmpty {
-                    parsed[peerId] = items
-                }
-            }
-        } else if let rawEntries = json["badges"] as? [[String: Any]] {
-            // One entry per (peer, kind); the same peer may appear more than once, so
-            // entries accumulate instead of replacing.
-            guard rawEntries.count <= Self.maximumPeerCount * Self.maximumBadgesPerPeer else {
+        parsed.reserveCapacity(rawBadges.count)
+        for (rawPeerId, value) in rawBadges {
+            guard let peerId = Int64(rawPeerId), peerId > 0,
+                  let rawItems = value as? [[String: Any]],
+                  rawItems.count <= Self.maximumBadgesPerPeer else {
                 return nil
             }
-            for entry in rawEntries {
-                guard let peerId = LicenseResponse.int64(entry["peer_id"]), peerId > 0 else {
-                    return nil
-                }
-                // `kind`/`valid_until` in the roster document, `id`/`until` in the
-                // per-account response. Normalised into the one Badge the client uses.
-                var item = entry
-                if item["id"] == nil, let kind = entry["kind"] { item["id"] = kind }
-                if item["until"] == nil, let until = entry["valid_until"] { item["until"] = until }
-                guard let badge = LicenseResponse.badge(item) else { continue }
-                var items = parsed[peerId] ?? []
-                guard items.count < Self.maximumBadgesPerPeer else { continue }
-                items.append(badge)
+            let items = rawItems.compactMap(LicenseResponse.badge)
+            if !items.isEmpty {
                 parsed[peerId] = items
             }
-            guard parsed.count <= Self.maximumPeerCount else { return nil }
-        } else {
-            return nil
         }
 
         self.serverNow = serverNow
