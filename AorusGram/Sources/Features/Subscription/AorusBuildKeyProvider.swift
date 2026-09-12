@@ -33,7 +33,6 @@ enum AorusBuildKeyProvider {
         return body(data)
     }
 
-    @discardableResult
     /// Whether the build-policy headers are put on the wire.
     ///
     /// The License API runs with `legacy_allowed = true` and does not expect them yet.
@@ -44,6 +43,7 @@ enum AorusBuildKeyProvider {
     /// on is a one-line change the day the server's build policy is switched on.
     static let sendsBuildHeaders = false
 
+    @discardableResult
     static func applyHeaders(to request: inout URLRequest,
                              timestamp: String,
                              nonce: String,

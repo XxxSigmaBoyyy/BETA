@@ -1069,6 +1069,7 @@ def main() -> int:
                         fail(errors, f"aorus_branding.py main() calls {name}(), which is not defined")
 
     check_mirrored_sources(root, errors)
+    check_declaration_attributes(root, errors)
     check_corefoundation_casts(root, errors)
 
     if errors:
@@ -1155,6 +1156,44 @@ _CF_OBJECT_TYPES = (
     "CFString", "CFArray", "CFDictionary", "CFNumber", "CFData", "CFURL", "CFBoolean",
 )
 _CF_CAST = re.compile(r"\bas\?\s+(" + "|".join(_CF_OBJECT_TYPES) + r")\b")
+
+
+def check_declaration_attributes(root: Path, errors: list[str]) -> None:
+    """`@discardableResult` must still be touching the declaration it applies to.
+
+    Inserting a constant or a doc comment between an attribute and its function silently
+    re-targets the attribute at whatever now follows it, and Swift answers with
+    "'@discardableResult' attribute cannot be applied to this declaration" — an hour into
+    the build, because the module compiles late. That is exactly how one build was lost.
+    The attribute applies to functions, initialisers and subscripts only, so anything else
+    arriving first is the mistake.
+    """
+    for base in ("AorusGram/Sources", "patches"):
+        directory = root / base
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.swift")):
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            for number, line in enumerate(lines, start=1):
+                if line.strip() != "@discardableResult":
+                    continue
+                # Skip the comments and any further attributes, then look at what is left.
+                target = None
+                for candidate in lines[number:]:
+                    stripped = candidate.strip()
+                    if not stripped or stripped.startswith("//") or stripped.startswith("@"):
+                        continue
+                    target = stripped
+                    break
+                if target is None:
+                    fail(errors, f"{path.relative_to(root)}:{number}: @discardableResult applies to nothing")
+                    continue
+                if not ("func " in target or target.startswith("init") or "subscript" in target):
+                    fail(
+                        errors,
+                        f"{path.relative_to(root)}:{number}: @discardableResult is separated from its "
+                        f"function and now lands on `{target[:60]}` — Swift rejects this at compile time.",
+                    )
 
 
 def check_corefoundation_casts(root: Path, errors: list[str]) -> None:
