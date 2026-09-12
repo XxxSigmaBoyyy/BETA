@@ -62,6 +62,18 @@ enum SubL10n {
         }
     }
 
+    /// Mandatory-update copy is kept in its own compact table. It is intentionally not
+    /// mixed into the long subscription phrasebook: the lock screen must remain fully
+    /// localised even though it is unavailable to older builds.
+    @inline(__always)
+    static func update(_ ru: String, _ en: String) -> String {
+        switch lang {
+        case .ru: return ru
+        case .en: return en
+        default: return SubscriptionL10nTable.mandatoryUpdateTranslation(of: en, into: lang) ?? en
+        }
+    }
+
     // MARK: Trial welcome
     static var welcomeTitle: String { t("Добро пожаловать в AorusGram", "Welcome to AorusGram") }
     static var welcomeBody1: String { t("Вам доступен пробный период на 3 дня.", "You have a 3-day free trial.") }
@@ -85,24 +97,24 @@ enum SubL10n {
     static var retry: String { t("Повторить", "Retry") }
 
     // MARK: Mandatory update
-    static var outdatedTitle: String { t("Ваша версия приложения устарела", "This version is no longer supported") }
-    static var outdatedBody: String { t("Чтобы продолжить пользоваться AorusGram, установите последнюю версию.",
+    static var outdatedTitle: String { update("Ваша версия приложения устарела", "This version is no longer supported") }
+    static var outdatedBody: String { update("Чтобы продолжить пользоваться AorusGram, установите последнюю версию.",
                                         "Install the latest AorusGram version to continue.") }
-    static var updateApp: String { t("Обновить", "Update") }
-    static var openChannel: String { t("Перейти в канал", "Open channel") }
-    static var updateTitle: String { t("Обновление AorusGram", "AorusGram Update") }
-    static var preparingUpdate: String { t("Последняя версия", "Latest version") }
-    static var checkingUpdate: String { t("Проверяем доступное обновление…", "Checking for an update…") }
-    static var connecting: String { t("Подключение…", "Connecting…") }
-    static var downloadComplete: String { t("Загрузка завершена", "Download complete") }
-    static var updateFailed: String { t("Не удалось загрузить обновление. Проверьте соединение и повторите попытку.",
+    static var updateApp: String { update("Обновить", "Update") }
+    static var openChannel: String { update("Перейти в канал", "Open channel") }
+    static var updateTitle: String { update("Обновление AorusGram", "AorusGram Update") }
+    static var preparingUpdate: String { update("Последняя версия", "Latest version") }
+    static var checkingUpdate: String { update("Проверяем доступное обновление…", "Checking for an update…") }
+    static var connecting: String { update("Подключение…", "Connecting…") }
+    static var downloadComplete: String { update("Загрузка завершена", "Download complete") }
+    static var updateFailed: String { update("Не удалось загрузить обновление. Проверьте соединение и повторите попытку.",
                                         "Couldn’t download the update. Check your connection and try again.") }
-    static var openInFiles: String { t("Перейти", "Continue") }
+    static var openInFiles: String { update("Перейти", "Continue") }
     static func downloadingVersion(_ version: String) -> String {
-        t("Загрузка версии %@", "Downloading version %@").replacingOccurrences(of: "%@", with: version)
+        update("Загрузка версии %@", "Downloading version %@").replacingOccurrences(of: "%@", with: version)
     }
     static func downloadSpeed(_ speed: String) -> String {
-        t("Скорость: %@/с", "Speed: %@/s").replacingOccurrences(of: "%@", with: speed)
+        update("Скорость: %@/с", "Speed: %@/s").replacingOccurrences(of: "%@", with: speed)
     }
 
     // MARK: Activate key

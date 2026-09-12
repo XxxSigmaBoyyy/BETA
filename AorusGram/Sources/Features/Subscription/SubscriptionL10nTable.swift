@@ -11,7 +11,7 @@ import Foundation
 // The keys must match the English literals in SubscriptionL10n exactly, including the
 // typographic apostrophe (’). Strings that carry a value use a %@ placeholder rather than
 // Swift interpolation: interpolating first would make the key differ on every render.
-enum SubLanguage: String {
+enum SubLanguage: String, CaseIterable {
     case en
     case ru
     case uk
@@ -53,6 +53,228 @@ enum SubscriptionL10nTable {
     static func translation(of english: String, into language: SubLanguage) -> String? {
         return tables[language]?[english]
     }
+
+    static let mandatoryUpdateEnglish: [String] = [
+        "AorusGram Update",
+        "Checking for an update…",
+        "Connecting…",
+        "Continue",
+        "Couldn’t download the update. Check your connection and try again.",
+        "Download complete",
+        "Downloading version %@",
+        "Install the latest AorusGram version to continue.",
+        "Latest version",
+        "Open channel",
+        "Speed: %@/s",
+        "This version is no longer supported",
+        "Update",
+    ]
+
+    static func mandatoryUpdateTranslation(of english: String, into language: SubLanguage) -> String? {
+        guard let index = mandatoryUpdateEnglish.firstIndex(of: english),
+              let translations = mandatoryUpdateTables[language],
+              translations.indices.contains(index) else {
+            return nil
+        }
+        return translations[index]
+    }
+
+    // Same order as mandatoryUpdateEnglish. Arrays keep this release-only phrasebook
+    // compact while the test suite guarantees every supported language has every entry.
+    private static let mandatoryUpdateTables: [SubLanguage: [String]] = [
+        .uk: [
+            "Оновлення AorusGram", "Перевіряємо доступне оновлення…", "Підключення…", "Продовжити",
+            "Не вдалося завантажити оновлення. Перевірте з’єднання та повторіть спробу.", "Завантаження завершено", "Завантаження версії %@",
+            "Щоб продовжити користуватися AorusGram, установіть останню версію.", "Остання версія", "Перейти до каналу", "Швидкість: %@/с",
+            "Ця версія більше не підтримується", "Оновити",
+        ],
+        .vi: [
+            "Bản cập nhật AorusGram", "Đang kiểm tra bản cập nhật…", "Đang kết nối…", "Tiếp tục",
+            "Không thể tải bản cập nhật. Hãy kiểm tra kết nối và thử lại.", "Tải xuống hoàn tất", "Đang tải phiên bản %@",
+            "Cài đặt phiên bản AorusGram mới nhất để tiếp tục.", "Phiên bản mới nhất", "Mở kênh", "Tốc độ: %@/giây",
+            "Phiên bản này không còn được hỗ trợ", "Cập nhật",
+        ],
+        .sv: [
+            "AorusGram-uppdatering", "Söker efter en uppdatering…", "Ansluter…", "Fortsätt",
+            "Det gick inte att hämta uppdateringen. Kontrollera anslutningen och försök igen.", "Hämtningen är klar", "Hämtar version %@",
+            "Installera den senaste versionen av AorusGram för att fortsätta.", "Senaste versionen", "Öppna kanalen", "Hastighet: %@/s",
+            "Den här versionen stöds inte längre", "Uppdatera",
+        ],
+        .nb: [
+            "AorusGram-oppdatering", "Ser etter en oppdatering…", "Kobler til…", "Fortsett",
+            "Kunne ikke laste ned oppdateringen. Kontroller tilkoblingen og prøv igjen.", "Nedlastingen er fullført", "Laster ned versjon %@",
+            "Installer den nyeste versjonen av AorusGram for å fortsette.", "Nyeste versjon", "Åpne kanalen", "Hastighet: %@/s",
+            "Denne versjonen støttes ikke lenger", "Oppdater",
+        ],
+        .hu: [
+            "AorusGram frissítés", "Frissítés keresése…", "Csatlakozás…", "Folytatás",
+            "A frissítés letöltése sikertelen. Ellenőrizd a kapcsolatot, majd próbáld újra.", "Letöltés kész", "A(z) %@ verzió letöltése",
+            "A folytatáshoz telepítsd az AorusGram legújabb verzióját.", "Legújabb verzió", "Csatorna megnyitása", "Sebesség: %@/s",
+            "Ez a verzió már nem támogatott", "Frissítés",
+        ],
+        .ro: [
+            "Actualizare AorusGram", "Se caută o actualizare…", "Se conectează…", "Continuă",
+            "Nu s-a putut descărca actualizarea. Verifică conexiunea și încearcă din nou.", "Descărcare finalizată", "Se descarcă versiunea %@",
+            "Instalează cea mai recentă versiune AorusGram pentru a continua.", "Cea mai recentă versiune", "Deschide canalul", "Viteză: %@/s",
+            "Această versiune nu mai este acceptată", "Actualizează",
+        ],
+        .sk: [
+            "Aktualizácia AorusGram", "Kontroluje sa aktualizácia…", "Pripája sa…", "Pokračovať",
+            "Aktualizáciu sa nepodarilo stiahnuť. Skontrolujte pripojenie a skúste to znova.", "Sťahovanie dokončené", "Sťahuje sa verzia %@",
+            "Ak chcete pokračovať, nainštalujte najnovšiu verziu AorusGram.", "Najnovšia verzia", "Otvoriť kanál", "Rýchlosť: %@/s",
+            "Táto verzia už nie je podporovaná", "Aktualizovať",
+        ],
+        .cs: [
+            "Aktualizace AorusGram", "Kontrola aktualizace…", "Připojování…", "Pokračovat",
+            "Aktualizaci se nepodařilo stáhnout. Zkontrolujte připojení a zkuste to znovu.", "Stahování dokončeno", "Stahování verze %@",
+            "Chcete-li pokračovat, nainstalujte nejnovější verzi AorusGram.", "Nejnovější verze", "Otevřít kanál", "Rychlost: %@/s",
+            "Tato verze již není podporována", "Aktualizovat",
+        ],
+        .sr: [
+            "Ажурирање AorusGram-а", "Провера ажурирања…", "Повезивање…", "Настави",
+            "Ажурирање није могуће преузети. Проверите везу и покушајте поново.", "Преузимање је завршено", "Преузимање верзије %@",
+            "Инсталирајте најновију верзију AorusGram-а да бисте наставили.", "Најновија верзија", "Отвори канал", "Брзина: %@/s",
+            "Ова верзија више није подржана", "Ажурирај",
+        ],
+        .hr: [
+            "Ažuriranje AorusGrama", "Provjera ažuriranja…", "Povezivanje…", "Nastavi",
+            "Ažuriranje nije moguće preuzeti. Provjerite vezu i pokušajte ponovno.", "Preuzimanje je dovršeno", "Preuzimanje verzije %@",
+            "Za nastavak instalirajte najnoviju verziju AorusGrama.", "Najnovija verzija", "Otvori kanal", "Brzina: %@/s",
+            "Ova verzija više nije podržana", "Ažuriraj",
+        ],
+        .he: [
+            "עדכון AorusGram", "בודק אם קיים עדכון…", "מתחבר…", "המשך",
+            "לא ניתן להוריד את העדכון. בדוק את החיבור ונסה שוב.", "ההורדה הושלמה", "מוריד את גרסה %@",
+            "כדי להמשיך, התקן את הגרסה האחרונה של AorusGram.", "הגרסה האחרונה", "פתיחת הערוץ", "מהירות: %@/ש׳",
+            "גרסה זו אינה נתמכת עוד", "עדכון",
+        ],
+        .fi: [
+            "AorusGram-päivitys", "Tarkistetaan päivitystä…", "Yhdistetään…", "Jatka",
+            "Päivitystä ei voitu ladata. Tarkista yhteys ja yritä uudelleen.", "Lataus valmis", "Ladataan versiota %@",
+            "Jatka asentamalla AorusGramin uusin versio.", "Uusin versio", "Avaa kanava", "Nopeus: %@/s",
+            "Tätä versiota ei enää tueta", "Päivitä",
+        ],
+        .ja: [
+            "AorusGram アップデート", "アップデートを確認中…", "接続中…", "続ける",
+            "アップデートをダウンロードできませんでした。接続を確認して、もう一度お試しください。", "ダウンロード完了", "バージョン %@ をダウンロード中",
+            "続行するには、最新バージョンの AorusGram をインストールしてください。", "最新バージョン", "チャンネルを開く", "速度：%@/秒",
+            "このバージョンはサポートされていません", "アップデート",
+        ],
+        .zhHant: [
+            "AorusGram 更新", "正在檢查更新…", "正在連線…", "繼續",
+            "無法下載更新。請檢查連線後再試一次。", "下載完成", "正在下載版本 %@",
+            "請安裝最新版 AorusGram 以繼續使用。", "最新版本", "開啟頻道", "速度：%@/秒",
+            "此版本已不再支援", "更新",
+        ],
+        .zhHans: [
+            "AorusGram 更新", "正在检查更新…", "正在连接…", "继续",
+            "无法下载更新。请检查连接后重试。", "下载完成", "正在下载版本 %@",
+            "请安装最新版 AorusGram 以继续使用。", "最新版本", "打开频道", "速度：%@/秒",
+            "此版本已不再受支持", "更新",
+        ],
+        .kk: [
+            "AorusGram жаңартуы", "Жаңарту тексерілуде…", "Қосылуда…", "Жалғастыру",
+            "Жаңартуды жүктеу мүмкін болмады. Байланысты тексеріп, қайталап көріңіз.", "Жүктеу аяқталды", "%@ нұсқасы жүктелуде",
+            "Жалғастыру үшін AorusGram қолданбасының соңғы нұсқасын орнатыңыз.", "Соңғы нұсқа", "Арнаны ашу", "Жылдамдық: %@/с",
+            "Бұл нұсқаға енді қолдау көрсетілмейді", "Жаңарту",
+        ],
+        .fa: [
+            "به‌روزرسانی AorusGram", "در حال بررسی به‌روزرسانی…", "در حال اتصال…", "ادامه",
+            "بارگیری به‌روزرسانی انجام نشد. اتصال را بررسی کنید و دوباره تلاش کنید.", "بارگیری کامل شد", "در حال بارگیری نسخه %@",
+            "برای ادامه، جدیدترین نسخه AorusGram را نصب کنید.", "جدیدترین نسخه", "باز کردن کانال", "سرعت: %@/ثانیه",
+            "این نسخه دیگر پشتیبانی نمی‌شود", "به‌روزرسانی",
+        ],
+        .ar: [
+            "تحديث AorusGram", "جارٍ التحقق من وجود تحديث…", "جارٍ الاتصال…", "متابعة",
+            "تعذر تنزيل التحديث. تحقق من اتصالك وحاول مرة أخرى.", "اكتمل التنزيل", "جارٍ تنزيل الإصدار %@",
+            "ثبّت أحدث إصدار من AorusGram للمتابعة.", "أحدث إصدار", "فتح القناة", "السرعة: %@/ث",
+            "لم يعد هذا الإصدار مدعومًا", "تحديث",
+        ],
+        .ko: [
+            "AorusGram 업데이트", "업데이트 확인 중…", "연결 중…", "계속",
+            "업데이트를 다운로드할 수 없습니다. 연결을 확인하고 다시 시도하세요.", "다운로드 완료", "버전 %@ 다운로드 중",
+            "계속하려면 최신 버전의 AorusGram을 설치하세요.", "최신 버전", "채널 열기", "속도: %@/초",
+            "이 버전은 더 이상 지원되지 않습니다", "업데이트",
+        ],
+        .uz: [
+            "AorusGram yangilanishi", "Yangilanish tekshirilmoqda…", "Ulanmoqda…", "Davom etish",
+            "Yangilanishni yuklab bo‘lmadi. Ulanishni tekshirib, qayta urinib ko‘ring.", "Yuklab olish tugadi", "%@ versiyasi yuklanmoqda",
+            "Davom etish uchun AorusGramning eng so‘nggi versiyasini o‘rnating.", "Eng so‘nggi versiya", "Kanalni ochish", "Tezlik: %@/s",
+            "Bu versiya endi qo‘llab-quvvatlanmaydi", "Yangilash",
+        ],
+        .be: [
+            "Абнаўленне AorusGram", "Праверка абнаўлення…", "Падключэнне…", "Працягнуць",
+            "Не ўдалося спампаваць абнаўленне. Праверце злучэнне і паўтарыце спробу.", "Спампоўванне завершана", "Спампоўванне версіі %@",
+            "Каб працягнуць, усталюйце апошнюю версію AorusGram.", "Апошняя версія", "Адкрыць канал", "Хуткасць: %@/с",
+            "Гэтая версія больш не падтрымліваецца", "Абнавіць",
+        ],
+        .ms: [
+            "Kemas Kini AorusGram", "Menyemak kemas kini…", "Menyambung…", "Teruskan",
+            "Kemas kini tidak dapat dimuat turun. Semak sambungan anda dan cuba lagi.", "Muat turun selesai", "Memuat turun versi %@",
+            "Pasang versi terkini AorusGram untuk meneruskan.", "Versi terkini", "Buka saluran", "Kelajuan: %@/s",
+            "Versi ini tidak lagi disokong", "Kemas kini",
+        ],
+        .id: [
+            "Pembaruan AorusGram", "Memeriksa pembaruan…", "Menghubungkan…", "Lanjut",
+            "Pembaruan tidak dapat diunduh. Periksa koneksi Anda dan coba lagi.", "Unduhan selesai", "Mengunduh versi %@",
+            "Instal versi terbaru AorusGram untuk melanjutkan.", "Versi terbaru", "Buka kanal", "Kecepatan: %@/dtk",
+            "Versi ini tidak lagi didukung", "Perbarui",
+        ],
+        .ca: [
+            "Actualització d’AorusGram", "S’està comprovant si hi ha actualitzacions…", "S’està connectant…", "Continua",
+            "No s’ha pogut baixar l’actualització. Comprova la connexió i torna-ho a provar.", "Baixada completada", "S’està baixant la versió %@",
+            "Instal·la la versió més recent d’AorusGram per continuar.", "Versió més recent", "Obre el canal", "Velocitat: %@/s",
+            "Aquesta versió ja no és compatible", "Actualitza",
+        ],
+        .nl: [
+            "AorusGram-update", "Controleren op een update…", "Verbinden…", "Doorgaan",
+            "De update kon niet worden gedownload. Controleer je verbinding en probeer het opnieuw.", "Download voltooid", "Versie %@ downloaden",
+            "Installeer de nieuwste versie van AorusGram om door te gaan.", "Nieuwste versie", "Kanaal openen", "Snelheid: %@/s",
+            "Deze versie wordt niet meer ondersteund", "Bijwerken",
+        ],
+        .pl: [
+            "Aktualizacja AorusGram", "Sprawdzanie aktualizacji…", "Łączenie…", "Dalej",
+            "Nie udało się pobrać aktualizacji. Sprawdź połączenie i spróbuj ponownie.", "Pobieranie zakończone", "Pobieranie wersji %@",
+            "Aby kontynuować, zainstaluj najnowszą wersję AorusGram.", "Najnowsza wersja", "Otwórz kanał", "Szybkość: %@/s",
+            "Ta wersja nie jest już obsługiwana", "Aktualizuj",
+        ],
+        .it: [
+            "Aggiornamento AorusGram", "Verifica aggiornamenti…", "Connessione…", "Continua",
+            "Impossibile scaricare l’aggiornamento. Controlla la connessione e riprova.", "Download completato", "Download della versione %@",
+            "Installa la versione più recente di AorusGram per continuare.", "Versione più recente", "Apri il canale", "Velocità: %@/s",
+            "Questa versione non è più supportata", "Aggiorna",
+        ],
+        .es: [
+            "Actualización de AorusGram", "Buscando una actualización…", "Conectando…", "Continuar",
+            "No se pudo descargar la actualización. Comprueba la conexión e inténtalo de nuevo.", "Descarga completada", "Descargando la versión %@",
+            "Instala la última versión de AorusGram para continuar.", "Última versión", "Abrir canal", "Velocidad: %@/s",
+            "Esta versión ya no es compatible", "Actualizar",
+        ],
+        .pt: [
+            "Atualização do AorusGram", "A procurar uma atualização…", "A ligar…", "Continuar",
+            "Não foi possível transferir a atualização. Verifique a ligação e tente novamente.", "Transferência concluída", "A transferir a versão %@",
+            "Instale a versão mais recente do AorusGram para continuar.", "Versão mais recente", "Abrir canal", "Velocidade: %@/s",
+            "Esta versão já não é suportada", "Atualizar",
+        ],
+        .de: [
+            "AorusGram-Update", "Nach einem Update suchen…", "Verbinden…", "Weiter",
+            "Das Update konnte nicht geladen werden. Prüfe deine Verbindung und versuche es erneut.", "Download abgeschlossen", "Version %@ wird geladen",
+            "Installiere die neueste AorusGram-Version, um fortzufahren.", "Neueste Version", "Kanal öffnen", "Geschwindigkeit: %@/s",
+            "Diese Version wird nicht mehr unterstützt", "Aktualisieren",
+        ],
+        .fr: [
+            "Mise à jour d’AorusGram", "Recherche d’une mise à jour…", "Connexion…", "Continuer",
+            "Impossible de télécharger la mise à jour. Vérifiez votre connexion et réessayez.", "Téléchargement terminé", "Téléchargement de la version %@",
+            "Installez la dernière version d’AorusGram pour continuer.", "Dernière version", "Ouvrir le canal", "Vitesse : %@/s",
+            "Cette version n’est plus prise en charge", "Mettre à jour",
+        ],
+        .tr: [
+            "AorusGram Güncellemesi", "Güncelleme denetleniyor…", "Bağlanıyor…", "Devam",
+            "Güncelleme indirilemedi. Bağlantınızı kontrol edip tekrar deneyin.", "İndirme tamamlandı", "%@ sürümü indiriliyor",
+            "Devam etmek için AorusGram’ın en son sürümünü yükleyin.", "En son sürüm", "Kanalı aç", "Hız: %@/sn",
+            "Bu sürüm artık desteklenmiyor", "Güncelle",
+        ],
+    ]
 
     private static let tables: [SubLanguage: [String: String]] = [
         .uk: uk,

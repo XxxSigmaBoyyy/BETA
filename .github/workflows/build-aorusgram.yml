@@ -81,6 +81,12 @@ jobs:
             aorusgram/scripts/tests/AorusUpdateManifestTests.swift \
             -o /tmp/aorus-ai-preflight/update-manifest-tests
           /tmp/aorus-ai-preflight/update-manifest-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/Subscription/SubscriptionL10nTable.swift \
+            aorusgram/scripts/tests/SubscriptionL10nTableTests.swift \
+            -o /tmp/aorus-ai-preflight/subscription-l10n-tests
+          /tmp/aorus-ai-preflight/subscription-l10n-tests
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \
