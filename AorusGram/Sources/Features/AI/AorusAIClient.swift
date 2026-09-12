@@ -396,6 +396,9 @@ public final class AorusAIClient {
         request.setValue(keyVersion, forHTTPHeaderField: "X-Aorus-Kv")
         request.setValue(bodyHash, forHTTPHeaderField: "X-Aorus-Body-SHA256")
         request.setValue(signature, forHTTPHeaderField: "X-Aorus-Sign")
+        guard AorusBuildKeyProvider.applyHeaders(
+            to: &request, timestamp: timestamp, nonce: nonce, device: device
+        ) else { return nil }
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         return request
     }

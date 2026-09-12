@@ -7514,9 +7514,8 @@ def patch_translation_deps(tg: Path) -> None:
 def patch_aorus_badges(tg: Path) -> None:
     """Local AorusGram badge system.
 
-    1. Native verified: TelegramCore `isVerified` returns true for the AorusGram
-       channel/chat ids, so the genuine Telegram checkmark is shown in every
-       surface (chat list, header, profile, search) with no custom rendering.
+    1. Native verified: TelegramCore `isVerified` consults the signed-license badge
+       registry populated by AorusGram, so server revocation applies everywhere.
     2. Custom user badges (DEV tag, meme cat) are injected into the chat-list /
        search rows via the existing EmojiStatusComponent `.image` slot, which is
        laid out AFTER the premium/credibility icon — so it never replaces a
@@ -7527,19 +7526,32 @@ def patch_aorus_badges(tg: Path) -> None:
     if peer_utils.is_file():
         t = peer_utils.read_text(encoding="utf-8")
         anchor = "    var isVerified: Bool {\n        switch self {"
-        if "AorusGram local verification" in t:
+        legacy = (
+            "    var isVerified: Bool {\n"
+            "        // AorusGram local verification — show the native Telegram checkmark\n"
+            "        // for our official channel/chat without any server flag.\n"
+            "        if [3956524111, 3710166840, 8887700542].contains(self.id.id._internalGetInt64Value()) {\n"
+            "            return true\n"
+            "        }\n"
+            "        switch self {"
+        )
+        if "AorusGram server-controlled verification" in t:
             print("Badges: PeerUtils isVerified already patched")
-        elif anchor in t:
+        elif anchor in t or legacy in t:
             injected = (
                 "    var isVerified: Bool {\n"
-                "        // AorusGram local verification — show the native Telegram checkmark\n"
-                "        // for our official channel/chat without any server flag.\n"
-                "        if [3956524111, 3710166840, 8887700542].contains(self.id.id._internalGetInt64Value()) {\n"
-                "            return true\n"
+                "        // AorusGram server-controlled verification. The registry is written\n"
+                "        // only after a signed license response and contains no capabilities.\n"
+                "        let aorusRawId = self.id.id._internalGetInt64Value()\n"
+                "        if let aorusVerified = UserDefaults.standard.dictionary(forKey: \"aorusgram_server_verified_v1\")?[String(aorusRawId)] as? NSNumber {\n"
+                "            let aorusUntil = aorusVerified.int64Value\n"
+                "            if aorusUntil == 0 || Int64(Date().timeIntervalSince1970) < aorusUntil {\n"
+                "                return true\n"
+                "            }\n"
                 "        }\n"
                 "        switch self {"
             )
-            t = t.replace(anchor, injected, 1)
+            t = t.replace(legacy if legacy in t else anchor, injected, 1)
             peer_utils.write_text(t, encoding="utf-8")
             print("Badges: patched PeerUtils isVerified (native verified for AorusGram peers)")
         else:
@@ -8933,6 +8945,35 @@ def patch_license_key_provider(tg: Path) -> None:
     f.write_text(t, encoding="utf-8")
     # Never log the key itself — only its byte length.
     print("LicenseKey: provisioned obfuscated HMAC key (%d bytes)" % len(raw))
+
+
+def patch_build_key_provider(tg: Path) -> None:
+    """Inject the separate server build-policy HMAC key."""
+    f = tg / "submodules/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift"
+    if not f.is_file():
+        raise RuntimeError("BuildKey: AorusBuildKeyProvider.swift not found")
+    marker = "/*__AORUS_BUILD_POLICY_KEY_OBFUSCATED__*/"
+    t = f.read_text(encoding="utf-8")
+    if marker not in t:
+        if "/* AORUS-BUILD-POLICY-KEY-INJECTED */" in t:
+            raise RuntimeError("BuildKey: refusing a previously injected source tree")
+        raise RuntimeError("BuildKey: injection marker is missing from an untrusted provider")
+    key_hex = os.environ.get("AORUS_BUILD_KEY_HEX", "").strip().lower()
+    try:
+        raw = bytes.fromhex(key_hex)
+    except ValueError:
+        raise RuntimeError("BuildKey: AORUS_BUILD_KEY_HEX must be valid hex")
+    if len(raw) < 32:
+        raise RuntimeError("BuildKey: AORUS_BUILD_KEY_HEX must decode to at least 32 bytes")
+    pad = [0x8D, 0x31, 0xE7, 0x54, 0xA2, 0x0B, 0x69, 0xCF,
+           0x17, 0xB8, 0x43, 0xF1, 0x5C, 0x96, 0x2E, 0x7A]
+    obfuscated = [raw[index] ^ pad[index % len(pad)] for index in range(len(raw))]
+    literal = ", ".join("0x%02x" % byte for byte in obfuscated)
+    f.write_text(
+        t.replace(marker, "/* AORUS-BUILD-POLICY-KEY-INJECTED */ " + literal, 1),
+        encoding="utf-8",
+    )
+    print("BuildKey: provisioned obfuscated policy key (%d bytes)" % len(raw))
 
 
 def patch_proxy_key_provider(tg: Path) -> None:
@@ -25894,6 +25935,7 @@ def main() -> None:
     patch_view_once_no_consume(tg)
     patch_one_time_voice_bypass(tg)
     patch_license_key_provider(tg)
+    patch_build_key_provider(tg)
     patch_proxy_key_provider(tg)
     patch_chat_context_menu_media_metadata(tg)
     patch_chat_context_menu_edit_locally(tg)

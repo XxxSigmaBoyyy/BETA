@@ -66,6 +66,7 @@ def main() -> int:
         "LIBXRAY_VERSION: v26.7.28",
         "07f7ed7697277930e1c517755855950f594f41435b0dfc5917a66eea6278aeb9",
         "PROXY_HMAC_KEY_HEX: ${{ secrets.PROXY_HMAC_KEY_HEX }}",
+        "AORUS_BUILD_KEY_HEX: ${{ secrets.AORUS_BUILD_KEY_HEX }}",
     ):
         if marker not in workflow:
             fail(errors, f"release/REALITY workflow invariant is missing {marker}")
@@ -134,6 +135,50 @@ def main() -> int:
         fail(errors, "license HMAC material must be scoped to one operation")
     if "/*__AORUS_LICENSE_KEY_OBFUSCATED__*/" not in provider:
         fail(errors, "license HMAC injection marker is missing")
+
+    build_provider = (root / "AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift").read_text(encoding="utf-8")
+    for marker in (
+        'static let build = "1"',
+        "withKey<Result>",
+        "/*__AORUS_BUILD_POLICY_KEY_OBFUSCATED__*/",
+        'forHTTPHeaderField: "X-Aorus-Build"',
+        'forHTTPHeaderField: "X-Aorus-Build-Sign"',
+    ):
+        if marker not in build_provider:
+            fail(errors, f"build-policy provider invariant is missing {marker}")
+    if "127fc5d30b0f861c" in build_provider:
+        fail(errors, "plaintext build-policy key is committed")
+
+    license_client = (root / "AorusGram/Sources/Features/Subscription/LicenseAPIClient.swift").read_text(encoding="utf-8")
+    if "AorusBuildKeyProvider.applyHeaders" not in license_client:
+        fail(errors, "license requests do not carry the build-policy signature")
+    if 'http.statusCode == 426, parsed.status == .clientOutdated' not in license_client:
+        fail(errors, "signed client_outdated verdict is not enforced")
+
+    ai_client = (root / "AorusGram/Sources/Features/AI/AorusAIClient.swift").read_text(encoding="utf-8")
+    if "AorusBuildKeyProvider.applyHeaders" not in ai_client:
+        fail(errors, "AI signed requests do not carry the build-policy signature")
+
+    update_client = (root / "AorusGram/Sources/Features/Subscription/AorusUpdateDownloadController.swift").read_text(encoding="utf-8")
+    update_manifest = (root / "AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift").read_text(encoding="utf-8")
+    update_sources = update_client + update_manifest
+    for marker in (
+        'private let allowedHost = "download.aorusgram.com"',
+        'url.scheme?.lowercased() == "https"',
+        'url.pathExtension.lowercased() == "ipa"',
+        "UIDocumentPickerViewController(forExporting:",
+    ):
+        if marker not in update_sources:
+            fail(errors, f"mandatory updater invariant is missing {marker}")
+    if "UIApplication.shared.open" in update_client:
+        fail(errors, "mandatory updater must not hand the download to a browser")
+
+    badge_source = (root / "patches/submodules/AorusBadge/Sources/AorusBadge.swift").read_text(encoding="utf-8")
+    for raw_id in ("6297603868", "8123825459", "3956524111", "3710166840", "8887700542"):
+        if raw_id in badge_source:
+            fail(errors, f"badge recipient {raw_id} is still hardcoded in the client module")
+    if "replaceServerBadges" not in badge_source:
+        fail(errors, "server-controlled badge registry is missing")
 
     proxy = (root / "AorusGram/Sources/Features/Network/AorusProxyManager.swift").read_text(encoding="utf-8")
     if "withRevealedBytes(Obf.k" not in proxy or "Obf.reveal(Obf.k)" in proxy:

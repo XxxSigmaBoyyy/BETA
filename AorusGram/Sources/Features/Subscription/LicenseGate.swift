@@ -19,7 +19,7 @@ final class LicenseGate {
     static let shared = LicenseGate()
     private init() {}
 
-    private enum LockKind { case none, loading, trial, expired, banned, connection }
+    private enum LockKind { case none, loading, trial, expired, banned, outdated, connection }
 
     private var started = false
     private var lockWindow: UIWindow?
@@ -49,7 +49,7 @@ final class LicenseGate {
     func start() {
         guard !started else { return }
         started = true
-        guard LicenseKeyProvider.isProvisioned else {
+        guard LicenseKeyProvider.isProvisioned, AorusBuildKeyProvider.isProvisioned else {
             setFeatureAccess(active: false)
             DispatchQueue.main.async { [weak self] in self?.showConnection() }
             return
@@ -66,6 +66,18 @@ final class LicenseGate {
 
         NotificationCenter.default.addObserver(self, selector: #selector(didBecomeActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+
+        // Any signed License endpoint may revoke this build, including activation.
+        // Centralizing the transition prevents one UI flow from overlooking 426.
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("aorusgram.clientOutdated"), object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let response = note.userInfo?["response"] as? LicenseResponse,
+                  response.status == .clientOutdated else { return }
+            LicenseStore.shared.save(response: response, telegramUserId: self.telegramUserId)
+            self.showOutdated()
+        }
 
         // Key activation deep link (aorusgram://activate?key=…), routed from AppDelegate.
         NotificationCenter.default.addObserver(
@@ -90,7 +102,11 @@ final class LicenseGate {
             if cached.allowsAppAccess {
                 // Valid offline grace — let the app through; confirm with the server.
             } else if cached.isLocked {
-                self.showExpired(banned: cached == .banned)
+                if cached == .clientOutdated {
+                    self.showOutdated()
+                } else {
+                    self.showExpired(banned: cached == .banned)
+                }
             } else {
                 // Unknown / not_started — cover with a splash until the first verdict.
                 self.showLoading()
@@ -152,6 +168,8 @@ final class LicenseGate {
             showExpired(banned: false)
         case .banned:
             showExpired(banned: true)
+        case .clientOutdated:
+            showOutdated()
         case .networkError:
             applyNetworkFailure()
         }
@@ -168,6 +186,8 @@ final class LicenseGate {
             hideLock()
         case .expired, .banned:
             showExpired(banned: cached == .banned)
+        case .clientOutdated:
+            showOutdated()
         default:
             showConnection()
         }
@@ -244,6 +264,32 @@ final class LicenseGate {
         vc.onBuy = { [weak self] in self?.refresh() }            // primary = retry
         vc.onEnterKey = { [weak self] in self?.pushActivateKeyInLock() }
         setLockRoot(vc)
+    }
+
+    private func showOutdated() {
+        setFeatureAccess(active: false)
+        guard lockKind != .outdated else { return }
+        lockKind = .outdated
+        let vc = ClientOutdatedController()
+        vc.onUpdate = { [weak self] in self?.pushUpdateDownloader() }
+        vc.onChannel = { [weak self] in self?.openOfficialChannelFromLock() }
+        setLockRoot(vc)
+    }
+
+    private func pushUpdateDownloader() {
+        guard let nav = lockWindow?.rootViewController as? UINavigationController else { return }
+        nav.pushViewController(AorusUpdateDownloadController(), animated: true)
+    }
+
+    private func openOfficialChannelFromLock() {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("aorusgram.openPurchaseBotInApp"),
+            object: nil,
+            userInfo: [
+                "url": SubscriptionConfig.officialChannelLink,
+                "mainNav": NSNumber(value: false),
+            ]
+        )
     }
 
     private func pushActivateKeyInLock() {

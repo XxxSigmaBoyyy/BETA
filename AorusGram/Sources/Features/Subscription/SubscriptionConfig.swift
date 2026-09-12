@@ -9,7 +9,12 @@ enum SubscriptionConfig {
     // MARK: License API
     static let baseURLString = "https://license.aorusgram.com"
     static let keyVersion = "1"                       // X-Aorus-Kv
-    static let userAgent = "AorusGram/1.0.0 (iOS)"
+    static var userAgent: String {
+        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? "unknown"
+        return "AorusGram/\(version) (iOS)"
+    }
 
     // MARK: Purchase bot
     static let purchaseBotUsername = "AorusGram_bot"
@@ -20,6 +25,11 @@ enum SubscriptionConfig {
     // Resolved by Telegram's own internal resolver (openExternalUrl, forceExternal:
     // false) for the over-lock flow and as an in-app fallback. Never the browser.
     static let purchaseBotLink = "https://t.me/AorusGram_bot?start=buy"
+    static let officialChannelLink = "https://t.me/AorusGram"
+
+    // Public release manifest. The downloader accepts HTTPS redirects only when
+    // they stay on this exact host.
+    static let updateManifestURL = "https://download.aorusgram.com/apps.json"
 
     // MARK: Networking
     static let requestTimeout: TimeInterval = 15

@@ -7,6 +7,7 @@ public enum LicenseStatus: String {
     case paidActive   = "paid_active"
     case expired      = "expired"
     case banned       = "banned"
+    case clientOutdated = "client_outdated"
     case networkError = "network_error"
 
     // Unknown / missing status maps to networkError (never silently "active").
@@ -28,7 +29,7 @@ public enum LicenseStatus: String {
     // Hard-lock states (root-swap to the expired screen).
     public var isLocked: Bool {
         switch self {
-        case .expired, .banned: return true
+        case .expired, .banned, .clientOutdated: return true
         default: return false
         }
     }
@@ -37,6 +38,17 @@ public enum LicenseStatus: String {
 // Decoded license API response. Parsed leniently from JSON so an unexpected /
 // extra field never breaks the client.
 public struct LicenseResponse {
+    public struct Badge: Equatable {
+        public enum Identifier: String {
+            case dev
+            case meme
+            case verified
+        }
+
+        public let id: Identifier
+        public let until: Int64?
+    }
+
     public let status: LicenseStatus
     public let plan: String?
     public let trial: Bool?
@@ -45,16 +57,28 @@ public struct LicenseResponse {
     public let serverNow: Int64?
     public let daysLeft: Int?
     public let errorCode: String?
+    public let badges: [Badge]
 
     init(json: [String: Any]) {
-        self.status = LicenseStatus.parse(json["status"] as? String)
+        let errorCode = (json["error"] as? String)
+            ?? (json["error_code"] as? String)
+            ?? (json["detail"] as? String)
+        self.status = errorCode == LicenseStatus.clientOutdated.rawValue
+            ? .clientOutdated
+            : LicenseStatus.parse(json["status"] as? String)
         self.plan = json["plan"] as? String
         self.trial = json["trial"] as? Bool
         self.paid = json["paid"] as? Bool
         self.activeUntil = LicenseResponse.int64(json["active_until"])
         self.serverNow = LicenseResponse.int64(json["server_now"])
         self.daysLeft = LicenseResponse.int(json["days_left"])
-        self.errorCode = (json["error"] as? String) ?? (json["error_code"] as? String)
+        self.errorCode = errorCode
+        self.badges = (json["badges"] as? [[String: Any]] ?? []).compactMap { item in
+            guard var rawId = item["id"] as? String else { return nil }
+            if rawId == "head_admin_cat" { rawId = "meme" }
+            guard let id = Badge.Identifier(rawValue: rawId) else { return nil }
+            return Badge(id: id, until: LicenseResponse.int64(item["until"]))
+        }
     }
 
     private static func int64(_ any: Any?) -> Int64? {

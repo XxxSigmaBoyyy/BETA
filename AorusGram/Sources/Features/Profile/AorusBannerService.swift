@@ -394,6 +394,12 @@ public final class AorusBannerService {
         request.setValue(String(callerId), forHTTPHeaderField: "X-Aorus-Telegram-Id")
         request.setValue(bodyHash, forHTTPHeaderField: "X-Aorus-Body-Sha256")
         request.setValue(signature, forHTTPHeaderField: "X-Aorus-Sign")
+        guard AorusBuildKeyProvider.applyHeaders(
+            to: &request, timestamp: timestamp, nonce: nonce, device: device
+        ) else {
+            completion(.failure(.notProvisioned))
+            return
+        }
 
         self.session.dataTask(with: request) { data, response, error in
             guard error == nil, let http = response as? HTTPURLResponse else {

@@ -61,7 +61,7 @@ final class LicenseAPIClient {
     private func post(path: String,
                       body: [String: Any],
                       completion: @escaping (Result<LicenseResponse, LicenseError>) -> Void) {
-        guard LicenseKeyProvider.isProvisioned else {
+        guard LicenseKeyProvider.isProvisioned, AorusBuildKeyProvider.isProvisioned else {
             completion(.failure(.notProvisioned)); return
         }
         guard AorusEnvGuard.enforceBeforeRequest() else {
@@ -105,6 +105,11 @@ final class LicenseAPIClient {
         request.setValue(kv, forHTTPHeaderField: "X-Aorus-Kv")
         request.setValue(bodySha, forHTTPHeaderField: "X-Aorus-Body-Sha256")
         request.setValue(sign, forHTTPHeaderField: "X-Aorus-Sign")
+        guard AorusBuildKeyProvider.applyHeaders(
+            to: &request, timestamp: ts, nonce: nonce, device: device
+        ) else {
+            completion(.failure(.notProvisioned)); return
+        }
 
         let task = session.dataTask(with: request) { data, response, error in
             if error != nil {
@@ -140,6 +145,20 @@ final class LicenseAPIClient {
 
             let parsed = LicenseResponse(json: object)
             if !isSuccess {
+                // A revoked build is a signed, authoritative policy verdict. Treat
+                // unsigned/forged 426 responses as network errors above to prevent
+                // an on-path attacker from permanently locking the client.
+                if http.statusCode == 426, parsed.status == .clientOutdated {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("aorusgram.clientOutdated"),
+                            object: nil,
+                            userInfo: ["response": parsed]
+                        )
+                    }
+                    completion(.success(parsed))
+                    return
+                }
                 if let code = parsed.errorCode {
                     completion(.failure(.server(code)))
                 } else {

@@ -84,6 +84,27 @@ enum SubL10n {
                                       "Couldn’t verify your subscription. Check your internet and try again.") }
     static var retry: String { t("Повторить", "Retry") }
 
+    // MARK: Mandatory update
+    static var outdatedTitle: String { t("Ваша версия приложения устарела", "This version is no longer supported") }
+    static var outdatedBody: String { t("Чтобы продолжить пользоваться AorusGram, установите последнюю версию.",
+                                        "Install the latest AorusGram version to continue.") }
+    static var updateApp: String { t("Обновить", "Update") }
+    static var openChannel: String { t("Перейти в канал", "Open channel") }
+    static var updateTitle: String { t("Обновление AorusGram", "AorusGram Update") }
+    static var preparingUpdate: String { t("Последняя версия", "Latest version") }
+    static var checkingUpdate: String { t("Проверяем доступное обновление…", "Checking for an update…") }
+    static var connecting: String { t("Подключение…", "Connecting…") }
+    static var downloadComplete: String { t("Загрузка завершена", "Download complete") }
+    static var updateFailed: String { t("Не удалось загрузить обновление. Проверьте соединение и повторите попытку.",
+                                        "Couldn’t download the update. Check your connection and try again.") }
+    static var openInFiles: String { t("Перейти", "Continue") }
+    static func downloadingVersion(_ version: String) -> String {
+        t("Загрузка версии %@", "Downloading version %@").replacingOccurrences(of: "%@", with: version)
+    }
+    static func downloadSpeed(_ speed: String) -> String {
+        t("Скорость: %@/с", "Speed: %@/s").replacingOccurrences(of: "%@", with: speed)
+    }
+
     // MARK: Activate key
     static var activateTitle: String { t("Введите ключ", "Enter key") }
     static var activateBody: String { t("Введите ключ подписки, полученный в боте AorusGram.",

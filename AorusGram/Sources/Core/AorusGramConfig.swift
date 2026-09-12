@@ -10,6 +10,7 @@ public enum AorusLicenseAccess {
     @inline(__always)
     public static var canUnlock: Bool {
         guard LicenseKeyProvider.isProvisioned,
+              AorusBuildKeyProvider.isProvisioned,
               !AorusSessionMetrics.metricFlag,
               !UserDefaults.standard.bool(forKey: "c0a8b1e2-6f4d-4a9c-b3e7-1d520f8a6b34"),
               !AorusSessionCounter.shared.isTripped else {

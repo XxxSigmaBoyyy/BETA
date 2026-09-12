@@ -38,12 +38,31 @@ private func acceptsIntegralServerValues() {
     require(response.daysLeft == 14, "integer day count is accepted")
 }
 
+private func parsesSignedPolicyAndBadges() {
+    let response = LicenseResponse(json: [
+        "detail": "client_outdated",
+        "badges": [
+            ["id": "dev", "until": NSNull()],
+            ["id": "head_admin_cat", "until": 1_900_000_000],
+            ["id": "unknown", "until": 1],
+        ],
+    ])
+    require(response.status == .clientOutdated, "426 detail maps to the hard-lock state")
+    require(response.status.isLocked, "outdated builds remain locked offline")
+    require(response.badges.count == 2, "unknown badge identifiers are ignored")
+    require(response.badges[0].id == .dev && response.badges[0].until == nil,
+            "permanent DEV badge is decoded")
+    require(response.badges[1].id == .meme,
+            "legacy head_admin_cat is normalized to meme")
+}
+
 @main
 private enum LicenseModelsTests {
     static func main() {
         rejectsMalformedNumbers()
         rejectsUnknownAccessStates()
         acceptsIntegralServerValues()
+        parsesSignedPolicyAndBadges()
         print("LicenseModels tests: OK")
     }
 }

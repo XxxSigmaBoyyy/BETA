@@ -75,6 +75,20 @@ jobs:
             aorusgram/scripts/tests/LicenseModelsTests.swift \
             -o /tmp/aorus-ai-preflight/license-model-tests
           /tmp/aorus-ai-preflight/license-model-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \
+            aorusgram/scripts/tests/AorusUpdateManifestTests.swift \
+            -o /tmp/aorus-ai-preflight/update-manifest-tests
+          /tmp/aorus-ai-preflight/update-manifest-tests
+          swiftc -frontend -parse \
+            aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateDownloadController.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/ClientOutdatedController.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/LicenseAPIClient.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/LicenseGate.swift \
+            aorusgram/AorusGram/Sources/Features/Subscription/LicenseStore.swift
           swiftc -typecheck \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
@@ -709,6 +723,8 @@ jobs:
           # at build time. The branding step fails closed if this secret is absent
           # or malformed, preventing an accidentally unlicensed production build.
           LICENSE_HMAC_KEY_HEX: ${{ secrets.LICENSE_HMAC_KEY_HEX }}
+          # Per-build revocation key. Separate from the license request key.
+          AORUS_BUILD_KEY_HEX: ${{ secrets.AORUS_BUILD_KEY_HEX }}
           # Separate rotatable request key for https://api.aorusgram.com/getProxy.
           PROXY_HMAC_KEY_HEX: ${{ secrets.PROXY_HMAC_KEY_HEX }}
         run: |
@@ -1059,12 +1075,15 @@ jobs:
         with:
           name: AorusGram-unsigned-${{ github.run_number }}
           path: ${{ runner.temp }}/AorusGram-unsigned.ipa
-          retention-days: 14
+          # Device IPAs are large; short retention prevents Actions storage from
+          # filling up and failing after a successful hour-long compile.
+          retention-days: 3
 
       - name: Upload build log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-log-${{ github.run_number }}
           path: ${{ runner.temp }}/build.log
-          retention-days: 7
+          retention-days: 1

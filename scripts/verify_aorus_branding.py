@@ -1238,6 +1238,16 @@ def main() -> None:
         if "/* AORUS-BUILD-KEY-INJECTED */" not in license_text:
             err.append("LicenseKeyProvider: trusted build-time injection sentinel is missing")
 
+    build_provider = tg / "submodules" / "AorusGram" / "Sources" / "Features" / "Subscription" / "AorusBuildKeyProvider.swift"
+    if not build_provider.is_file():
+        err.append("AorusBuildKeyProvider.swift is missing")
+    else:
+        build_text = build_provider.read_text(encoding="utf-8")
+        if "/*__AORUS_BUILD_POLICY_KEY_OBFUSCATED__*/" in build_text:
+            err.append("AorusBuildKeyProvider: build-time key was not injected")
+        if "/* AORUS-BUILD-POLICY-KEY-INJECTED */" not in build_text:
+            err.append("AorusBuildKeyProvider: trusted build-time injection sentinel is missing")
+
     proxy_manager = tg / "submodules" / "AorusGram" / "Sources" / "Features" / "Network" / "AorusProxyManager.swift"
     if not proxy_manager.is_file():
         err.append("AorusProxyManager.swift is missing")

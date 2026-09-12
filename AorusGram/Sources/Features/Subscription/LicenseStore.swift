@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import AorusBadge
 
 // Persistent license cache.
 //
@@ -83,10 +84,19 @@ final class LicenseStore {
         let ud = UserDefaults.standard
         ud.set(snap.statusRaw, forKey: "aorusgram_lic_status")
         ud.set(snap.daysLeft ?? -1, forKey: "aorusgram_lic_days_left")
+
+        if let peerId = telegramUserId ?? snap.telegramUserId, peerId != 0 {
+            AorusBadge.replaceServerBadges(
+                forPeerRawId: peerId,
+                badges: response.badges.map { ($0.id.rawValue, $0.until) },
+                serverNow: response.serverNow
+            )
+        }
     }
 
     func clear() {
         lock.lock()
+        let clearedPeerId = snapshotValue?.telegramUserId
         snapshotValue = nil
         let base: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
@@ -98,6 +108,11 @@ final class LicenseStore {
         let ud = UserDefaults.standard
         ud.removeObject(forKey: "aorusgram_lic_status")
         ud.removeObject(forKey: "aorusgram_lic_days_left")
+        if let clearedPeerId, clearedPeerId != 0 {
+            AorusBadge.replaceServerBadges(
+                forPeerRawId: clearedPeerId, badges: [], serverNow: nil
+            )
+        }
     }
 
     // Prefer the id captured with the last license snapshot; fall back to the

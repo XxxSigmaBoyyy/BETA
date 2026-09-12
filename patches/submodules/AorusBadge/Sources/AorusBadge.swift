@@ -4,9 +4,8 @@ import Display
 
 // AorusGram local badge system.
 //
-// Everything here is local to the client — nothing is sent to Telegram servers.
-// Badges are derived purely from a hardcoded peer-id table, so every AorusGram
-// user sees them while official Telegram shows nothing extra.
+// Badge assignments come only from a signed license response. They remain local
+// presentation state and are never sent to Telegram.
 //
 // Three kinds:
 //   - verified  → handled natively: TelegramCore's `isVerified` is patched to
@@ -15,8 +14,8 @@ import Display
 //   - dev       → a hollow rounded-rect "DEV" tag (blue outline + blue text).
 //   - meme      → a custom easter-egg cat icon for one friend-admin.
 //
-// `verified` IDs are intentionally NOT in the kind table below: they ride the
-// native Telegram verified badge instead of a custom image.
+// `verified` rides Telegram's native verified presentation path; DEV and meme are
+// rendered by this module.
 
 public enum AorusBadgeKind: Equatable {
     case dev
@@ -24,17 +23,65 @@ public enum AorusBadgeKind: Equatable {
 }
 
 public enum AorusBadge {
-    // Channels/chats that should show the NATIVE Telegram verified checkmark.
-    // (Consumed by the TelegramCore isVerified patch, mirrored here for reference.)
-    public static let verifiedPeerRawIds: Set<Int64> = [3956524111, 3710166840, 8887700542]
+    private static let badgeRegistryKey = "aorusgram_server_badges_v1"
+    private static let verifiedRegistryKey = "aorusgram_server_verified_v1"
+    private static let registryLock = NSLock()
 
-    // Users that get a custom local badge.
-    private static let devUserRawIds: Set<Int64> = [6297603868, 6712335037]
-    private static let memeUserRawIds: Set<Int64> = [8123825459]
+    // Replace, never merge, the signed assignment for one account. This ensures a
+    // server-side revoke disappears on the next successful license response.
+    public static func replaceServerBadges(forPeerRawId id: Int64,
+                                           badges: [(String, Int64?)],
+                                           serverNow: Int64?) {
+        guard id != 0 else { return }
+        let now = serverNow ?? Int64(Date().timeIntervalSince1970)
+        var sanitized: [String: Int64] = [:]
+        for (rawId, until) in badges {
+            let normalized = rawId == "head_admin_cat" ? "meme" : rawId
+            guard normalized == "dev" || normalized == "meme" || normalized == "verified" else {
+                continue
+            }
+            if let until, until <= now { continue }
+            // Zero is the property-list-safe representation of no expiry.
+            sanitized[normalized] = until ?? 0
+        }
+
+        registryLock.lock()
+        let defaults = UserDefaults.standard
+        var registry = defaults.dictionary(forKey: badgeRegistryKey) ?? [:]
+        registry[String(id)] = sanitized
+        defaults.set(registry, forKey: badgeRegistryKey)
+
+        var verified = defaults.dictionary(forKey: verifiedRegistryKey) ?? [:]
+        if let until = sanitized["verified"] {
+            verified[String(id)] = until
+        } else {
+            verified.removeValue(forKey: String(id))
+        }
+        defaults.set(verified, forKey: verifiedRegistryKey)
+        registryLock.unlock()
+    }
+
+    private static func activeAssignments(for id: Int64) -> [String: Any] {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        guard let registry = UserDefaults.standard.dictionary(forKey: badgeRegistryKey),
+              let assignments = registry[String(id)] as? [String: Any] else {
+            return [:]
+        }
+        return assignments
+    }
+
+    private static func isActive(_ value: Any?, now: Int64) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        let until = number.int64Value
+        return until == 0 || now < until
+    }
 
     public static func kind(forPeerRawId id: Int64) -> AorusBadgeKind? {
-        if memeUserRawIds.contains(id) { return .meme }
-        if devUserRawIds.contains(id) { return .dev }
+        let assignments = activeAssignments(for: id)
+        let now = Int64(Date().timeIntervalSince1970)
+        if isActive(assignments["meme"], now: now) { return .meme }
+        if isActive(assignments["dev"], now: now) { return .dev }
         return nil
     }
 
