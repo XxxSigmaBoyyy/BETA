@@ -1929,6 +1929,36 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         if streamHandle == nil { finishStreaming(error: .notProvisioned, preserveText: false) }
     }
 
+    /// Bounds on the work trail. A turn that announced without end would otherwise grow
+    /// the message, the encrypted history file and every view built from it forever — the
+    /// same reason the response text is capped.
+    private static let maximumWorkPhases = 64
+    private static let maximumWorkFilesPerPhase = 400
+
+    /// Opens a new stretch of work, or leaves the current one alone when the label has
+    /// not actually changed — the backend repeats a label while it is still current.
+    private func beginWorkPhase(_ label: String?, at index: Int) {
+        guard let label, !label.isEmpty else { return }
+        guard conversation.messages[index].workPhases.last?.label != label else { return }
+        guard conversation.messages[index].workPhases.count < Self.maximumWorkPhases else { return }
+        conversation.messages[index].workPhases.append(AorusAIWorkPhase(label: label))
+    }
+
+    /// Files belong to the stretch that was current when they were reported. A file that
+    /// arrives before any label does gets a stretch of its own so it is never dropped.
+    private func appendWorkFile(_ change: AorusAIFileChange, at index: Int) {
+        if conversation.messages[index].workPhases.isEmpty {
+            let label = conversation.messages[index].statusLabel
+                ?? aorusAILocalized("Работаю…", "Working…")
+            conversation.messages[index].workPhases.append(AorusAIWorkPhase(label: label))
+        }
+        let last = conversation.messages[index].workPhases.count - 1
+        guard conversation.messages[index].workPhases[last].files.count < Self.maximumWorkFilesPerPhase else {
+            return
+        }
+        conversation.messages[index].workPhases[last].files.append(change)
+    }
+
     private func handle(_ event: AorusAIEvent) {
         guard let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
         switch event {
@@ -1941,9 +1971,22 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             let visibleLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? aorusAILocalized("Выполняю…", "Working…")
                 : label
-            conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(visibleLabel, progress: progress)
+            let safeLabel = AorusAIFormat.safeStatus(visibleLabel, progress: progress)
+            conversation.messages[index].statusLabel = safeLabel
+            beginWorkPhase(safeLabel, at: index)
+        case let .buildPhase(_, label, _):
+            // The document is explicit: show `label` as it comes and never the backend's
+            // own `phase` name. A build phase opens a new stretch of work the same way a
+            // status does, so "Сборка приложения…" and the files under it stay one group.
+            let safeLabel = AorusAIFormat.safeStatus(label)
+            conversation.messages[index].statusLabel = safeLabel
+            beginWorkPhase(safeLabel, at: index)
+        case let .fileChange(change):
+            appendWorkFile(change, at: index)
         case let .reasoningSummary(value):
-            conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(value)
+            let safeLabel = AorusAIFormat.safeStatus(value)
+            conversation.messages[index].statusLabel = safeLabel
+            beginWorkPhase(safeLabel, at: index)
         case .responseStarted:
             conversation.messages[index].statusLabel = nil
         case let .responseDelta(delta):

@@ -700,6 +700,30 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             let label = (object["label"] as? String) ?? ""
             let progress = (object["progress"] as? NSNumber)?.doubleValue
             return label.isEmpty && progress == nil ? nil : .status(label: label, progress: progress)
+        case "build.phase":
+            // Same rule as `status`: the label is shown verbatim and the backend's own
+            // phase name never reaches the chat.
+            let label = (object["label"] as? String) ?? ""
+            guard !label.isEmpty else { return nil }
+            let phase = (object["phase"] as? String) ?? ""
+            let attempt = (object["attempt"] as? NSNumber)?.intValue ?? 1
+            return .buildPhase(phase: phase, label: label, attempt: max(1, attempt))
+        case "file.created", "file.edited", "file.deleted":
+            guard let path = object["path"] as? String, !path.isEmpty else { return nil }
+            let kind: AorusAIFileChange.Kind
+            switch raw.name {
+            case "file.created": kind = .created
+            case "file.deleted": kind = .deleted
+            default: kind = .edited
+            }
+            let added = max(0, (object["added"] as? NSNumber)?.intValue ?? 0)
+            let removed = max(0, (object["removed"] as? NSNumber)?.intValue ?? 0)
+            let attempt = max(1, (object["attempt"] as? NSNumber)?.intValue ?? 1)
+            let change = AorusAIFileChange(
+                kind: kind, path: path, added: added, removed: removed, attempt: attempt
+            )
+            // "оба 0: строку не показывать" — dropped here so no layer above has to know.
+            return change.isRenderable ? .fileChange(change) : nil
         case "reasoning.summary":
             guard let value = object["summary"] as? String else { return nil }
             return .reasoningSummary(value)

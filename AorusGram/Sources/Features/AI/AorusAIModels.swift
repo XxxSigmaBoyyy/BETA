@@ -107,9 +107,14 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
     public var referencedMessage: AorusAIReferencedMessage?
     public var artifacts: [AorusAIArtifact]
     public var statusLabel: String?
+    /// The work the agent did on this turn, in the order it reported it: each phase
+    /// label it announced and the files it touched under that phase. Kept on the
+    /// message so the trail survives a reload of the conversation, and so the finished
+    /// turn can collapse it behind one line.
+    public var workPhases: [AorusAIWorkPhase] = []
     public var errorCode: String?
 
-    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, errorCode: String? = nil) {
+    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, workPhases: [AorusAIWorkPhase] = [], errorCode: String? = nil) {
         self.id = id
         self.role = role
         self.rawText = rawText
@@ -119,7 +124,36 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
         self.referencedMessage = referencedMessage
         self.artifacts = artifacts
         self.statusLabel = statusLabel
+        self.workPhases = workPhases
         self.errorCode = errorCode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, rawText, createdAt, state, telegramEntities
+        case referencedMessage, artifacts, statusLabel, workPhases, errorCode
+    }
+
+    /// Hand-written for the same reason the conversation's is.
+    ///
+    /// The synthesized decoder calls `decode` for every non-optional property and throws
+    /// on a key that is absent — a default value does not save it — and `AorusAIStore.read`
+    /// answers a decode failure by treating the file as corrupt and deleting it. Gaining
+    /// `workPhases` would therefore have cost every reader their entire AI history on the
+    /// first launch after the update. Every collection is read as optional-with-default, so
+    /// this file survives gaining a field again.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.role = try container.decode(AorusAIMessageRole.self, forKey: .role)
+        self.rawText = try container.decode(String.self, forKey: .rawText)
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.state = try container.decode(AorusAIMessageState.self, forKey: .state)
+        self.telegramEntities = try container.decodeIfPresent([AorusAITelegramEntity].self, forKey: .telegramEntities) ?? []
+        self.referencedMessage = try container.decodeIfPresent(AorusAIReferencedMessage.self, forKey: .referencedMessage)
+        self.artifacts = try container.decodeIfPresent([AorusAIArtifact].self, forKey: .artifacts) ?? []
+        self.statusLabel = try container.decodeIfPresent(String.self, forKey: .statusLabel)
+        self.workPhases = try container.decodeIfPresent([AorusAIWorkPhase].self, forKey: .workPhases) ?? []
+        self.errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
     }
 }
 
@@ -660,9 +694,75 @@ public struct AorusAIProfileSummaryFields: Equatable {
     }
 }
 
+/// One file the agent touched while it worked.
+///
+/// `added` and `removed` are line counts and are rendered as the document specifies:
+/// `+125` in green, `-20` in red, a plus always with its plus and a minus always with its
+/// minus. The screen shows the basename only; the full path stays in the payload.
+public struct AorusAIFileChange: Codable, Equatable {
+    public enum Kind: String, Codable, Equatable {
+        case created
+        case edited
+        case deleted
+    }
+
+    public let kind: Kind
+    public let path: String
+    public let added: Int
+    public let removed: Int
+    public let attempt: Int
+
+    public init(kind: Kind, path: String, added: Int, removed: Int, attempt: Int) {
+        self.kind = kind
+        self.path = path
+        self.added = added
+        self.removed = removed
+        self.attempt = attempt
+    }
+
+    /// What the row is titled with. The document is explicit that the full path is not
+    /// shown here.
+    public var displayName: String {
+        return (path as NSString).lastPathComponent
+    }
+
+    /// An edit that neither added nor removed anything is not shown at all.
+    public var isRenderable: Bool {
+        switch kind {
+        case .created: return added > 0
+        case .deleted: return removed > 0
+        case .edited: return added > 0 || removed > 0
+        }
+    }
+}
+
+/// One stretch of the agent's work: the label it announced, and the files it touched
+/// while that label was current.
+///
+/// A new phase starts whenever the agent announces a new label, so "Проектирую
+/// структуру…" and the files under it are one phase and "Собираю…" is the next.
+public struct AorusAIWorkPhase: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var label: String
+    public var startedAt: Date
+    public var files: [AorusAIFileChange]
+
+    public init(id: UUID = UUID(), label: String, startedAt: Date = Date(), files: [AorusAIFileChange] = []) {
+        self.id = id
+        self.label = label
+        self.startedAt = startedAt
+        self.files = files
+    }
+}
+
 public enum AorusAIEvent: Equatable {
     case agentStarted(turnId: String, context: String?)
     case status(label: String, progress: Double?)
+    /// A build/repair/diagnose/finalize phase. Only `label` is ever shown; `phase` is the
+    /// backend's own name for it and stays out of the chat.
+    case buildPhase(phase: String, label: String, attempt: Int)
+    /// A file the agent created, edited or deleted during the turn.
+    case fileChange(AorusAIFileChange)
     case reasoningSummary(String)
     case responseStarted
     case responseDelta(String)
