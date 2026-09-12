@@ -398,6 +398,43 @@ public extension PresentationTheme {
         return AorusGlassThemeCache.shared.derive(from: self, dark: dark)
     }
 
+    /// The same theme with the list page painted in `color`, for one screen at a time.
+    ///
+    /// "Подробнее" is an ItemList screen pushed out of a profile, and
+    /// `ItemListControllerNode` paints its page from `list.blocksBackgroundColor` — one
+    /// property shared by every ItemList screen in the app. Repainting it there would
+    /// repaint Settings and every other list along with it. Handing this one screen a
+    /// theme of its own changes that screen and nothing else, which is the whole point:
+    /// opened from a profile it continues that profile's page instead of arriving as a
+    /// flat near-black rectangle in the middle of a tinted one.
+    ///
+    /// Only the page is touched. The ink, the separators and the block marker are
+    /// whatever the caller already derived, so a screen that has been through
+    /// `aorusGlassTheme` keeps its glass and its readable labels.
+    func aorusWithPageBackground(_ color: UIColor) -> PresentationTheme {
+        let list = self.list.withUpdated(blocksBackgroundColor: color)
+        let derived = PresentationTheme(
+            name: self.name,
+            index: self.index,
+            referenceTheme: self.referenceTheme,
+            overallDarkAppearance: self.overallDarkAppearance,
+            intro: self.intro,
+            passcode: self.passcode,
+            rootController: self.rootController,
+            list: list,
+            chatList: self.chatList,
+            chat: self.chat,
+            actionSheet: self.actionSheet,
+            contextMenu: self.contextMenu,
+            inAppNotification: self.inAppNotification,
+            chart: self.chart,
+            preview: self.preview
+        )
+        derived.forceSync = self.forceSync
+        derived.starGift = self.starGift
+        return derived
+    }
+
     /// A legible foreground for a badge filled with `fill`.
     ///
     /// Interface 2.0 makes `list.itemAccentColor` the page's own ink -- white letters on a dark pane,

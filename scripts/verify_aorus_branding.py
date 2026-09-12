@@ -2926,6 +2926,11 @@ def main() -> None:
             (
                 "aorusGlassListTheme",
                 "aorusGlassProfileTheme",
+                # "Подробнее" is an ItemList screen pushed from a profile, and
+                # ItemListControllerNode paints every such page from one shared
+                # property. This gives that one screen a theme of its own so it can
+                # continue the profile's page without repainting Settings too.
+                "func aorusWithPageBackground(_ color: UIColor) -> PresentationTheme {",
                 "AorusGlassThemeCache",
                 "blockMarker",
                 # The cache holds its source themes, and asks the theme itself whether it has been

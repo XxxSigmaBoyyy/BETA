@@ -643,6 +643,28 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, p
     let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(context.sharedContext.presentationData, notePromise.get())
         |> deliverOnMainQueue
         |> map { presentationData, note -> (ItemListControllerState, (ItemListNodeState, Any)) in
+            // AorusGram: this screen is opened from a profile and has to continue that
+            // profile's page instead of arriving as a flat near-black rectangle in the
+            // middle of a tinted one.
+            //
+            // Asked of THIS peer, not of the shared slot: `entityId` is the profile's own
+            // Telegram id — the same key the tint is stored under — so the answer is the
+            // page the reader was just looking at, whatever produced it. A sampled
+            // photograph, a peer with no photo at all, a Premium background: all three
+            // publish a page colour under that key and all three are covered by one
+            // lookup. The shared slot is the fallback for the moment before this peer's
+            // own page has been published.
+            //
+            // Scoped to this screen by construction: the page colour goes into a theme
+            // made for this controller, so no other ItemList screen can see it.
+            var presentationData = presentationData
+            if AorusInterfaceV2.isEnabled,
+               let aorusPage = AorusGlassProfileTint.pageBackgroundColor(for: entityId)
+                   ?? AorusGlassProfileTint.pageBackgroundColor {
+                presentationData = presentationData.withUpdated(
+                    theme: presentationData.theme.aorusWithPageBackground(aorusPage)
+                )
+            }
             let ru = AorusLang.resolve(presentationData.strings.baseLanguageCode) == .ru
             let entries = accountDetailEntries(theme: presentationData.theme, entityId: entityId, dcId: dcId, kind: kind, creationDate: creationDate, registrationDate: registrationDate, note: note, ru: ru)
             let controllerState = ItemListControllerState(
