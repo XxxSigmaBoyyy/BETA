@@ -4179,6 +4179,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         case text(AorusAIMentionTextView)
         case code(AorusAICodeCard)
         case quote(AorusAIQuoteCard)
+        case table(AorusAITableCard)
         case separator
     }
 
@@ -4432,6 +4433,8 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             case let (.quote(card), .quote(source)):
                 card.configure(text: source, theme: theme, textColor: configuredTextColor, mentions: mentions)
                 card.invalidateIntrinsicContentSize()
+            case let (.table(card), .table(table)):
+                card.configure(table: table, theme: theme)
             default:
                 return false
             }
@@ -4455,6 +4458,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         case let .text(value): return value
         case let .code(_, code): return code
         case let .quote(value): return value
+        case let .table(value): return value.rawValue
         case .separator: return ""
         }
     }
@@ -4478,6 +4482,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             case .text: parts.append("t")
             case let .code(language, _): parts.append("c/\(language ?? "")")
             case .quote: parts.append("q")
+            case let .table(table): parts.append("b/\(table.columnCount)")
             case .separator: parts.append("s")
             }
         }
@@ -4590,6 +4595,11 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 card.configure(text: value, theme: theme, textColor: textColor, mentions: mentions)
                 bodyStack.addArrangedSubview(card)
                 slots.append(.quote(card))
+            case let .table(table):
+                let card = AorusAITableCard()
+                card.configure(table: table, theme: theme)
+                bodyStack.addArrangedSubview(card)
+                slots.append(.table(card))
             case .separator:
                 let separator = UIView()
                 separator.backgroundColor = palette.separator
@@ -5233,6 +5243,167 @@ private final class AorusAICodeCard: UIView {
     }
 }
 
+/// A GitHub-flavoured Markdown table rendered as one horizontally scrollable surface.
+/// Vertical scrolling deliberately stays with the conversation: nested vertical scroll
+/// views make long answers feel stuck and fight the table view's pan gesture.
+private final class AorusAITableCard: UIView {
+    private final class CellLabel: UILabel {
+        static let inset = UIEdgeInsets(top: 9.0, left: 10.0, bottom: 9.0, right: 10.0)
+
+        override func drawText(in rect: CGRect) {
+            super.drawText(in: rect.inset(by: Self.inset))
+        }
+    }
+
+    private let scrollView = UIScrollView()
+    private let canvas = UIView()
+    private var labels: [[CellLabel]] = []
+    private var columnWidths: [CGFloat] = []
+    private var rowHeights: [CGFloat] = []
+    private var contentHeight: CGFloat = 0.0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.cornerRadius = 10.0
+        layer.cornerCurve = .continuous
+        clipsToBounds = true
+        scrollView.alwaysBounceVertical = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.directionalLockEnabled = true
+        addSubview(scrollView)
+        scrollView.addSubview(canvas)
+        isAccessibilityElement = false
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: CGSize {
+        return CGSize(width: UIView.noIntrinsicMetric, height: max(1.0, contentHeight))
+    }
+
+    func configure(table: AorusAIMarkdownTable, theme: PresentationTheme) {
+        let palette = AorusAIPalette.resolve(theme)
+        backgroundColor = palette.fill
+        layer.borderWidth = UIScreenPixel
+        layer.borderColor = palette.separator.cgColor
+
+        let rows = [table.headers] + table.rows
+        guard !rows.isEmpty, table.columnCount > 0 else {
+            canvas.subviews.forEach { $0.removeFromSuperview() }
+            labels.removeAll(keepingCapacity: true)
+            columnWidths = []
+            rowHeights = []
+            contentHeight = 0.0
+            invalidateIntrinsicContentSize()
+            return
+        }
+
+        let bodyFont = UIFont.systemFont(ofSize: 13.5)
+        let headerFont = UIFont.systemFont(ofSize: 13.5, weight: .semibold)
+        columnWidths = (0 ..< table.columnCount).map { column in
+            var width: CGFloat = 84.0
+            for (rowIndex, row) in rows.enumerated() {
+                let value = column < row.count ? AorusAIMarkdown.displayTypography(row[column]) : ""
+                let font = rowIndex == 0 ? headerFont : bodyFont
+                let measured = (value as NSString).size(withAttributes: [.font: font]).width + CellLabel.inset.left + CellLabel.inset.right
+                width = max(width, min(220.0, ceil(measured)))
+            }
+            return width
+        }
+
+        var renderedRows: [[NSAttributedString]] = []
+        rowHeights = []
+        for (rowIndex, row) in rows.enumerated() {
+            var rendered: [NSAttributedString] = []
+            var height: CGFloat = rowIndex == 0 ? 46.0 : 40.0
+            for column in 0 ..< table.columnCount {
+                let source = column < row.count ? row[column] : ""
+                let attributed = AorusAIMarkdown.attributed(source, color: palette.label, accent: palette.accent)
+                let mutable = NSMutableAttributedString(attributedString: attributed)
+                if rowIndex == 0 {
+                    mutable.addAttribute(.font, value: headerFont, range: NSRange(location: 0, length: mutable.length))
+                }
+                let available = max(1.0, columnWidths[column] - CellLabel.inset.left - CellLabel.inset.right)
+                let bounds = mutable.boundingRect(
+                    with: CGSize(width: available, height: 500.0),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    context: nil
+                )
+                height = max(height, min(104.0, ceil(bounds.height) + CellLabel.inset.top + CellLabel.inset.bottom))
+                rendered.append(mutable)
+            }
+            renderedRows.append(rendered)
+            rowHeights.append(height)
+        }
+
+        // Streaming tables grow one row (and often one cell) at a time. Keep the existing
+        // label grid whenever its shape is still a prefix of the new table; recreating a
+        // full 7 x 118 periodic table on every response.delta is needless main-thread work.
+        let reusableGrid = labels.isEmpty || (
+            labels.count <= rows.count && labels.allSatisfy { $0.count == table.columnCount }
+        )
+        if !reusableGrid {
+            canvas.subviews.forEach { $0.removeFromSuperview() }
+            labels.removeAll(keepingCapacity: true)
+        }
+        for rowIndex in rows.indices {
+            var rowLabels: [CellLabel] = rowIndex < labels.count ? labels[rowIndex] : []
+            for column in 0 ..< table.columnCount {
+                let label: CellLabel
+                if column < rowLabels.count {
+                    label = rowLabels[column]
+                } else {
+                    label = CellLabel()
+                    canvas.addSubview(label)
+                    rowLabels.append(label)
+                }
+                label.numberOfLines = 0
+                label.lineBreakMode = .byWordWrapping
+                label.attributedText = renderedRows[rowIndex][column]
+                label.textAlignment = table.alignments[column].textAlignment
+                label.backgroundColor = rowIndex == 0
+                    ? palette.accentSoft
+                    : (rowIndex.isMultiple(of: 2) ? palette.fill : .clear)
+                label.layer.borderWidth = UIScreenPixel
+                label.layer.borderColor = palette.separator.cgColor
+                label.isAccessibilityElement = true
+                if rowIndex == 0 {
+                    label.accessibilityTraits = .header
+                    label.accessibilityLabel = rows[rowIndex][column]
+                } else {
+                    let header = table.headers[column]
+                    let cell = rows[rowIndex][column]
+                    label.accessibilityLabel = header.isEmpty ? cell : header + ": " + cell
+                }
+            }
+            if rowIndex >= labels.count {
+                labels.append(rowLabels)
+            }
+        }
+
+        contentHeight = rowHeights.reduce(0.0, +)
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        scrollView.frame = bounds
+        let width = columnWidths.reduce(0.0, +)
+        canvas.frame = CGRect(x: 0.0, y: 0.0, width: width, height: contentHeight)
+        scrollView.contentSize = canvas.bounds.size
+        var y: CGFloat = 0.0
+        for rowIndex in labels.indices {
+            var x: CGFloat = 0.0
+            for column in labels[rowIndex].indices {
+                labels[rowIndex][column].frame = CGRect(x: x, y: y, width: columnWidths[column], height: rowHeights[rowIndex])
+                x += columnWidths[column]
+            }
+            y += rowHeights[rowIndex]
+        }
+    }
+}
+
 private final class AorusAIArtifactCard: UIControl {
     private let icon = UIImageView()
     private let titleLabel = UILabel()
@@ -5297,10 +5468,34 @@ private final class AorusAIArtifactCard: UIControl {
     @objc private func open() { onOpen?() }
 }
 
+private struct AorusAIMarkdownTable: Equatable {
+    enum Alignment: Equatable {
+        case leading
+        case center
+        case trailing
+
+        var textAlignment: NSTextAlignment {
+            switch self {
+            case .leading: return .natural
+            case .center: return .center
+            case .trailing: return .right
+            }
+        }
+    }
+
+    let headers: [String]
+    let alignments: [Alignment]
+    let rows: [[String]]
+    let rawValue: String
+
+    var columnCount: Int { headers.count }
+}
+
 private enum AorusAIMarkdownBlock {
     case text(String)
     case code(String?, String)
     case quote(String)
+    case table(AorusAIMarkdownTable)
     case separator
 }
 
@@ -5345,9 +5540,18 @@ private enum AorusAIMarkdown {
             result.append(.quote(quote.joined(separator: "\n")))
             quote.removeAll(keepingCapacity: true)
         }
-        for line in source.components(separatedBy: .newlines) {
+        let lines = source.components(separatedBy: .newlines)
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: #"^([-*_])(?:\s*\1){2,}$"#, options: .regularExpression) != nil {
+            if let match = table(startingAt: index, in: lines) {
+                flushQuote()
+                flushPlain()
+                result.append(.table(match.table))
+                index += match.consumedLines
+                continue
+            } else if trimmed.range(of: #"^([-*_])(?:\s*\1){2,}$"#, options: .regularExpression) != nil {
                 flushQuote()
                 flushPlain()
                 result.append(.separator)
@@ -5359,16 +5563,88 @@ private enum AorusAIMarkdown {
                 flushQuote()
                 plain.append(line)
             }
+            index += 1
         }
         flushQuote()
         flushPlain()
+    }
+
+    private static func table(startingAt index: Int, in lines: [String]) -> (table: AorusAIMarkdownTable, consumedLines: Int)? {
+        guard index + 1 < lines.count,
+              let headers = tableCells(in: lines[index]),
+              let delimiter = tableCells(in: lines[index + 1]),
+              headers.count >= 2, headers.count <= 12,
+              delimiter.count == headers.count else {
+            return nil
+        }
+        let delimiterPattern = #"^:?-{3,}:?$"#
+        guard delimiter.allSatisfy({ $0.range(of: delimiterPattern, options: .regularExpression) != nil }) else {
+            return nil
+        }
+        let alignments: [AorusAIMarkdownTable.Alignment] = delimiter.map { value in
+            if value.hasPrefix(":") && value.hasSuffix(":") { return .center }
+            if value.hasSuffix(":") { return .trailing }
+            return .leading
+        }
+        var rows: [[String]] = []
+        var cursor = index + 2
+        // A hard ceiling prevents an unexpectedly large model response from creating an
+        // unbounded number of UIKit views. It still covers full periodic tables and other
+        // practical in-chat data sets.
+        while cursor < lines.count, rows.count < 160,
+              let row = tableCells(in: lines[cursor]), row.count <= headers.count {
+            // During SSE the last row often arrives cell by cell. Padding it keeps the
+            // answer a single stable table instead of flashing a raw pipe line underneath
+            // until the final delimiter arrives.
+            rows.append(row + Array(repeating: "", count: headers.count - row.count))
+            cursor += 1
+        }
+        let raw = lines[index ..< cursor].joined(separator: "\n")
+        return (
+            AorusAIMarkdownTable(headers: headers, alignments: alignments, rows: rows, rawValue: raw),
+            cursor - index
+        )
+    }
+
+    /// Splits a Markdown table row without treating an escaped pipe or a pipe inside
+    /// inline code as a column boundary.
+    private static func tableCells(in line: String) -> [String]? {
+        var value = line.trimmingCharacters(in: .whitespaces)
+        guard value.contains("|") else { return nil }
+        if value.hasPrefix("|") { value.removeFirst() }
+        if value.hasSuffix("|") { value.removeLast() }
+        var result: [String] = []
+        var cell = ""
+        var inCode = false
+        let characters = Array(value)
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\", index + 1 < characters.count, characters[index + 1] == "|" {
+                cell.append("|")
+                index += 2
+                continue
+            }
+            if character == "`" {
+                inCode.toggle()
+                cell.append(character)
+            } else if character == "|", !inCode {
+                result.append(cell.trimmingCharacters(in: .whitespaces))
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+            index += 1
+        }
+        result.append(cell.trimmingCharacters(in: .whitespaces))
+        return result.count >= 2 ? result : nil
     }
 
     /// The body face. Answers are set at 16.5/26.
     static let bodyFont = UIFont.systemFont(ofSize: 16.5)
 
     static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
-        let normalized = normalizeLists(source)
+        let normalized = displayTypography(source)
         // The leading is expressed as line spacing rather than a fixed line height so a
         // heading in the same paragraph keeps its own ascent instead of being clipped into
         // a 26pt box.
@@ -5377,11 +5653,14 @@ private enum AorusAIMarkdown {
         apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: 16.5, weight: .semibold))
         apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
         apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
+        applyStrikethrough(in: output)
         applyInlineCode(in: output, backgroundColor: accent.withAlphaComponent(0.12))
         applyHeadings(in: output)
+        applyCalloutLabels(in: output)
         applyLinks(in: output, accent: accent)
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 6.0
         output.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: output.length))
+        applyListParagraphs(in: output)
         // Last, on the finished text: the mention ranges are found in what will actually be
         // drawn, so nothing the markdown pass moved can put a pill on the wrong words.
         AorusAIMentionRenderer.apply(
@@ -5394,8 +5673,18 @@ private enum AorusAIMarkdown {
         return output
     }
 
+    static func displayTypography(_ source: String) -> String {
+        return normalizeLists(normalizeMathOutsideInlineCode(source))
+    }
+
     private static func normalizeLists(_ source: String) -> String {
         return source.components(separatedBy: .newlines).map { line in
+            if let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+\[([ xX])\]\s+(.+)$"#),
+               let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let nsLine = line as NSString
+                let mark = nsLine.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces).isEmpty ? "☐" : "☑︎"
+                return nsLine.substring(with: match.range(at: 1)) + mark + " " + nsLine.substring(with: match.range(at: 3))
+            }
             guard let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+(.+)$"#),
                   let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else {
                 return line
@@ -5403,6 +5692,91 @@ private enum AorusAIMarkdown {
             let nsLine = line as NSString
             return nsLine.substring(with: match.range(at: 1)) + "• " + nsLine.substring(with: match.range(at: 2))
         }.joined(separator: "\n")
+    }
+
+    private static func normalizeMathOutsideInlineCode(_ source: String) -> String {
+        var result = ""
+        var fragment = ""
+        var inCode = false
+        for character in source {
+            if character == "`" {
+                result += inCode ? fragment : normalizeMath(fragment)
+                fragment = ""
+                result.append(character)
+                inCode.toggle()
+            } else {
+                fragment.append(character)
+            }
+        }
+        result += inCode ? fragment : normalizeMath(fragment)
+        return result
+    }
+
+    private static func normalizeMath(_ source: String) -> String {
+        var value = source
+        for delimiter in ["\\(", "\\)", "\\[", "\\]"] {
+            value = value.replacingOccurrences(of: delimiter, with: "")
+        }
+        value = replacing(pattern: #"(?<!\\)\$([^$\n]+)\$"#, in: value) { $0[0] }
+        value = replacing(pattern: #"\\text\{([^{}]*)\}"#, in: value) { $0[0] }
+        value = replacing(pattern: #"\\frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
+            return captures[0] + "⁄" + captures[1]
+        }
+
+        let commands: [(String, String)] = [
+            ("\\Leftrightarrow", "⇔"), ("\\Rightarrow", "⇒"), ("\\Leftarrow", "⇐"),
+            ("\\rightarrow", "→"), ("\\leftarrow", "←"), ("\\leftrightarrow", "↔"),
+            ("\\times", "×"), ("\\cdot", "·"), ("\\div", "÷"), ("\\pm", "±"), ("\\mp", "∓"),
+            ("\\leq", "≤"), ("\\le", "≤"), ("\\geq", "≥"), ("\\ge", "≥"), ("\\neq", "≠"),
+            ("\\approx", "≈"), ("\\equiv", "≡"), ("\\infty", "∞"), ("\\sqrt", "√"),
+            ("\\sum", "∑"), ("\\prod", "∏"), ("\\int", "∫"), ("\\to", "→"),
+            ("\\alpha", "α"), ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
+            ("\\theta", "θ"), ("\\lambda", "λ"), ("\\mu", "μ"), ("\\pi", "π"),
+            ("\\sigma", "σ"), ("\\phi", "φ"), ("\\omega", "ω"),
+            ("\\left", ""), ("\\right", ""), ("\\,", " "), ("\\;", " "), ("\\!", "")
+        ]
+        for (command, replacement) in commands {
+            value = value.replacingOccurrences(of: command, with: replacement)
+        }
+
+        value = replacing(pattern: #"\^\{([^{}]+)\}"#, in: value) { superscript($0[0]) }
+        value = replacing(pattern: #"\^([+\-−=()0-9]+)"#, in: value) { superscript($0[0]) }
+        value = replacing(pattern: #"_\{([^{}]+)\}"#, in: value) { subscriptText($0[0]) }
+        value = replacing(pattern: #"_([+\-−=()0-9]+)"#, in: value) { subscriptText($0[0]) }
+        value = value.replacingOccurrences(of: "\\{", with: "{").replacingOccurrences(of: "\\}", with: "}")
+        return value
+    }
+
+    private static func superscript(_ source: String) -> String {
+        let map: [Character: Character] = [
+            "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+            "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾"
+        ]
+        guard source.allSatisfy({ map[$0] != nil }) else { return "^(" + source + ")" }
+        return String(source.compactMap { map[$0] })
+    }
+
+    private static func subscriptText(_ source: String) -> String {
+        let map: [Character: Character] = [
+            "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+            "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎"
+        ]
+        guard source.allSatisfy({ map[$0] != nil }) else { return "_(" + source + ")" }
+        return String(source.compactMap { map[$0] })
+    }
+
+    private static func replacing(pattern: String, in source: String, transform: ([String]) -> String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return source }
+        let result = NSMutableString(string: source)
+        let matches = regex.matches(in: source, range: NSRange(location: 0, length: (source as NSString).length))
+        for match in matches.reversed() {
+            var captures: [String] = []
+            for index in 1 ..< match.numberOfRanges {
+                captures.append((source as NSString).substring(with: match.range(at: index)))
+            }
+            result.replaceCharacters(in: match.range, with: transform(captures))
+        }
+        return result as String
     }
 
     private static func applyMarkdownLinks(in value: NSMutableAttributedString, accent: UIColor) {
@@ -5432,6 +5806,38 @@ private enum AorusAIMarkdown {
             let text = (value.string as NSString).substring(with: inner)
             value.replaceCharacters(in: match.range, with: text)
             value.addAttribute(.font, value: font, range: NSRange(location: match.range.location, length: (text as NSString).length))
+        }
+    }
+
+    private static func applyStrikethrough(in value: NSMutableAttributedString) {
+        guard let regex = try? NSRegularExpression(pattern: #"~~([^~\n]+)~~"#) else { return }
+        for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
+            let text = (value.string as NSString).substring(with: match.range(at: 1))
+            value.replaceCharacters(in: match.range, with: text)
+            value.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: match.range.location, length: (text as NSString).length))
+        }
+    }
+
+    /// Short labels introducing an example or result should read as structure, not as the
+    /// first words of the following sentence. Explicit Markdown remains authoritative;
+    /// this is only the compact convention models commonly emit without Markdown.
+    private static func applyCalloutLabels(in value: NSMutableAttributedString) {
+        let pattern = #"(?im)^(пример(?:\s+\d+)?|решение|ответ|итог|важно|example(?:\s+\d+)?|solution|answer|result|important):"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
+            value.addAttribute(.font, value: UIFont.systemFont(ofSize: 16.5, weight: .semibold), range: match.range)
+        }
+    }
+
+    private static func applyListParagraphs(in value: NSMutableAttributedString) {
+        let pattern = #"(?m)^\s*(?:•|☐|☑︎|\d+[.)])\s+.*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 6.0
+            paragraph.firstLineHeadIndent = 0.0
+            paragraph.headIndent = 20.0
+            value.addAttribute(.paragraphStyle, value: paragraph, range: match.range)
         }
     }
 
