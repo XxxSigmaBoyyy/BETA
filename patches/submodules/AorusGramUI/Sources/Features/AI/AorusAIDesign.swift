@@ -276,6 +276,9 @@ public final class AorusAIWorkTrailView: UIView {
     private let chevron = UIImageView()
     private let stack = UIStackView()
     private var palette: AorusAIPalette?
+    /// Whether the turn has stopped. Read by `rebuild` to decide which link of the
+    /// chain is the live one.
+    private var isFinishedState = false
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -337,6 +340,7 @@ public final class AorusAIWorkTrailView: UIView {
         }
         isHidden = false
 
+        isFinishedState = isFinished
         let showsSummary = isFinished
         let showsBody = !isFinished || isExpanded
 
@@ -373,62 +377,142 @@ public final class AorusAIWorkTrailView: UIView {
 
     private func rebuild(phases: [AorusAIWorkPhase], palette: AorusAIPalette) {
         // Rebuilt wholesale on purpose: a turn reports a handful of phases, the rows are
-        // plain labels, and reconciling them would be more moving parts than redrawing.
+        // plain views, and reconciling them would be more moving parts than redrawing.
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard !stack.isHidden else { return }
-        for phase in phases {
-            stack.addArrangedSubview(Self.phaseLabel(phase.label, palette: palette))
+        for (offset, phase) in phases.enumerated() {
+            let isLast = offset == phases.count - 1
             let rows = phase.files.filter { $0.isRenderable }
-            guard !rows.isEmpty else { continue }
-            stack.addArrangedSubview(Self.filesColumn(rows, palette: palette))
+            stack.addArrangedSubview(Self.phaseRow(
+                phase.label,
+                palette: palette,
+                isCurrent: isLast && !isFinishedState,
+                continuesBelow: !isLast || !rows.isEmpty
+            ))
+            for (fileOffset, file) in rows.enumerated() {
+                stack.addArrangedSubview(Self.fileRow(
+                    file,
+                    palette: palette,
+                    continuesBelow: !isLast || fileOffset < rows.count - 1
+                ))
+            }
         }
     }
 
-    private static func phaseLabel(_ text: String, palette: AorusAIPalette) -> UILabel {
-        let label = UILabel()
-        label.font = .systemFont(ofSize: 12.5, weight: .medium)
-        label.textColor = palette.secondary
-        label.numberOfLines = 0
-        label.text = text
-        return label
-    }
-
-    /// The children of one phase: a hairline down the left, the rows beside it.
-    private static func filesColumn(_ files: [AorusAIFileChange], palette: AorusAIPalette) -> UIView {
+    /// One link of the chain: the marker column on the left, the content on the right.
+    ///
+    /// The connector is drawn by the rows themselves rather than by one line behind them,
+    /// so a row knows whether anything follows it and the chain ends cleanly on the last
+    /// link instead of trailing into nothing.
+    private static func chainRow(marker: UIView,
+                                 content: UIView,
+                                 palette: AorusAIPalette,
+                                 continuesBelow: Bool,
+                                 markerSize: CGFloat,
+                                 topPadding: CGFloat) -> UIView {
         let container = UIView()
-        let rule = UIView()
-        rule.backgroundColor = palette.tertiary.withAlphaComponent(0.28)
-        rule.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(rule)
+        marker.translatesAutoresizingMaskIntoConstraints = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(marker)
+        container.addSubview(content)
 
-        let rows = UIStackView()
-        rows.axis = .vertical
-        rows.spacing = 3.0
-        rows.translatesAutoresizingMaskIntoConstraints = false
-        for file in files {
-            let label = UILabel()
-            label.font = .systemFont(ofSize: 12.0)
-            label.numberOfLines = 0
-            label.attributedText = attributedRow(file, palette: palette)
-            rows.addArrangedSubview(label)
+        var constraints: [NSLayoutConstraint] = [
+            marker.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.railCentre - markerSize / 2.0),
+            marker.topAnchor.constraint(equalTo: container.topAnchor, constant: topPadding),
+            marker.widthAnchor.constraint(equalToConstant: markerSize),
+            marker.heightAnchor.constraint(equalToConstant: markerSize),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.railCentre + 11.0),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ]
+
+        if continuesBelow {
+            let connector = UIView()
+            connector.backgroundColor = palette.tertiary.withAlphaComponent(0.22)
+            connector.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(connector)
+            constraints += [
+                connector.centerXAnchor.constraint(equalTo: marker.centerXAnchor),
+                connector.widthAnchor.constraint(equalToConstant: 1.5),
+                connector.topAnchor.constraint(equalTo: marker.bottomAnchor, constant: 3.0),
+                connector.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: 5.0)
+            ]
         }
-        container.addSubview(rows)
-
-        NSLayoutConstraint.activate([
-            rule.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 3.0),
-            rule.topAnchor.constraint(equalTo: container.topAnchor, constant: 1.0),
-            rule.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1.0),
-            rule.widthAnchor.constraint(equalToConstant: 1.0),
-            rows.leadingAnchor.constraint(equalTo: rule.trailingAnchor, constant: 9.0),
-            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            rows.topAnchor.constraint(equalTo: container.topAnchor),
-            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
+        NSLayoutConstraint.activate(constraints)
         return container
     }
 
-    /// "Создан App.swift " in the ordinary colour, "+125" green, "-20" red — the counts
-    /// always signed, no space after the sign, one space between them.
+    /// Where the chain runs, measured from the leading edge.
+    private static let railCentre: CGFloat = 5.0
+
+    /// A phase: a ring on the rail, hollow while it is the one being worked on and filled
+    /// once it is behind us, with the label beside it.
+    private static func phaseRow(_ text: String,
+                                 palette: AorusAIPalette,
+                                 isCurrent: Bool,
+                                 continuesBelow: Bool) -> UIView {
+        let size: CGFloat = 9.0
+        let marker = UIView()
+        marker.layer.cornerRadius = size / 2.0
+        marker.layer.borderWidth = 1.5
+        marker.layer.borderColor = palette.accent.withAlphaComponent(isCurrent ? 0.95 : 0.45).cgColor
+        marker.backgroundColor = isCurrent ? .clear : palette.accent.withAlphaComponent(0.45)
+
+        let label = UILabel()
+        label.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        label.textColor = isCurrent ? palette.label : palette.secondary
+        label.numberOfLines = 0
+        label.text = text
+
+        if isCurrent {
+            // The live link breathes, so the eye finds what is happening now without a
+            // spinner or a second colour.
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 0.9
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            marker.layer.add(pulse, forKey: "aorusPulse")
+        }
+        return chainRow(
+            marker: marker, content: label, palette: palette,
+            continuesBelow: continuesBelow, markerSize: size, topPadding: 4.0
+        )
+    }
+
+    /// A file: a small glyph on the rail instead of a bullet, and the row beside it.
+    private static func fileRow(_ file: AorusAIFileChange,
+                                palette: AorusAIPalette,
+                                continuesBelow: Bool) -> UIView {
+        let size: CGFloat = 11.0
+        let glyph = UIImageView()
+        glyph.contentMode = .center
+        glyph.tintColor = palette.tertiary
+        let symbol: String
+        switch file.kind {
+        case .created: symbol = "plus"
+        case .edited: symbol = "pencil"
+        case .deleted: symbol = "minus"
+        }
+        glyph.image = UIImage(
+            systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 7.0, weight: .bold)
+        )
+
+        let label = UILabel()
+        label.font = .systemFont(ofSize: 12.0)
+        label.numberOfLines = 0
+        label.attributedText = attributedRow(file, palette: palette)
+
+        return chainRow(
+            marker: glyph, content: label, palette: palette,
+            continuesBelow: continuesBelow, markerSize: size, topPadding: 2.0
+        )
+    }
+
     static func attributedRow(_ file: AorusAIFileChange, palette: AorusAIPalette) -> NSAttributedString {
         let verb: String
         switch file.kind {
@@ -437,6 +521,8 @@ public final class AorusAIWorkTrailView: UIView {
         case .deleted: verb = aorusAILocalized("Удалён", "Deleted")
         }
         let font = UIFont.systemFont(ofSize: 12.0)
+        // Monospaced digits so a column of files lines its counts up instead of dancing.
+        let countFont = UIFont.monospacedDigitSystemFont(ofSize: 12.0, weight: .medium)
         let result = NSMutableAttributedString(
             string: "\(verb) \(file.displayName) ",
             attributes: [.font: font, .foregroundColor: palette.secondary]
@@ -445,10 +531,10 @@ public final class AorusAIWorkTrailView: UIView {
         let removed = UIColor(red: 0.90, green: 0.35, blue: 0.33, alpha: 1.0)
         var counts: [NSAttributedString] = []
         if file.kind != .deleted, file.added > 0 {
-            counts.append(NSAttributedString(string: "+\(file.added)", attributes: [.font: font, .foregroundColor: added]))
+            counts.append(NSAttributedString(string: "+\(file.added)", attributes: [.font: countFont, .foregroundColor: added]))
         }
         if file.kind != .created, file.removed > 0 {
-            counts.append(NSAttributedString(string: "-\(file.removed)", attributes: [.font: font, .foregroundColor: removed]))
+            counts.append(NSAttributedString(string: "-\(file.removed)", attributes: [.font: countFont, .foregroundColor: removed]))
         }
         for (offset, part) in counts.enumerated() {
             if offset > 0 {

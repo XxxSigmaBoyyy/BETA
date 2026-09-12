@@ -4722,6 +4722,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 slots.append(.quote(card))
             case let .table(table):
                 let card = AorusAITableCard()
+                card.onCopied = { [weak self] in self?.onCopy?() }
                 card.configure(table: table, theme: theme)
                 bodyStack.addArrangedSubview(card)
                 slots.append(.table(card))
@@ -5411,6 +5412,53 @@ private final class AorusAITableCard: UIView {
         addSubview(scrollView)
         scrollView.addSubview(canvas)
         isAccessibilityElement = false
+        // A table's cells are labels, and a label cannot be selected — so holding a
+        // number in a table used to do nothing at all and there was no way to get it
+        // out. A long press now offers the cell under the finger and the whole table.
+        let press = UILongPressGestureRecognizer(target: self, action: #selector(aorusHandleLongPress(_:)))
+        press.minimumPressDuration = 0.35
+        canvas.addGestureRecognizer(press)
+        canvas.isUserInteractionEnabled = true
+    }
+
+    /// The text of the cell under `point`, if the finger is on one.
+    private func aorusCellText(at point: CGPoint) -> String? {
+        for row in labels {
+            for label in row where label.frame.contains(point) {
+                let value = (label.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return value.isEmpty ? nil : value
+            }
+        }
+        return nil
+    }
+
+    /// The whole table as tab-separated rows, which is what a spreadsheet and a chat
+    /// both paste sensibly.
+    private func aorusTableText() -> String {
+        return labels
+            .map { row in row.map { ($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: "\t") }
+            .joined(separator: "\n")
+    }
+
+    /// Raised after a long press put something on the pasteboard, so the chat can show
+    /// the same confirmation it shows for the answer's own Copy button.
+    var onCopied: (() -> Void)?
+
+    /// Long press copies: the cell under the finger, or the whole table when the press
+    /// lands between cells.
+    ///
+    /// Deliberately one action and no menu. A menu here means `UIEditMenuInteraction`,
+    /// which needs a delegate to carry custom actions and exists only from iOS 16 — two
+    /// version-dependent moving parts for a choice the press position already makes.
+    /// The whole table goes out as tab-separated rows, which both a spreadsheet and a
+    /// chat paste sensibly.
+    @objc private func aorusHandleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        let value = aorusCellText(at: recognizer.location(in: canvas)) ?? aorusTableText()
+        guard !value.isEmpty else { return }
+        UIPasteboard.general.string = value
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onCopied?()
     }
 
     required init?(coder: NSCoder) { fatalError() }
