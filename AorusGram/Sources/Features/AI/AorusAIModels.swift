@@ -112,9 +112,13 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
     /// message so the trail survives a reload of the conversation, and so the finished
     /// turn can collapse it behind one line.
     public var workPhases: [AorusAIWorkPhase] = []
+    /// When the agent stopped working on this turn. Stored rather than derived: the
+    /// folded trail reports how long the work took, and after a reload there is no
+    /// other way to know when it ended.
+    public var workFinishedAt: Date?
     public var errorCode: String?
 
-    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, workPhases: [AorusAIWorkPhase] = [], errorCode: String? = nil) {
+    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, workPhases: [AorusAIWorkPhase] = [], workFinishedAt: Date? = nil, errorCode: String? = nil) {
         self.id = id
         self.role = role
         self.rawText = rawText
@@ -125,12 +129,13 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
         self.artifacts = artifacts
         self.statusLabel = statusLabel
         self.workPhases = workPhases
+        self.workFinishedAt = workFinishedAt
         self.errorCode = errorCode
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, role, rawText, createdAt, state, telegramEntities
-        case referencedMessage, artifacts, statusLabel, workPhases, errorCode
+        case referencedMessage, artifacts, statusLabel, workPhases, workFinishedAt, errorCode
     }
 
     /// Hand-written for the same reason the conversation's is.
@@ -153,6 +158,7 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
         self.artifacts = try container.decodeIfPresent([AorusAIArtifact].self, forKey: .artifacts) ?? []
         self.statusLabel = try container.decodeIfPresent(String.self, forKey: .statusLabel)
         self.workPhases = try container.decodeIfPresent([AorusAIWorkPhase].self, forKey: .workPhases) ?? []
+        self.workFinishedAt = try container.decodeIfPresent(Date.self, forKey: .workFinishedAt)
         self.errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
     }
 }

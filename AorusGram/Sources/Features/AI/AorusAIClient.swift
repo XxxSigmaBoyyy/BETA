@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 public final class AorusAIStreamHandle {
     private let lock = NSLock()
@@ -552,6 +553,18 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
     }
 
     func start() {
+        // Hold the app awake for as long as iOS allows once it goes to the background.
+        //
+        // A turn is server-side work the device is only listening to, and the listening
+        // socket dies the moment the process is suspended — a glance at another app in
+        // the middle of a build used to lose the whole turn. This does not make the turn
+        // survive termination: a background URLSession carries uploads and downloads, not
+        // an event stream, so nothing on the device can keep reading one after the process
+        // is gone. Surviving that needs a way to rejoin a turn already running on the
+        // server, which is a server route, not a client trick. What this does buy is every
+        // second iOS is willing to grant, which covers switching apps and locking the
+        // screen for a moment.
+        beginBackgroundAssertion()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 90
         configuration.timeoutIntervalForResource = 60 * 30
@@ -572,6 +585,31 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
         let task = self.task
         lock.unlock()
         task?.cancel()
+    }
+
+    private var backgroundAssertion: UIBackgroundTaskIdentifier = .invalid
+
+    private func beginBackgroundAssertion() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.beginBackgroundAssertion() }
+            return
+        }
+        guard backgroundAssertion == .invalid else { return }
+        backgroundAssertion = UIApplication.shared.beginBackgroundTask(withName: "AorusAITurn") { [weak self] in
+            // Out of time. Release the assertion ourselves rather than being killed for
+            // holding it; the turn's own completion still runs if the socket outlives this.
+            self?.endBackgroundAssertion()
+        }
+    }
+
+    private func endBackgroundAssertion() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.endBackgroundAssertion() }
+            return
+        }
+        guard backgroundAssertion != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundAssertion)
+        backgroundAssertion = .invalid
     }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -675,6 +713,9 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
         self.session = nil
         lock.unlock()
         session?.finishTasksAndInvalidate()
+        // Released here and nowhere else: `finish` is the single exit of a turn, and it is
+        // guarded so it runs once.
+        endBackgroundAssertion()
         DispatchQueue.main.async { self.completionHandler(result) }
     }
 

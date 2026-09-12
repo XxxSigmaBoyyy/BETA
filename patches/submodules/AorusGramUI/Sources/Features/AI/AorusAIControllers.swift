@@ -1269,6 +1269,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// Artifacts currently being fetched, by `artifactId`. Owned by the controller, not
     /// by the card, because every reload builds new cards.
     private var loadingArtifactIds: Set<String> = []
+    /// Turns whose work trail the reader has unfolded. A view preference, so it lives
+    /// here and never in the stored conversation.
+    private var expandedWorkTrails: Set<UUID> = []
     /// The cancel handle of each running download, so a second tap stops the transfer.
     private var artifactDownloads: [String: AorusAIDownloadHandle] = [:]
     private var quotaTimer: Foundation.Timer?
@@ -2114,6 +2117,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             return
         }
         conversation.messages[index].state = cancelled ? .cancelled : .complete
+        // The trail is folded from here on, so the moment the work stopped has to be
+        // recorded now — after a reload there is nothing else to measure against.
+        if conversation.messages[index].workFinishedAt == nil, !conversation.messages[index].workPhases.isEmpty {
+            conversation.messages[index].workFinishedAt = Date()
+        }
         if cancelled, !produced {
             conversation.messages[index].rawText = ""
             conversation.messages[index].statusLabel = aorusAILocalized("Остановлено до ответа", "Stopped before a reply")
@@ -2149,6 +2157,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         if !preserveText { conversation.messages[index].rawText = "" }
         conversation.messages[index].state = .failed
         conversation.messages[index].statusLabel = AorusAIFormat.errorText(error)
+        // The trail is folded from here on, so the moment the work stopped has to be
+        // recorded now — after a reload there is nothing else to measure against.
+        if conversation.messages[index].workFinishedAt == nil, !conversation.messages[index].workPhases.isEmpty {
+            conversation.messages[index].workFinishedAt = Date()
+        }
         conversation.messages[index].errorCode = AorusAIFormat.safeErrorCode(error)
         streamHandle?.cancelTransport()
         streamHandle = nil
@@ -3134,6 +3147,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             return UITableViewCell(style: .default, reuseIdentifier: nil)
         }
         let message = conversation.messages[indexPath.row]
+        // Set before configure: the cell reads it while laying the trail out.
+        cell.workTrailExpanded = expandedWorkTrails.contains(message.id)
         cell.configure(
             message: message,
             context: context,
@@ -3147,7 +3162,40 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         cell.onArtifact = { [weak self] artifact in self?.toggleArtifact(artifact) }
         cell.onCopy = { [weak self] in self?.presentCopiedFeedback() }
         cell.onRetry = { [weak self] in self?.retry(messageId: message.id) }
+        cell.onToggleWorkTrail = { [weak self] in self?.toggleWorkTrail(messageId: message.id) }
         return cell
+    }
+
+    /// Folds or unfolds one turn's work trail and re-measures just that row.
+    ///
+    /// The list is asked to re-run the row rather than the view being resized in place:
+    /// the cell's height comes from its own stack, and only the table can agree to the
+    /// new one. `performBatchUpdates` with no edits is what animates a height change
+    /// without reloading the row's contents and losing its glass.
+    private func toggleWorkTrail(messageId: UUID) {
+        if expandedWorkTrails.contains(messageId) {
+            expandedWorkTrails.remove(messageId)
+        } else {
+            expandedWorkTrails.insert(messageId)
+        }
+        guard let row = conversation.messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let indexPath = IndexPath(row: row, section: 0)
+        if let cell = tableView.cellForRow(at: indexPath) as? AorusAIMessageCell {
+            cell.workTrailExpanded = expandedWorkTrails.contains(messageId)
+            cell.configure(
+                message: conversation.messages[row],
+                context: context,
+                theme: presentationData.theme,
+                canRetry: conversation.messages[row].role == .assistant
+                    && row == conversation.messages.count - 1
+                    && (conversation.messages[row].state == .failed || conversation.messages[row].state == .complete),
+                loadingArtifactIds: loadingArtifactIds
+            )
+        }
+        UIView.animate(withDuration: 0.28, delay: 0.0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
+            self.tableView.performBatchUpdates(nil)
+            self.tableView.layoutIfNeeded()
+        }
     }
 
     /// Sends the last question again, having taken it and its failed answer out of the
@@ -4243,11 +4291,39 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private let bubbleGlass = GlassBackgroundView(frame: CGRect())
     private let bodyStack = UIStackView()
     private let statusLabel = UILabel()
+    private let workTrail = AorusAIWorkTrailView()
     private let assistantActions = UIStackView()
     private let copyButton = UIButton(type: .system)
     private let regenerateButton = UIButton(type: .system)
     private let retryButton = UIButton(type: .system)
     private let typingIndicator = AorusAITypingIndicatorView()
+    /// Raised when the reader folds or unfolds the work trail.
+    var onToggleWorkTrail: (() -> Void)?
+    /// The reader's fold state for this row, set by the list before configure. Kept out
+    /// of the message because it is a view preference, not part of the conversation.
+    var workTrailExpanded = false
+
+    /// A turn is still working until it stops streaming. Only a stopped turn folds.
+    private func configureWorkTrail(message: AorusAIMessage, theme: PresentationTheme) {
+        guard message.role == .assistant, !message.workPhases.isEmpty else {
+            workTrail.isHidden = true
+            return
+        }
+        let isFinished = message.state != .streaming
+        let duration: TimeInterval?
+        if let started = message.workPhases.first?.startedAt, let finished = message.workFinishedAt {
+            duration = max(0.0, finished.timeIntervalSince(started))
+        } else {
+            duration = nil
+        }
+        workTrail.configure(
+            phases: message.workPhases,
+            isFinished: isFinished,
+            duration: duration,
+            isExpanded: workTrailExpanded,
+            theme: theme
+        )
+    }
     private let noticeCard = AorusAINoticeCard()
     /// The 9pt round dot the design blinks at the tail of a streaming answer. It lives
     /// inside the last text view so it can sit exactly after the last glyph.
@@ -4283,6 +4359,11 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         // is what the turn is doing before the text it produces, not a footnote under it.
         statusLabel.font = .systemFont(ofSize: 13.0)
         statusLabel.numberOfLines = 0
+        // The trail sits above the progress line, which is itself above the answer: what
+        // the turn did, then what it is doing, then what it produced.
+        workTrail.isHidden = true
+        workTrail.onToggle = { [weak self] in self?.onToggleWorkTrail?() }
+        contentStack.addArrangedSubview(workTrail)
         contentStack.addArrangedSubview(statusLabel)
         contentStack.addArrangedSubview(bubble)
         noticeCard.isHidden = true
@@ -4484,6 +4565,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         }
         statusLabel.text = message.statusLabel
         statusLabel.isHidden = message.statusLabel == nil
+        configureWorkTrail(message: message, theme: theme)
         copyText = message.rawText
         assistantActions.isHidden = !(message.role == .assistant && message.state == .complete && canRetry && !message.rawText.isEmpty)
         retryButton.isHidden = !(message.state == .failed && canRetry)
@@ -4664,6 +4746,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         statusLabel.textColor = palette.tertiary
         statusLabel.text = message.statusLabel
         statusLabel.isHidden = message.statusLabel == nil
+        configureWorkTrail(message: message, theme: theme)
         retryButton.tintColor = palette.accent
         copyText = message.rawText
         // Flat text buttons, as in the design: no pill behind them, the tint carries the

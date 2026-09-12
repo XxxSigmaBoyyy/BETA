@@ -255,3 +255,227 @@ final class AorusAIGroupBackgroundView: UIView {
         )
     }
 }
+
+// MARK: - AorusAI work trail
+
+/// The agent's own account of what it did, drawn above its answer.
+///
+/// While the turn runs it reads as a list: each label the agent announced, and under it
+/// the files it touched while that label was current. When the turn ends the whole thing
+/// folds into one line — "Работал 42 секунды" — which unfolds again on tap.
+///
+/// Deliberately not a card. There is no box, no border and no fill: the design is one
+/// column of small type against the page, with a hairline rule down the left of each
+/// group's children so the hierarchy reads without drawing a container for it.
+public final class AorusAIWorkTrailView: UIView {
+    /// Called when the reader folds or unfolds the trail, so the list can re-measure the
+    /// row. The view does not know it is in a table and must not.
+    public var onToggle: (() -> Void)?
+
+    private let summaryButton = UIButton(type: .system)
+    private let chevron = UIImageView()
+    private let stack = UIStackView()
+    private var palette: AorusAIPalette?
+
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+
+        stack.axis = .vertical
+        stack.spacing = 5.0
+        stack.alignment = .fill
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        summaryButton.contentHorizontalAlignment = .leading
+        summaryButton.titleLabel?.font = .systemFont(ofSize: 12.5, weight: .medium)
+        summaryButton.addTarget(self, action: #selector(toggle), for: .touchUpInside)
+        summaryButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(summaryButton)
+
+        chevron.contentMode = .scaleAspectFit
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.image = UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 9.0, weight: .semibold)
+        )
+        addSubview(chevron)
+
+        NSLayoutConstraint.activate([
+            summaryButton.topAnchor.constraint(equalTo: topAnchor),
+            summaryButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            chevron.centerYAnchor.constraint(equalTo: summaryButton.centerYAnchor),
+            chevron.leadingAnchor.constraint(equalTo: summaryButton.trailingAnchor, constant: 4.0),
+            chevron.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        stackTop = stack.topAnchor.constraint(equalTo: topAnchor)
+        stackTop?.isActive = true
+        summaryBottom = summaryButton.bottomAnchor.constraint(equalTo: bottomAnchor)
+    }
+
+    private var stackTop: NSLayoutConstraint?
+    private var summaryBottom: NSLayoutConstraint?
+    private var summaryToStack: NSLayoutConstraint?
+
+    public required init?(coder: NSCoder) { preconditionFailure("AorusAIWorkTrailView is not built from a coder") }
+
+    /// `isFinished` folds the trail; `isExpanded` is the reader's own choice, which only
+    /// matters once it is folded.
+    public func configure(phases: [AorusAIWorkPhase],
+                          isFinished: Bool,
+                          duration: TimeInterval?,
+                          isExpanded: Bool,
+                          theme: PresentationTheme) {
+        let palette = AorusAIPalette.resolve(theme)
+        self.palette = palette
+
+        guard !phases.isEmpty else {
+            isHidden = true
+            return
+        }
+        isHidden = false
+
+        let showsSummary = isFinished
+        let showsBody = !isFinished || isExpanded
+
+        summaryButton.isHidden = !showsSummary
+        chevron.isHidden = !showsSummary
+        summaryButton.setTitleColor(palette.tertiary, for: .normal)
+        chevron.tintColor = palette.tertiary
+        if showsSummary {
+            summaryButton.setTitle(Self.summaryText(duration: duration), for: .normal)
+            // A quarter turn rather than a second glyph, so the two states are one object.
+            chevron.transform = isExpanded ? CGAffineTransform(rotationAngle: .pi) : .identity
+        }
+
+        stack.isHidden = !showsBody
+        rebuild(phases: phases, palette: palette)
+
+        // The two layouts differ only in what the top of the stack is pinned to.
+        stackTop?.isActive = false
+        summaryToStack?.isActive = false
+        summaryBottom?.isActive = false
+        if showsSummary {
+            if showsBody {
+                if summaryToStack == nil {
+                    summaryToStack = stack.topAnchor.constraint(equalTo: summaryButton.bottomAnchor, constant: 6.0)
+                }
+                summaryToStack?.isActive = true
+            } else {
+                summaryBottom?.isActive = true
+            }
+        } else {
+            stackTop?.isActive = true
+        }
+    }
+
+    private func rebuild(phases: [AorusAIWorkPhase], palette: AorusAIPalette) {
+        // Rebuilt wholesale on purpose: a turn reports a handful of phases, the rows are
+        // plain labels, and reconciling them would be more moving parts than redrawing.
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard !stack.isHidden else { return }
+        for phase in phases {
+            stack.addArrangedSubview(Self.phaseLabel(phase.label, palette: palette))
+            let rows = phase.files.filter { $0.isRenderable }
+            guard !rows.isEmpty else { continue }
+            stack.addArrangedSubview(Self.filesColumn(rows, palette: palette))
+        }
+    }
+
+    private static func phaseLabel(_ text: String, palette: AorusAIPalette) -> UILabel {
+        let label = UILabel()
+        label.font = .systemFont(ofSize: 12.5, weight: .medium)
+        label.textColor = palette.secondary
+        label.numberOfLines = 0
+        label.text = text
+        return label
+    }
+
+    /// The children of one phase: a hairline down the left, the rows beside it.
+    private static func filesColumn(_ files: [AorusAIFileChange], palette: AorusAIPalette) -> UIView {
+        let container = UIView()
+        let rule = UIView()
+        rule.backgroundColor = palette.tertiary.withAlphaComponent(0.28)
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(rule)
+
+        let rows = UIStackView()
+        rows.axis = .vertical
+        rows.spacing = 3.0
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        for file in files {
+            let label = UILabel()
+            label.font = .systemFont(ofSize: 12.0)
+            label.numberOfLines = 0
+            label.attributedText = attributedRow(file, palette: palette)
+            rows.addArrangedSubview(label)
+        }
+        container.addSubview(rows)
+
+        NSLayoutConstraint.activate([
+            rule.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 3.0),
+            rule.topAnchor.constraint(equalTo: container.topAnchor, constant: 1.0),
+            rule.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1.0),
+            rule.widthAnchor.constraint(equalToConstant: 1.0),
+            rows.leadingAnchor.constraint(equalTo: rule.trailingAnchor, constant: 9.0),
+            rows.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            rows.topAnchor.constraint(equalTo: container.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        return container
+    }
+
+    /// "Создан App.swift " in the ordinary colour, "+125" green, "-20" red — the counts
+    /// always signed, no space after the sign, one space between them.
+    static func attributedRow(_ file: AorusAIFileChange, palette: AorusAIPalette) -> NSAttributedString {
+        let verb: String
+        switch file.kind {
+        case .created: verb = aorusAILocalized("Создан", "Created")
+        case .edited: verb = aorusAILocalized("Изменён", "Edited")
+        case .deleted: verb = aorusAILocalized("Удалён", "Deleted")
+        }
+        let font = UIFont.systemFont(ofSize: 12.0)
+        let result = NSMutableAttributedString(
+            string: "\(verb) \(file.displayName) ",
+            attributes: [.font: font, .foregroundColor: palette.secondary]
+        )
+        let added = UIColor(red: 0.30, green: 0.72, blue: 0.42, alpha: 1.0)
+        let removed = UIColor(red: 0.90, green: 0.35, blue: 0.33, alpha: 1.0)
+        var counts: [NSAttributedString] = []
+        if file.kind != .deleted, file.added > 0 {
+            counts.append(NSAttributedString(string: "+\(file.added)", attributes: [.font: font, .foregroundColor: added]))
+        }
+        if file.kind != .created, file.removed > 0 {
+            counts.append(NSAttributedString(string: "-\(file.removed)", attributes: [.font: font, .foregroundColor: removed]))
+        }
+        for (offset, part) in counts.enumerated() {
+            if offset > 0 {
+                result.append(NSAttributedString(string: " ", attributes: [.font: font]))
+            }
+            result.append(part)
+        }
+        return result
+    }
+
+    static func summaryText(duration: TimeInterval?) -> String {
+        guard let duration, duration >= 1.0 else {
+            return aorusAILocalized("Работал меньше секунды", "Worked for less than a second")
+        }
+        let total = Int(duration.rounded())
+        let minutes = total / 60
+        let seconds = total % 60
+        if minutes <= 0 {
+            return aorusAILocalized("Работал \(seconds) с", "Worked for \(seconds)s")
+        }
+        if seconds == 0 {
+            return aorusAILocalized("Работал \(minutes) мин", "Worked for \(minutes)m")
+        }
+        return aorusAILocalized("Работал \(minutes) мин \(seconds) с", "Worked for \(minutes)m \(seconds)s")
+    }
+
+    @objc private func toggle() {
+        onToggle?()
+    }
+}
