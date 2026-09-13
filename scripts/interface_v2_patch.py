@@ -994,8 +994,11 @@ def _patch_subtitle_button_glass(tg: Path) -> None:
         "    // AorusGram: what the topic chip is made of under Interface 2.0. Its INK is not\n"
         "    // set here: _patch_overlay_palette already routes both the text and the arrow\n"
         "    // through `aorusOverlayInk`, which is the header's own reading of the page and a\n"
-        "    // better one than anything this patch could invent beside it.\n"
-        "    private var aorusSubtitleGlass: GlassBackgroundView?\n",
+        "    // better one than anything this patch could invent beside it. The arrow's last\n"
+        "    // ink is remembered there rather than here for the same reason, and only the slot\n"
+        "    // to keep it in is declared alongside the pane.\n"
+        "    private var aorusSubtitleGlass: GlassBackgroundView?\n"
+        "    private var aorusSubtitleArrowInk: UIColor?\n",
         "subtitle glass property",
     )
     text = _replace_once(
@@ -4276,8 +4279,24 @@ def _patch_overlay_palette(tg: Path) -> None:
     )
     text = _replace_once(
         text,
-        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n",
-        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemSecondaryTextColor)\n",
+        "            if subtitleArrowNode.image == nil || themeUpdated {\n"
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n"
+        "            }\n",
+        "            // AorusGram: the ink, and when it is time to redraw the arrow with it.\n"
+        "            //\n"
+        "            // Stock regenerates the arrow on a theme change alone. Under Interface 2.0 the\n"
+        "            // colour comes from the PAGE, and the page changes without the theme changing:\n"
+        "            // it is sampled off the avatar after the first layout has already run, and it\n"
+        "            // changes again every time the reader pages to another photo. So the arrow kept\n"
+        "            // whatever ink the very first pass produced -- white, before anything had been\n"
+        "            // sampled -- and stayed white over a light page, while the text beside it\n"
+        "            // corrected itself. The text is tinted on every pass; the arrow is a baked\n"
+        "            // image, and nothing was asking for a new one.\n"
+        "            let aorusArrowInk: UIColor = aorusOverlayPalette ? aorusOverlayInk : presentationData.theme.list.itemSecondaryTextColor\n"
+        "            if subtitleArrowNode.image == nil || themeUpdated || self.aorusSubtitleArrowInk != aorusArrowInk {\n"
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusArrowInk)\n"
+        "                self.aorusSubtitleArrowInk = aorusArrowInk\n"
+        "            }\n",
         "overlay palette subtitle arrow",
     )
     text = _replace_once(

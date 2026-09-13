@@ -351,7 +351,16 @@ public final class AorusAIWorkTrailView: UIView {
             isUserInteractionEnabled = false
             for label in [base, highlight] {
                 label.font = .systemFont(ofSize: 12.5, weight: .medium)
-                label.numberOfLines = 0
+                // One line, always. A phase the agent announces can be a whole sentence,
+                // and wrapping it made a chat row two lines tall and changed height under
+                // the reader as the phases went by. The tail is cut instead; the full text
+                // is one tap away in the sheet.
+                label.numberOfLines = 1
+                label.lineBreakMode = .byTruncatingTail
+                // A single-line label reports the whole sentence as its intrinsic width and
+                // resists being squeezed below it. Left at the default it would widen the
+                // row instead of truncating, which is the opposite of what is wanted here.
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 label.translatesAutoresizingMaskIntoConstraints = false
                 addSubview(label)
                 NSLayoutConstraint.activate([
@@ -421,14 +430,6 @@ public final class AorusAIWorkTrailView: UIView {
 
         override func layoutSubviews() {
             super.layoutSubviews()
-            // A phase label wraps, and a wrapping label only reports the right height once
-            // it knows the width it has to wrap inside. Without this the view asks for one
-            // very long line and the chat row is measured a line too short.
-            if base.preferredMaxLayoutWidth != bounds.width {
-                base.preferredMaxLayoutWidth = bounds.width
-                highlight.preferredMaxLayoutWidth = bounds.width
-                invalidateIntrinsicContentSize()
-            }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             sweep.frame = highlight.bounds

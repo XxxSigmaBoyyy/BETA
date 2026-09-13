@@ -1813,7 +1813,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 transportText += "\n\n" + heading + "\n" + quoted
             }
         }
-        let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming, statusLabel: aorusAILocalized("Подключение…", "Connecting…"))
+        // Born with no status. The turn starts as the typing indicator alone, and the first
+        // thing written on that line is the agent's own first phase.
+        let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming)
         conversation.messages.append(userMessage)
         conversation.messages.append(assistant)
         if conversation.title.isEmpty { conversation.title = AorusAIFormat.title(from: text) }
@@ -1874,9 +1876,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     }
 
     private func startTransport(text: String) {
-        if let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) {
-            conversation.messages[index].statusLabel = aorusAILocalized("Подключение…", "Connecting…")
-        }
+        // No "Подключение…" here. The status line is the agent saying what it is doing,
+        // and opening a socket is not that — it is this client's own plumbing, shown to
+        // the reader for the fraction of a second before the first real phase lands. The
+        // typing indicator already says the turn is alive.
         // Everything before the two turns just appended is replayed context; the
         // payload itself trims it to the transport budget. It is frozen here so every
         // continuation of this logical request sends the identical conversation (§6).
@@ -2612,7 +2615,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             )
             return
         }
-        setTurnStatus(aorusAILocalized("Думаю…", "Thinking…"))
+        // Nothing is announced between tool rounds either: "Думаю…" says less than the
+        // phase the agent is about to announce for itself, and it overwrote it.
         dispatchTransport()
     }
 
