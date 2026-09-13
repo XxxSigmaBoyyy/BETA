@@ -686,9 +686,13 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
     }
 
     /// Only ever begins on a pill. Everything else — placing the caret, focusing the
-    /// composer, starting a selection — is left entirely to UIKit.
-    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === aorusMentionTap else { return true }
+    /// composer, starting a selection, dragging the scroll view — is left entirely to
+    /// UIKit, which is why anything that is not our own recogniser goes to `super`:
+    /// `UIScrollView` gates its own pan recogniser here.
+    override public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === aorusMentionTap else {
+            return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        }
         guard onMentionTap != nil else { return false }
         return mention(at: gestureRecognizer.location(in: self)) != nil
     }

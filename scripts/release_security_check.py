@@ -1070,6 +1070,7 @@ def main() -> int:
 
     check_mirrored_sources(root, errors)
     check_declaration_attributes(root, errors)
+    check_missing_override(root, errors)
     check_corefoundation_casts(root, errors)
 
     if errors:
@@ -1194,6 +1195,54 @@ def check_declaration_attributes(root: Path, errors: list[str]) -> None:
                         f"{path.relative_to(root)}:{number}: @discardableResult is separated from its "
                         f"function and now lands on `{target[:60]}` — Swift rejects this at compile time.",
                     )
+
+
+# UIKit declares a handful of delegate-shaped methods on the view classes themselves, so
+# satisfying the matching protocol in a subclass is an *override*, not a new method. The
+# compiler only says so an hour into the build, when the module is finally reached — one
+# build was lost to exactly this on `gestureRecognizerShouldBegin`. Maps a method name to
+# the classes that already declare it; a subclass of any of them must write `override`.
+_UIKIT_VIEW_CLASSES = (
+    "UIView", "UIControl", "UIScrollView", "UITextView", "UITextField", "UILabel",
+    "UIButton", "UIImageView", "UIStackView", "UITableView", "UICollectionView",
+    "UICollectionViewCell", "UITableViewCell", "UIVisualEffectView", "UIPickerView",
+)
+_INHERITED_METHODS = {
+    "gestureRecognizerShouldBegin": _UIKIT_VIEW_CLASSES,
+}
+_CLASS_DECL = re.compile(r"^\s*(?:public\s+|private\s+|internal\s+|fileprivate\s+|final\s+|open\s+)*class\s+(\w+)\s*:\s*([^{]+)")
+_FUNC_DECL = re.compile(r"^\s*(?:@\w+\s+)*(?:public\s+|private\s+|internal\s+|fileprivate\s+|final\s+|open\s+|override\s+|static\s+|class\s+)*func\s+(\w+)\s*\(")
+
+
+def check_missing_override(root: Path, errors: list[str]) -> None:
+    """A method UIKit already declares on the superclass must say `override`."""
+    for base in ("AorusGram/Sources", "patches"):
+        directory = root / base
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.swift")):
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            current_super: str | None = None
+            for number, line in enumerate(lines, start=1):
+                declaration = _CLASS_DECL.match(line)
+                if declaration is not None:
+                    # The superclass, when there is one, is the first inheritance entry.
+                    current_super = declaration.group(2).split(",")[0].strip()
+                    continue
+                function = _FUNC_DECL.match(line)
+                if function is None or current_super is None:
+                    continue
+                bases = _INHERITED_METHODS.get(function.group(1))
+                if bases is None or current_super not in bases:
+                    continue
+                if "override" in line.split("func ")[0]:
+                    continue
+                fail(
+                    errors,
+                    f"{path.relative_to(root)}:{number}: `{function.group(1)}` is already "
+                    f"declared on {current_super}, so this needs the `override` keyword — "
+                    f"Swift rejects it at compile time.",
+                )
 
 
 def check_corefoundation_casts(root: Path, errors: list[str]) -> None:
