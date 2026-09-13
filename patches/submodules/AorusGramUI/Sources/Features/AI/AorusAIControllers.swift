@@ -1269,6 +1269,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// Artifacts currently being fetched, by `artifactId`. Owned by the controller, not
     /// by the card, because every reload builds new cards.
     private var loadingArtifactIds: Set<String> = []
+    /// Real heights of rows the table has laid out, by message id. Bounded by the length
+    /// of this one conversation, and an entry for a message that no longer exists is
+    /// simply never read again.
+    private var measuredRowHeights: [UUID: CGFloat] = [:]
+    /// Sum of the above, kept as it is written. `estimatedHeightForRowAt` is asked for
+    /// every row of a reload and for every row a scroll passes, so the average it reads
+    /// must not walk the dictionary each time.
+    private var measuredHeightTotal: CGFloat = 0.0
     /// Turns whose work trail the reader has unfolded. A view preference, so it lives
     /// here and never in the stored conversation.
     /// The cancel handle of each running download, so a second tap stops the transfer.
@@ -3119,6 +3127,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             cell.contentView.layoutIfNeeded()
             tableView.beginUpdates()
             tableView.endUpdates()
+            // A streaming answer grows while it is on screen and `willDisplay` will not
+            // fire again, so the height it was remembered at is already out of date. Left
+            // stale, the estimate used the moment it scrolls out of view is the height it
+            // had several paragraphs ago.
+            recordHeight(of: cell, at: indexPath)
         } else {
             tableView.reloadRows(at: [indexPath], with: .none)
         }
@@ -3139,7 +3152,25 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         guard tableView.numberOfSections > 0 else { return }
         let rows = tableView.numberOfRows(inSection: 0)
         guard rows > 0 else { return }
-        tableView.scrollToRow(at: IndexPath(row: rows - 1, section: 0), at: .bottom, animated: animated)
+        // The floor is where a list shorter than the screen rests, which is above zero here
+        // because the list runs under the capsules and is inset instead of cut off.
+        let floorOffset = -tableView.contentInset.top
+        let maximum = tableView.contentSize.height + tableView.contentInset.bottom - tableView.bounds.height
+        let target = CGPoint(x: 0.0, y: max(floorOffset, maximum))
+        // A long way to go — opening a conversation, or sending after scrolling back
+        // through it — goes through `scrollToRow`, which keeps aiming at the row as the
+        // real heights arrive and so lands on it even when the estimates were poor.
+        if abs(target.y - tableView.contentOffset.y) > tableView.bounds.height * 2.0 {
+            tableView.scrollToRow(at: IndexPath(row: rows - 1, section: 0), at: .bottom, animated: animated)
+            return
+        }
+        // Near the bottom, the offset is set outright. This is the path a streaming answer
+        // takes about eighteen times a second, and `scrollToRow` there works its target out
+        // from the table's estimates and then corrects itself — a correction per delta,
+        // which is the jitter. Already-there is left alone rather than re-set, because
+        // re-setting the same offset interrupts the reader's own momentum.
+        guard abs(tableView.contentOffset.y - target.y) > 0.5 else { return }
+        tableView.setContentOffset(target, animated: animated)
     }
 
     /// Whether the newest message is on screen, within a row's worth of slack.
@@ -3176,8 +3207,54 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         return cell
     }
 
-    /// Folds or unfolds one turn's work trail and re-measures just that row.
+    /// What a row turned out to be, once the table had actually laid it out.
     ///
+    /// Self-sizing rows cost nothing to declare and everything to guess. Until a row has
+    /// been on screen the table has no idea how tall it is, so it uses the estimate — and
+    /// the estimate here was a flat 100 points for rows that are routinely ten times that.
+    /// The whole content size is therefore a guess, and every time a real height replaces
+    /// a guessed one the table corrects the content size and slides the offset to match.
+    /// Scrolling up through a long conversation, that correction happens continuously and
+    /// under the reader's finger: the list jumps, overshoots and teleports.
+    ///
+    /// Answering with the height the row really had is what stops it. It is keyed by
+    /// message id rather than by row, because a retry deletes two messages and every index
+    /// after them shifts; a height remembered against an index would then be handed to a
+    /// completely different message.
+    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        recordHeight(of: cell, at: indexPath)
+    }
+
+    func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        // Recorded on the way out as well: a streaming answer grows while it is on screen,
+        // and `willDisplay` will not fire again to tell us about it.
+        recordHeight(of: cell, at: indexPath)
+    }
+
+    func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+        guard indexPath.row < conversation.messages.count else { return averageRowHeight }
+        // A row that has been seen answers with what it was. One that has not answers with
+        // what this conversation's rows have averaged so far, which is a far better opening
+        // guess than a constant — a chat of long answers stops being measured as if every
+        // row were a single line.
+        return measuredRowHeights[conversation.messages[indexPath.row].id] ?? averageRowHeight
+    }
+
+    private func recordHeight(of cell: UITableViewCell, at indexPath: IndexPath) {
+        guard indexPath.row < conversation.messages.count else { return }
+        let height = cell.bounds.height
+        guard height > 1.0 else { return }
+        let id = conversation.messages[indexPath.row].id
+        measuredHeightTotal += height - (measuredRowHeights[id] ?? 0.0)
+        measuredRowHeights[id] = height
+    }
+
+    /// Mean of every row measured so far, or a sane opening figure before there are any.
+    private var averageRowHeight: CGFloat {
+        guard !measuredRowHeights.isEmpty else { return 120.0 }
+        return max(44.0, measuredHeightTotal / CGFloat(measuredRowHeights.count))
+    }
+
     /// Opens the turn's trail as a half-screen sheet.
     ///
     /// It used to fold out inside the row, which meant the chat row changed height under
