@@ -1070,6 +1070,7 @@ def main() -> int:
 
     check_single_anti_screenshot_owner(root, errors)
     check_artifact_edit_contract(root, errors)
+    check_aorus_code_encryption(root, errors)
     check_mirrored_sources(root, errors)
     check_declaration_attributes(root, errors)
     check_missing_override(root, errors)
@@ -1109,6 +1110,52 @@ _MIRROR_DIVERGENCE_ALLOWED = {
     "GlassMorphismComponents.swift": "the UI copy imports AorusGram for the shared entitlement authority",
     "AntiSpoofManager.swift": "status separator differs per module (• / -)",
 }
+
+
+def check_aorus_code_encryption(root: Path, errors: list[str]) -> None:
+    """AorusCode must be authenticated-encrypted, and by one shared implementation.
+
+    The failure this guards against is silent: a message that goes out unencrypted,
+    or a reveal path that drifts from the cipher and stops reading real messages,
+    both look fine until someone inspects the wire or a chat goes dark. So the cipher
+    is pinned to real primitives, the codec is pinned to delegating rather than
+    rolling its own, and the reveal transform is pinned to the shared cipher.
+    """
+    cipher_path = root / "AorusGram/Sources/Features/Messaging/AorusCodeCipher.swift"
+    if not cipher_path.is_file():
+        fail(errors, "AorusCodeCipher.swift is missing — AorusCode has no cipher")
+        return
+    cipher = cipher_path.read_text(encoding="utf-8")
+    for marker in (
+        "import CryptoKit",
+        "ChaChaPoly.seal(",           # authenticated encryption on the way out
+        "ChaChaPoly.open(",           # and on the way in
+        "pbkdf2SHA256(",              # the passphrase tier is a real slow KDF
+        "keyObfuscated",              # the shared key is not a readable literal
+    ):
+        if marker not in cipher:
+            fail(errors, f"AorusCodeCipher is missing {marker!r} — the cipher is not the intended one")
+    # A plaintext base-4 encoder here would mean a message goes out in the clear.
+    if "String(bytes: secret.utf8" in cipher:
+        fail(errors, "AorusCodeCipher appears to encode the secret without encrypting it")
+
+    codec_path = root / "patches/submodules/AorusGramUI/Sources/AorusStealthCodec.swift"
+    if codec_path.is_file():
+        codec = codec_path.read_text(encoding="utf-8")
+        if "AorusCodeCipher." not in codec:
+            fail(errors, "AorusStealthCodec no longer delegates to the shared cipher")
+        # The old in-codec base-4 alphabet must be gone, not left to rot beside the
+        # delegating calls where a future edit could resurrect it.
+        if "\\u{200B}" in codec and "alphabet" in codec:
+            fail(errors, "AorusStealthCodec still carries its own invisible alphabet")
+
+    if "AorusCodeCipher.swift" not in workflow_swift_preflight(root):
+        fail(errors, "AorusCodeCipher.swift is missing from the early Swift test preflight")
+
+
+def workflow_swift_preflight(root: Path) -> str:
+    path = root / ".github/workflows/build-aorusgram.yml"
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
 def check_artifact_edit_contract(root: Path, errors: list[str]) -> None:

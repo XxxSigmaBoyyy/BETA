@@ -19229,37 +19229,18 @@ def patch_aorus_code_reveal(tg: Path) -> None:
     helper = r'''
 // AORUSCODE-REVEAL-HELPER-BEGIN
 // AorusGram: AorusCode hidden-message decode + native quote rendering.
+//
+// The decryption is AorusCodeCipher's — the one implementation the composer and
+// sender also use, so this reveal path can never drift from what produced the
+// message. `reveal` returns the plaintext for an app-key or legacy message and nil
+// for a passphrase message (which needs the reader's passphrase, not auto-decoded
+// here) or one that fails authentication.
 private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEntity]?) -> (text: String, entities: [MessageTextEntity])? {
-    let magicOpen = "\u{2061}\u{2062}"
-    let magicClose = "\u{2062}\u{2061}"
-    guard let openRange = rawText.range(of: magicOpen),
-          let closeRange = rawText.range(of: magicClose),
-          openRange.upperBound <= closeRange.lowerBound else {
+    guard AorusCodeCipher.containsPayload(rawText),
+          let secret = AorusCodeCipher.reveal(from: rawText), !secret.isEmpty else {
         return nil
     }
-    // Base-4 alphabet — must stay byte-for-byte identical to AorusStealthCodec.
-    // Unicode.Scalar (code points), NOT Character: U+200C is GCB=Extend and
-    // clusters with the previous code point under grapheme iteration, which
-    // corrupts the 4-symbol grouping for some payloads. Scalars are immune.
-    let alphabet: [Unicode.Scalar] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
-    let payload = Array(rawText[openRange.upperBound ..< closeRange.lowerBound].unicodeScalars)
-    var bytes: [UInt8] = []
-    var i = 0
-    while i + 3 < payload.count {
-        guard let d0 = alphabet.firstIndex(of: payload[i]),
-              let d1 = alphabet.firstIndex(of: payload[i + 1]),
-              let d2 = alphabet.firstIndex(of: payload[i + 2]),
-              let d3 = alphabet.firstIndex(of: payload[i + 3]) else {
-            i += 1
-            continue
-        }
-        bytes.append(UInt8((d0 << 6) | (d1 << 4) | (d2 << 2) | d3))
-        i += 4
-    }
-    guard !bytes.isEmpty, let secret = String(bytes: bytes, encoding: .utf8), !secret.isEmpty else {
-        return nil
-    }
-    let cover = String(rawText[rawText.startIndex ..< openRange.lowerBound])
+    let cover = AorusCodeCipher.visibleText(rawText)
     let coverLength = (cover as NSString).length
     let title = "AorusCode"
     var display = ""
@@ -19293,7 +19274,29 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
     if import_anchor not in t:
         print("AorusCodeReveal: import anchor not found — skip")
         return
+    # AorusCodeCipher lives in the AorusGram leaf module, so the reveal transform can
+    # share the one cipher implementation instead of duplicating it here.
+    if "import AorusGram\n" not in t:
+        t = t.replace(import_anchor, import_anchor + "import AorusGram\n", 1)
     t = t.replace(import_anchor, import_anchor + helper, 1)
+
+    # The module now references AorusGram, so its BUILD must depend on it. AorusGram
+    # is a low-level leaf (Display / AsyncDisplayKit / SignalKit / MediaResources /
+    # AnimatedStickerNode / AorusBadge) and depends on nothing under Chat, so this
+    # edge cannot close a cycle — the same edge TgVoipWebrtc already carries.
+    reveal_build = path.parent.parent / "BUILD"
+    if reveal_build.is_file():
+        bt = reveal_build.read_text(encoding="utf-8")
+        if "//submodules/AorusGram:AorusGram" not in bt:
+            anchor = "    deps = [\n"
+            if anchor not in bt:
+                print("AorusCodeReveal: WARNING ChatMessageTextBubbleContentNode deps anchor not found")
+            else:
+                bt = bt.replace(anchor, anchor + '        "//submodules/AorusGram:AorusGram",\n', 1)
+                reveal_build.write_text(bt, encoding="utf-8")
+                print("AorusCodeReveal: added AorusGram dependency to ChatMessageTextBubbleContentNode")
+    else:
+        print("AorusCodeReveal: WARNING ChatMessageTextBubbleContentNode BUILD not found")
 
     call_anchor = "                if let entities {\n                    var underlineLinks = true\n"
     if call_anchor not in t:
