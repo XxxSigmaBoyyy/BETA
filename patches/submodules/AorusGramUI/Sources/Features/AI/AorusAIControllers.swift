@@ -3152,6 +3152,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         guard tableView.numberOfSections > 0 else { return }
         let rows = tableView.numberOfRows(inSection: 0)
         guard rows > 0 else { return }
+        // Laid out before the content size is read, because the content size is only
+        // recomputed on a layout pass. `send()` calls this immediately after `reloadData()`,
+        // and at that moment the table still describes the conversation as it was BEFORE the
+        // two new messages — so the bottom worked out from it was the bottom the list was
+        // already sitting at, the "already there" test below threw the scroll away, and
+        // sending a message stopped moving the list at all. A table with nothing pending
+        // lays out for free, so the streaming path pays nothing for this.
+        tableView.layoutIfNeeded()
         // The floor is where a list shorter than the screen rests, which is above zero here
         // because the list runs under the capsules and is inset instead of cut off.
         let floorOffset = -tableView.contentInset.top
