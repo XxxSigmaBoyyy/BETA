@@ -1512,7 +1512,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         scheduleQuotaResetIfNeeded()
         updateComposer()
         self.displayNodeDidLoad()
-        DispatchQueue.main.async { [weak self] in self?.scrollToBottom(animated: false) }
+        DispatchQueue.main.async { [weak self] in self?.jumpToNewestMessage(animated: false) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -1686,7 +1686,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // newest message stays there — which is where a chat always is when the keyboard
         // opens or the composer grows.
         if wasAtBottom {
-            scrollToBottom(animated: false)
+            stickToBottom()
         }
     }
 
@@ -1851,7 +1851,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         }
         updateComposer()
         tableView.reloadData()
-        scrollToBottom(animated: true)
+        jumpToNewestMessage(animated: true)
         persist(force: true)
         resolveEntities(forMessageId: userMessage.id)
 
@@ -3101,7 +3101,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
 
     private func reloadMessage(id: UUID) {
         guard let row = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
-        // Same rule as `scrollToBottom`: a row the table has not been told about cannot be
+        // Same rule as `jumpToNewestMessage`: a row the table has not been told about cannot be
         // reloaded, it raises. A skipped update here is harmless — the caller that adds the
         // row reloads the table straight afterwards.
         guard tableView.numberOfSections > 0, row < tableView.numberOfRows(inSection: 0) else { return }
@@ -3136,49 +3136,56 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             tableView.reloadRows(at: [indexPath], with: .none)
         }
         if wasAtBottom {
-            scrollToBottom(animated: false)
+            stickToBottom()
         }
     }
 
-    private func scrollToBottom(animated: Bool) {
-        // The table's own row count, never the conversation's.
-        //
-        // `send()` appends the two new messages to the model and only reloads the table
-        // several lines later. In between it clears the composer, and clearing the composer
-        // reports a height change, which runs a layout pass — which now re-anchors the list.
-        // Addressing the last *message* there asks the table to scroll to a row it has not
-        // been told about yet, and that is not a no-op: UIKit raises immediately, so every
-        // single send crashed the app. Asking the table what it holds cannot outrun it.
+    /// Land on the newest message, wherever the reader happens to be.
+    ///
+    /// This is the deliberate move: opening the conversation, sending, and retrying. It
+    /// names the row instead of working out an offset, because `scrollToRow` keeps aiming
+    /// at that row as the real heights arrive — so it lands even when nothing has been
+    /// measured yet, which is every conversation the moment it opens.
+    ///
+    /// An offset cannot do that job. Worked out from estimates, a conversation of a few
+    /// very long answers measures shorter than the screen before anything is laid out, so
+    /// the "bottom" is the top and the list simply stays there while the real heights
+    /// arrive underneath it.
+    ///
+    /// The table's own row count, never the conversation's. `send()` appends the two new
+    /// messages to the model and only reloads the table several lines later; in between it
+    /// clears the composer, which reports a height change and runs a layout pass that
+    /// re-anchors the list. Addressing the last *message* there asks the table to scroll to
+    /// a row it has not been told about, and UIKit raises on that rather than ignoring it —
+    /// every single send crashed the app. Asking the table what it holds cannot outrun it.
+    private func jumpToNewestMessage(animated: Bool) {
         guard tableView.numberOfSections > 0 else { return }
         let rows = tableView.numberOfRows(inSection: 0)
         guard rows > 0 else { return }
-        // Laid out before the content size is read, because the content size is only
-        // recomputed on a layout pass. `send()` calls this immediately after `reloadData()`,
-        // and at that moment the table still describes the conversation as it was BEFORE the
-        // two new messages — so the bottom worked out from it was the bottom the list was
-        // already sitting at, the "already there" test below threw the scroll away, and
-        // sending a message stopped moving the list at all. A table with nothing pending
-        // lays out for free, so the streaming path pays nothing for this.
+        tableView.scrollToRow(at: IndexPath(row: rows - 1, section: 0), at: .bottom, animated: animated)
+    }
+
+    /// Keep a list that was already at the bottom there, without moving one that is not.
+    ///
+    /// Called while an answer streams and whenever the insets change under it — the first
+    /// of those about eighteen times a second. `scrollToRow` is wrong for this: it works
+    /// its target out from the table's estimates and then corrects itself once the real
+    /// heights land, and a correction per delta is exactly the jitter this fixes. The
+    /// bottom of the content is a number the table already knows, so it is set outright.
+    private func stickToBottom() {
+        guard tableView.numberOfSections > 0, tableView.numberOfRows(inSection: 0) > 0 else { return }
+        // The content size is only recomputed on a layout pass, so it is brought up to date
+        // before it is read. A table with nothing pending lays out for free.
         tableView.layoutIfNeeded()
         // The floor is where a list shorter than the screen rests, which is above zero here
         // because the list runs under the capsules and is inset instead of cut off.
         let floorOffset = -tableView.contentInset.top
         let maximum = tableView.contentSize.height + tableView.contentInset.bottom - tableView.bounds.height
         let target = CGPoint(x: 0.0, y: max(floorOffset, maximum))
-        // A long way to go — opening a conversation, or sending after scrolling back
-        // through it — goes through `scrollToRow`, which keeps aiming at the row as the
-        // real heights arrive and so lands on it even when the estimates were poor.
-        if abs(target.y - tableView.contentOffset.y) > tableView.bounds.height * 2.0 {
-            tableView.scrollToRow(at: IndexPath(row: rows - 1, section: 0), at: .bottom, animated: animated)
-            return
-        }
-        // Near the bottom, the offset is set outright. This is the path a streaming answer
-        // takes about eighteen times a second, and `scrollToRow` there works its target out
-        // from the table's estimates and then corrects itself — a correction per delta,
-        // which is the jitter. Already-there is left alone rather than re-set, because
-        // re-setting the same offset interrupts the reader's own momentum.
+        // Already right is left alone rather than re-set: re-setting the same offset
+        // interrupts the reader's own momentum.
         guard abs(tableView.contentOffset.y - target.y) > 0.5 else { return }
-        tableView.setContentOffset(target, animated: animated)
+        tableView.setContentOffset(target, animated: false)
     }
 
     /// Whether the newest message is on screen, within a row's worth of slack.
@@ -3257,6 +3264,19 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         measuredRowHeights[id] = height
     }
 
+    /// Forgets the rows of messages the conversation no longer has.
+    ///
+    /// A retry deletes the question and its failed answer. Their heights are keyed by an
+    /// id nothing will ask for again, so they cannot be handed to the wrong row — but
+    /// they would go on counting towards the mean that every UNSEEN row is estimated
+    /// with, which is the one number here that is read for rows it was not measured from.
+    private func pruneMeasuredHeights() {
+        let live = Set(conversation.messages.map { $0.id })
+        guard measuredRowHeights.count > live.count else { return }
+        measuredRowHeights = measuredRowHeights.filter { live.contains($0.key) }
+        measuredHeightTotal = measuredRowHeights.values.reduce(0.0, +)
+    }
+
     /// Mean of every row measured so far, or a sane opening figure before there are any.
     private var averageRowHeight: CGFloat {
         guard !measuredRowHeights.isEmpty else { return 120.0 }
@@ -3318,7 +3338,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         pendingReference = user.referencedMessage
         composer.reference = pendingReference
         conversation.messages.removeSubrange((assistantIndex - 1)...assistantIndex)
+        pruneMeasuredHeights()
         tableView.reloadData()
+        // `send()` reloads and jumps to the newest message itself, so the retry lands on
+        // the question it just put back exactly as sending it by hand would.
         send()
     }
 
