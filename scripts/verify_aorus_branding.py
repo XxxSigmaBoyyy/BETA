@@ -3020,6 +3020,11 @@ def main() -> None:
                 "aorusUpdateHeaderFade",
                 "aorusHidesButtonsBlur",
                 "aorusScrollingHeader",
+                # The topic chip on a forum profile: glass like the buttons beside it, its
+                # ink from the page it sits on, and lifted clear of their top arcs. Stock
+                # fills it with a theme colour and drops it eleven points below the title.
+                "aorusSubtitleGlass",
+                "? 5.0 : 11.0",
                 "aorusOverlayPalette",
                 # The palette that actually runs: the photo is permanently expanded under
                 # Interface 2.0, so the expandedAvatar* branch is the one every profile with a

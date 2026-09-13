@@ -967,6 +967,122 @@ def _patch_multi_scale_centering(tg: Path) -> None:
     print("InterfaceV2: centred the header text in its box")
 
 
+def _patch_subtitle_button_glass(tg: Path) -> None:
+    """The chip under a forum profile's title: glass, and clear of the buttons.
+
+    On a group that has topics the subtitle is a button -- the topic's name with a
+    disclosure arrow -- and Telegram draws it as a flat rounded rectangle filled with the
+    theme's `contentButtonBackgroundColor`. Under Interface 2.0 that leaves it as the one
+    control on the header that is not glass, sitting directly above two action buttons
+    that are.
+
+    It also sits eleven points below the title, and that figure was chosen against stock
+    geometry. Over glass buttons the chip's bottom edge crosses their top arcs and the
+    overlap shows straight through them, which is what it does today.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    text = _read(path, "PeerInfoHeaderNode.swift")
+    if "aorusSubtitleGlass" in text:
+        print("InterfaceV2: subtitle chip already glass")
+        return
+    if _GLASS_IMPORT not in text:
+        text = _replace_once(text, "import Display\n", "import Display\n" + _GLASS_IMPORT, "subtitle glass import")
+    text = _replace_once(
+        text,
+        "    var subtitleArrowNode: ASImageNode?\n",
+        "    var subtitleArrowNode: ASImageNode?\n"
+        "    // AorusGram: what the topic chip is made of under Interface 2.0, and the ink it\n"
+        "    // was last drawn with.\n"
+        "    private var aorusSubtitleGlass: GlassBackgroundView?\n"
+        "    private var aorusSubtitleInk: UIColor?\n",
+        "subtitle glass property",
+    )
+    text = _replace_once(
+        text,
+        "            if subtitleArrowNode.image == nil || themeUpdated {\n"
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n"
+        "            }\n"
+        "            self.subtitleNode.updateTintColor(color: presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
+        "            // AorusGram: over glass the chip's ink comes from the page it sits on rather\n"
+        "            // than from the theme. The page is sampled off the avatar, so a pale photo\n"
+        "            // under a dark theme makes a pale page -- and theme-coloured ink on it is the\n"
+        "            // exact mismatch the action buttons beside this one already avoid.\n"
+        "            let aorusSubtitleInk: UIColor\n"
+        "            if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") {\n"
+        "                aorusSubtitleInk = AorusGlassPane.profilePageInk\n"
+        "            } else {\n"
+        "                aorusSubtitleInk = presentationData.theme.list.itemSecondaryTextColor\n"
+        "            }\n"
+        "            // The stock guard regenerates the arrow on a theme change only, and the page\n"
+        "            // can change without the theme changing: paging to a second avatar does\n"
+        "            // exactly that, and the arrow would keep the first photo's ink.\n"
+        "            if subtitleArrowNode.image == nil || themeUpdated || self.aorusSubtitleInk != aorusSubtitleInk {\n"
+        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusSubtitleInk)\n"
+        "                self.aorusSubtitleInk = aorusSubtitleInk\n"
+        "            }\n"
+        "            self.subtitleNode.updateTintColor(color: aorusSubtitleInk, transition: navigationTransition)\n",
+        "subtitle chip ink",
+    )
+    text = _replace_once(
+        text,
+        "            transition.updateBackgroundColor(node: subtitleBackgroundNode, color: contentButtonBackgroundColor)\n",
+        "            // The fill is the chip under Interface 1; under 2.0 the glass below is, and a\n"
+        "            // colour behind it would be a slab showing through the material.\n"
+        "            transition.updateBackgroundColor(node: subtitleBackgroundNode, color: UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") ? UIColor.clear : contentButtonBackgroundColor)\n",
+        "subtitle chip fill",
+    )
+    text = _replace_once(
+        text,
+        "            transition.updateCornerRadius(node: subtitleBackgroundNode, cornerRadius: subtitleBackgroundFrame.height * 0.5)\n",
+        "            transition.updateCornerRadius(node: subtitleBackgroundNode, cornerRadius: subtitleBackgroundFrame.height * 0.5)\n"
+        "            if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") {\n"
+        "                let aorusGlass: GlassBackgroundView\n"
+        "                if let current = self.aorusSubtitleGlass {\n"
+        "                    aorusGlass = current\n"
+        "                } else {\n"
+        "                    aorusGlass = GlassBackgroundView(frame: CGRect())\n"
+        "                    aorusGlass.isUserInteractionEnabled = false\n"
+        "                    self.aorusSubtitleGlass = aorusGlass\n"
+        "                }\n"
+        "                // Inside the chip's own node rather than beside it. The chip is a subnode of\n"
+        "                // the subtitle, which the header scales as it collapses; a sibling would have\n"
+        "                // to be given that frame a second time and kept in step with it through the\n"
+        "                // whole collapse. At index 0 it stays behind the arrow and the text.\n"
+        "                if aorusGlass.superview !== subtitleBackgroundNode.view {\n"
+        "                    subtitleBackgroundNode.view.insertSubview(aorusGlass, at: 0)\n"
+        "                }\n"
+        "                let aorusGlassFrame = CGRect(origin: CGPoint(), size: subtitleBackgroundFrame.size)\n"
+        "                transition.updateFrame(view: aorusGlass, frame: aorusGlassFrame)\n"
+        "                aorusGlass.update(\n"
+        "                    size: aorusGlassFrame.size,\n"
+        "                    cornerRadius: aorusGlassFrame.height * 0.5,\n"
+        "                    // The page, not the theme -- the same signal the ink above is chosen from.\n"
+        "                    isDark: AorusGlassPane.profilePageIsDark,\n"
+        "                    tintColor: GlassBackgroundView.TintColor(kind: .clear),\n"
+        "                    isInteractive: false,\n"
+        "                    isVisible: true,\n"
+        "                    transition: .immediate\n"
+        "                )\n"
+        "            }\n",
+        "subtitle chip glass",
+    )
+    text = _replace_once(
+        text,
+        "        if subtitleIsButton {\n"
+        "            subtitleFrame.origin.y += 11.0 * (1.0 - titleCollapseFraction)\n",
+        "        if subtitleIsButton {\n"
+        "            // AorusGram: six points up. Eleven is stock, and stock draws the buttons below\n"
+        "            // as one blurred strip that the chip's bottom edge merely touches; under\n"
+        "            // Interface 2.0 each button is its own pane and the overlap reads through them.\n"
+        "            // Six is what clears their top arcs while leaving the chip clear of the title,\n"
+        "            // which is only nine points above it to begin with.\n"
+        "            subtitleFrame.origin.y += (UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") ? 5.0 : 11.0) * (1.0 - titleCollapseFraction)\n",
+        "subtitle chip offset",
+    )
+    path.write_text(text, encoding="utf-8")
+    print("InterfaceV2: made the topic chip glass and lifted it clear of the buttons")
+
+
 def _patch_glass_action_buttons(tg: Path) -> None:
     """Give each action button its own pane of glass, and drop the shared blur behind them.
 
@@ -6075,6 +6191,7 @@ def patch_interface_v2(tg: Path) -> None:
     _patch_header_centering(tg)
     _patch_multi_scale_centering(tg)
     _patch_glass_action_buttons(tg)
+    _patch_subtitle_button_glass(tg)
     _patch_avatar_tint_publish(tg)
     _patch_avatar_placeholder(tg)
     _patch_glass_placeholder_avatar(tg)
