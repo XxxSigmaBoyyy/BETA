@@ -27,6 +27,12 @@ public enum AorusBadge {
     private static let selfBadgeRegistryKey = "aorusgram_server_self_badges_v2"
     private static let verifiedRegistryKey = "aorusgram_server_verified_v1"
     private static let snapshotRevisionKey = "aorusgram_server_badges_revision_v1"
+    private static let snapshotServerNowKey = "aorusgram_server_badges_server_now_v1"
+    private static let snapshotStoredAtKey = "aorusgram_server_badges_stored_at_v1"
+    /// A roster this old stops being honoured. A revoke must not be defeatable by
+    /// keeping the device off the network; the roster is cosmetic, so losing it while
+    /// genuinely offline for a week costs nothing and it returns on the next fetch.
+    private static let maximumSnapshotAge: TimeInterval = 7 * 24 * 60 * 60
     private static let registryLock = NSLock()
 
     // Replace, never merge, the signed assignment for one account. This ensures a
@@ -41,11 +47,30 @@ public enum AorusBadge {
         registryLock.lock()
         let defaults = UserDefaults.standard
         var registry = defaults.dictionary(forKey: selfBadgeRegistryKey) ?? [:]
+        let changed = !plistEqual(registry[String(id)], sanitized)
         registry[String(id)] = sanitized
         defaults.set(registry, forKey: selfBadgeRegistryKey)
         rebuildVerifiedRegistry(defaults: defaults)
         registryLock.unlock()
-        notifyChanged()
+        if changed {
+            notifyChanged()
+        }
+    }
+
+    /// Compare two property-list values the way UserDefaults round-trips them.
+    ///
+    /// A value read back is bridged — `Int64` returns as `NSNumber` — so comparing the
+    /// Swift values directly reports a difference that is not there. Both sides go
+    /// through the Foundation types, where `NSNumber` compares by numeric value.
+    private static func plistEqual(_ lhs: Any?, _ rhs: Any?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case let (left?, right?):
+            return NSDictionary(dictionary: ["v": left]).isEqual(to: ["v": right])
+        default:
+            return false
+        }
     }
 
     // Replace the complete signed roster in one critical section. The current
@@ -69,27 +94,81 @@ public enum AorusBadge {
 
         registryLock.lock()
         let defaults = UserDefaults.standard
-        if let storedRevision = defaults.object(forKey: snapshotRevisionKey) as? NSNumber,
-           revision < storedRevision.int64Value {
-            registryLock.unlock()
-            return false
+        // Ordering is by the SERVER CLOCK first, and `revision` only breaks a tie within
+        // the same second.
+        //
+        // Revision alone used to decide this, and that was a trap with no way out: the
+        // stored revision only ever rises, so a server whose revision falls — which is
+        // what happens when the newest badge row is the one deleted, and the manifest
+        // revision is derived from the rows — is refused for good. The roster freezes,
+        // every later fetch is thrown away, and a revoked badge stays on screen until
+        // the app is reinstalled. `server_now` cannot fall that way.
+        //
+        // Nothing is lost by relaxing it: a replayed older response is already
+        // impossible, because LicenseResponseVerifier binds the server's signature to
+        // the random nonce of THIS request and to a timestamp inside a freshness window.
+        // A stored revision with no stored server clock is the old format, and it is
+        // accepted unconditionally — that is what releases anyone already frozen.
+        if let storedServerNow = (defaults.object(forKey: snapshotServerNowKey) as? NSNumber)?.int64Value {
+            if serverNow < storedServerNow {
+                registryLock.unlock()
+                return false
+            }
+            if serverNow == storedServerNow,
+               let storedRevision = (defaults.object(forKey: snapshotRevisionKey) as? NSNumber)?.int64Value,
+               revision < storedRevision {
+                registryLock.unlock()
+                return false
+            }
         }
+        // Every successful fetch lands here, and most carry the roster unchanged. The
+        // notification re-runs the presentation pipeline, so posting it on an identical
+        // roster would rebuild the theme on every foreground for nothing.
+        let changed = !plistEqual(defaults.dictionary(forKey: badgeRegistryKey), snapshot)
         defaults.set(snapshot, forKey: badgeRegistryKey)
         defaults.set(NSNumber(value: revision), forKey: snapshotRevisionKey)
+        defaults.set(NSNumber(value: serverNow), forKey: snapshotServerNowKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: snapshotStoredAtKey)
         rebuildVerifiedRegistry(defaults: defaults)
         registryLock.unlock()
-        notifyChanged()
+        if changed {
+            notifyChanged()
+        }
         return true
     }
 
     public static func clearServerBadgeSnapshot() {
         registryLock.lock()
         let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: badgeRegistryKey)
-        defaults.removeObject(forKey: snapshotRevisionKey)
+        discardSnapshot(defaults: defaults)
         rebuildVerifiedRegistry(defaults: defaults)
         registryLock.unlock()
         notifyChanged()
+    }
+
+    private static func discardSnapshot(defaults: UserDefaults) {
+        defaults.removeObject(forKey: badgeRegistryKey)
+        defaults.removeObject(forKey: snapshotRevisionKey)
+        defaults.removeObject(forKey: snapshotServerNowKey)
+        defaults.removeObject(forKey: snapshotStoredAtKey)
+    }
+
+    /// Drops a roster that has not been refreshed inside `maximumSnapshotAge`.
+    ///
+    /// A roster written by a build that did not record the time is stamped now rather
+    /// than thrown away, so upgrading does not blank everyone's badges; the age is then
+    /// measured from the upgrade. A stamp far in the future is a clock that has been
+    /// moved, and is treated as stale rather than trusted indefinitely.
+    private static func expireStaleSnapshot(defaults: UserDefaults) -> Bool {
+        guard defaults.dictionary(forKey: badgeRegistryKey) != nil else { return false }
+        let now = Date().timeIntervalSince1970
+        guard let storedAt = defaults.object(forKey: snapshotStoredAtKey) as? NSNumber else {
+            defaults.set(now, forKey: snapshotStoredAtKey)
+            return false
+        }
+        guard abs(now - storedAt.doubleValue) > maximumSnapshotAge else { return false }
+        discardSnapshot(defaults: defaults)
+        return true
     }
 
     private static func sanitize(_ badges: [(String, Int64?)], now: Int64) -> [String: Int64] {
@@ -116,9 +195,15 @@ public enum AorusBadge {
     /// first row is drawn.
     public static func bootstrapRegistries() {
         registryLock.lock()
-        rebuildVerifiedRegistry(defaults: UserDefaults.standard)
+        let defaults = UserDefaults.standard
+        let discarded = expireStaleSnapshot(defaults: defaults)
+        rebuildVerifiedRegistry(defaults: defaults)
         registryLock.unlock()
-        notifyChanged()
+        // Launch: the derived registry is published before anything draws, so there is
+        // nothing on screen to invalidate unless a stale roster was just thrown away.
+        if discarded {
+            notifyChanged()
+        }
     }
 
     private static func rebuildVerifiedRegistry(defaults: UserDefaults) {

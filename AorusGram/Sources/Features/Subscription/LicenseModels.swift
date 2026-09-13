@@ -159,13 +159,23 @@ struct BadgeSnapshotResponse: Equatable {
               rawBadges.count <= Self.maximumPeerCount else {
             return nil
         }
+        // One unreadable entry skips that peer — it must NOT discard the roster.
+        //
+        // Rejecting the whole response here is how a revoke stops applying: the client
+        // keeps the previous roster, retries, fails on the same entry, and the revoked
+        // badge stays on screen forever with nothing to show for it. A peer whose entry
+        // cannot be read simply has no badges, which is the safe reading — a badge is
+        // only ever granted by an entry that parsed.
+        //
+        // The bounds above stay hard failures: those describe the response as a whole,
+        // and one that is too large is not partially trustworthy.
         var parsed: [Int64: [LicenseResponse.Badge]] = [:]
         parsed.reserveCapacity(rawBadges.count)
         for (rawPeerId, value) in rawBadges {
             guard let peerId = Int64(rawPeerId), peerId > 0,
                   let rawItems = value as? [[String: Any]],
                   rawItems.count <= Self.maximumBadgesPerPeer else {
-                return nil
+                continue
             }
             let items = rawItems.compactMap(LicenseResponse.badge)
             if !items.isEmpty {
