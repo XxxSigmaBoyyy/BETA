@@ -1069,6 +1069,7 @@ def main() -> int:
                         fail(errors, f"aorus_branding.py main() calls {name}(), which is not defined")
 
     check_single_anti_screenshot_owner(root, errors)
+    check_artifact_edit_contract(root, errors)
     check_mirrored_sources(root, errors)
     check_declaration_attributes(root, errors)
     check_missing_override(root, errors)
@@ -1108,6 +1109,73 @@ _MIRROR_DIVERGENCE_ALLOWED = {
     "GlassMorphismComponents.swift": "the UI copy imports AorusGram for the shared entitlement authority",
     "AntiSpoofManager.swift": "status separator differs per module (• / -)",
 }
+
+
+def check_artifact_edit_contract(root: Path, errors: list[str]) -> None:
+    """The artifact-edit contract of 2026-09-13: one field, generated here, per chat.
+
+    The whole mechanism is a single request field, so the ways to break it are all
+    quiet ones: stop sending it, send a malformed one, send the same one for every
+    chat, or send the identifiers the contract explicitly refuses. None of those fails
+    a build on its own — the server just falls back and edits the wrong file.
+    """
+    models = root / "AorusGram/Sources/Features/AI/AorusAIModels.swift"
+    if not models.is_file():
+        fail(errors, "AorusAIModels.swift is missing")
+        return
+    source = models.read_text(encoding="utf-8", errors="replace")
+    for marker in (
+        'case threadId = "aorus_thread_id"',          # §1: the field, spelled the one way
+        "public enum AorusAIThreadID",                # generated on the client, not taken
+        "AorusAIThreadID.isValid(threadId)",          # never put on the wire malformed
+        "public var threadId: String",                # stored with the chat's own history
+        "threadId: String = AorusAIThreadID.generate()",
+    ):
+        if marker not in source:
+            fail(errors, f"artifact-edit contract invariant is missing {marker!r} in AorusAIModels.swift")
+
+    # §3 forbids reusing an identifier the server already has, or one that is not per
+    # chat. A device hash or licence key here would silently make every chat on the
+    # device one editing boundary.
+    thread_id_block = source[source.find("public enum AorusAIThreadID"):]
+    thread_id_block = thread_id_block[: thread_id_block.find("\npublic struct AorusAIConversation")]
+    for forbidden in ("DeviceFingerprint", "deviceHash", "LicenseStore", "peerId", "accountId", "artifactId"):
+        if forbidden in thread_id_block:
+            fail(
+                errors,
+                f"the AorusAI thread id must be generated, not derived from {forbidden} "
+                f"(artifact-edit contract §3)",
+            )
+
+    # §8: never send a session id, in any file that builds a request.
+    for base in ("AorusGram/Sources", "patches"):
+        directory = root / base
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.swift")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for number, line in enumerate(text.splitlines(), start=1):
+                # Prose may name the field — explaining why it is absent is worth doing.
+                # Code may not.
+                stripped = line.strip()
+                if stripped.startswith("//") or stripped.startswith("*"):
+                    continue
+                if "artifact_session_id" in line:
+                    fail(
+                        errors,
+                        f"{path.relative_to(root)}:{number} puts artifact_session_id in code, "
+                        f"which the artifact-edit contract §8 says never to send",
+                    )
+
+    # One construction site, and it must carry the chat's id. A payload built without it
+    # is the degraded path, which is correct for an old build and wrong for this one.
+    controllers = root / "patches/submodules/AorusGramUI/Sources/Features/AI/AorusAIControllers.swift"
+    if controllers.is_file():
+        controller_text = controllers.read_text(encoding="utf-8", errors="replace")
+        if controller_text.count("AorusAIAgentPayload(") != 1:
+            fail(errors, "the agent payload must have exactly one construction site")
+        if "threadId: conversation.threadId" not in controller_text:
+            fail(errors, "the agent payload must carry this chat's thread id")
 
 
 def check_single_anti_screenshot_owner(root: Path, errors: list[str]) -> None:

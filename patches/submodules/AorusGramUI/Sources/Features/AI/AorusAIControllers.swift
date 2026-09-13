@@ -1897,7 +1897,16 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             finishStreaming(error: .serverUnavailable, preserveText: true)
             return
         }
-        let payload = AorusAIAgentPayload(history: turnHistory, text: text, toolResults: turnToolResults)
+        // Read straight off the conversation rather than frozen with the rest of the turn:
+        // this controller owns exactly one chat for its whole life — the compose button
+        // builds a new conversation and pushes a new controller — so there is no moment at
+        // which a continuation could carry a different chat's id.
+        let payload = AorusAIAgentPayload(
+            history: turnHistory,
+            text: text,
+            toolResults: turnToolResults,
+            threadId: conversation.threadId
+        )
         turnState = .streaming
         // Every stream carries the number of the one that started it, and its callbacks do
         // nothing once that number has moved on.

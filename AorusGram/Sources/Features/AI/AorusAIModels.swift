@@ -163,6 +163,50 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
     }
 }
 
+/// The chat identity the backend uses to decide which file an edit applies to.
+///
+/// Client contract 2026-09-13 §3: one stable id per AorusAI chat, a new chat means a
+/// new id, and the same chat keeps its id across restarts. It is generated here, and
+/// is deliberately NOT the device hash, the licence, a Telegram chat id or an artifact
+/// id — none of those isolates edits per chat, and the first two would hand the server
+/// an identifier it already has in a field that does not need one.
+public enum AorusAIThreadID {
+    /// §3: 8-80 characters of `[A-Za-z0-9._:-]`.
+    private static let minimumLength = 8
+    private static let maximumLength = 80
+
+    public static func generate() -> String {
+        // A v4 UUID: 36 characters, inside the bound, and every character allowed.
+        return UUID().uuidString
+    }
+
+    public static func isValid(_ value: String) -> Bool {
+        guard value.count >= minimumLength, value.count <= maximumLength else { return false }
+        for character in value {
+            // ASCII first, so `isLetter` means A-Z/a-z and `isNumber` means 0-9 rather
+            // than every letter and digit Unicode knows about — and so the length above
+            // counts the same units the server counts.
+            guard character.isASCII else { return false }
+            if character.isLetter || character.isNumber { continue }
+            guard character == "." || character == "_" || character == ":" || character == "-" else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// The stored id when it is usable, otherwise something that is.
+    ///
+    /// A history file is only ever written by this client, so a malformed id means the
+    /// file was edited or damaged. Refusing to send anything at all is the documented
+    /// fallback (§3: the server then uses `thread_key = "_"`), but a chat that keeps
+    /// its own identity is strictly better, so the conversation's own id is preferred.
+    public static func sanitized(_ value: String?, fallback: String) -> String {
+        if let value, isValid(value) { return value }
+        return isValid(fallback) ? fallback : generate()
+    }
+}
+
 public struct AorusAIConversation: Codable, Equatable, Identifiable {
     public var id: UUID
     public var title: String
@@ -175,8 +219,12 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
     public var quotaResetAt: Date?
     /// Pinned conversations are listed above the recent ones. Local only.
     public var pinned: Bool
+    /// This chat's identity for the backend's file-edit boundary (§3). Set once when
+    /// the chat is created and never changed afterwards: changing it would strand the
+    /// file the next "исправь заголовок" is meant to edit.
+    public var threadId: String
 
-    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", quotaResetAt: Date? = nil, pinned: Bool = false) {
+    public init(id: UUID = UUID(), title: String = "", createdAt: Date = Date(), updatedAt: Date = Date(), messages: [AorusAIMessage] = [], draft: String = "", quotaResetAt: Date? = nil, pinned: Bool = false, threadId: String = AorusAIThreadID.generate()) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -185,10 +233,11 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
         self.draft = draft
         self.quotaResetAt = quotaResetAt
         self.pinned = pinned
+        self.threadId = threadId
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, updatedAt, messages, draft, quotaResetAt, pinned
+        case id, title, createdAt, updatedAt, messages, draft, quotaResetAt, pinned, threadId
     }
 
     /// Hand-written because the history file has to survive gaining a field.
@@ -208,6 +257,14 @@ public struct AorusAIConversation: Codable, Equatable, Identifiable {
         self.draft = try container.decodeIfPresent(String.self, forKey: .draft) ?? ""
         self.quotaResetAt = try container.decodeIfPresent(Date.self, forKey: .quotaResetAt)
         self.pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        // A chat that predates the field falls back to its own local id rather than to a
+        // fresh one. Both are v4 UUIDs the client generated, but only the local id is the
+        // same on every launch — a fresh one would be a different chat to the backend
+        // each time the history is read, which is exactly what §3 forbids.
+        self.threadId = AorusAIThreadID.sanitized(
+            try container.decodeIfPresent(String.self, forKey: .threadId),
+            fallback: self.id.uuidString
+        )
     }
 }
 
@@ -522,12 +579,20 @@ public struct AorusAIAgentPayload: Encodable {
     /// continuation of one logical request (§14: dropping the profile result makes the
     /// server ask for the profile again).
     public var toolResults: [AorusAIToolResult]
+    /// The chat this turn belongs to, so "добавь слайд про цены" edits the file this
+    /// chat produced and not the one another chat produced (artifact-edit contract §3).
+    ///
+    /// This is the ONLY field that contract adds. `artifact_session_id` is deliberately
+    /// absent: the server resolves its own session from `(device_hash, thread_key)`, and
+    /// §8 says not to send one "на всякий случай".
+    public var threadId: String?
 
-    public init(model: String = "AorusAI", stream: Bool = true, messages: [Message], toolResults: [AorusAIToolResult] = []) {
+    public init(model: String = "AorusAI", stream: Bool = true, messages: [Message], toolResults: [AorusAIToolResult] = [], threadId: String? = nil) {
         self.model = model
         self.stream = stream
         self.messages = messages
         self.toolResults = toolResults
+        self.threadId = threadId
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -535,6 +600,7 @@ public struct AorusAIAgentPayload: Encodable {
         case stream
         case messages
         case toolResults = "aorus_tool_results"
+        case threadId = "aorus_thread_id"
     }
 
     /// `aorus_tool_results` is written only when there is something to report, so a
@@ -547,6 +613,13 @@ public struct AorusAIAgentPayload: Encodable {
         if !toolResults.isEmpty {
             try container.encode(toolResults, forKey: .toolResults)
         }
+        // An id that does not satisfy §3 is left out rather than sent malformed. That is
+        // the documented degraded mode — the server falls back to `thread_key = "_"` and
+        // edits the device's own most recent file — and it is what every build before
+        // this one already does, so nothing breaks.
+        if let threadId, AorusAIThreadID.isValid(threadId) {
+            try container.encode(threadId, forKey: .threadId)
+        }
     }
 
     /// Builds the payload from the locally stored conversation.
@@ -554,7 +627,7 @@ public struct AorusAIAgentPayload: Encodable {
     /// `history` must be the turns that precede the new request. Notices, empty
     /// and failed turns are dropped, the newest turns win when the character
     /// budget is exhausted, and chronological order is preserved.
-    public init(history: [AorusAIMessage], text: String, toolResults: [AorusAIToolResult] = []) {
+    public init(history: [AorusAIMessage], text: String, toolResults: [AorusAIToolResult] = [], threadId: String? = nil) {
         var context: [Message] = []
         var budget = AorusAIRequestLimits.historyTotalCharacters
         for message in history.suffix(AorusAIRequestLimits.historyMessageCount).reversed() {
@@ -566,7 +639,7 @@ public struct AorusAIAgentPayload: Encodable {
         }
         var messages = Array(context.reversed())
         messages.append(Message(role: "user", content: AorusAIAgentPayload.clamp(text, to: AorusAIRequestLimits.promptCharacters)))
-        self.init(messages: messages, toolResults: toolResults)
+        self.init(messages: messages, toolResults: toolResults, threadId: threadId)
     }
 
     private static func clamp(_ value: String, to limit: Int) -> String {

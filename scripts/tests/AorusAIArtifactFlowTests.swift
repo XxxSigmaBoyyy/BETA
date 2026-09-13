@@ -436,6 +436,101 @@ private func describesTheCard() {
     require(detail.contains("·"), "size and format are separated")
 }
 
+// MARK: - Artifact-edit contract, 2026-09-13
+
+/// §1 and §8: the contract adds exactly one field, and nothing else may appear.
+private func sendsOnlyTheThreadId() {
+    let thread = "8f3c2a10-6b21-4d9e-9c44-1a2b3c4d5e6f"
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let payload = AorusAIAgentPayload(
+        messages: [AorusAIAgentPayload.Message(role: "user", content: "Добавь слайд про цены")],
+        threadId: thread
+    )
+    guard let data = try? encoder.encode(payload),
+          let body = String(data: data, encoding: .utf8) else {
+        fputs("AorusAIArtifactFlow test failed: the agent payload did not encode\n", stderr)
+        exit(1)
+    }
+    require(body.contains("\"aorus_thread_id\":\"\(thread)\""), "the edit boundary travels as aorus_thread_id")
+    require(!body.contains("artifact_session_id"), "§8: artifact_session_id is never sent")
+    require(!body.contains("session_id"), "no session id of any shape is sent")
+    require(!body.contains("token"), "no vault token is sent")
+    require(body.contains("\"model\":\"AorusAI\""), "the documented body is otherwise unchanged")
+    require(body.contains("\"stream\":true"), "the documented body is otherwise unchanged")
+    require(!body.contains("aorus_tool_results"), "a plain chat request keeps the body it always had")
+
+    // §9: a turn with no chat identity sends exactly the body every earlier build sent.
+    let legacy = AorusAIAgentPayload(messages: [AorusAIAgentPayload.Message(role: "user", content: "Привет")])
+    guard let legacyData = try? encoder.encode(legacy),
+          let legacyBody = String(data: legacyData, encoding: .utf8) else { exit(1) }
+    require(!legacyBody.contains("aorus_thread_id"), "§9: an absent id is an absent field, not a null")
+}
+
+/// §3: one id per chat, a new chat is a new id, and a restart does not change it.
+private func theThreadIdIsOneChatForItsWholeLife() {
+    let first = AorusAIConversation()
+    let second = AorusAIConversation()
+    require(first.threadId != second.threadId, "§3: a new chat is a new id")
+    require(AorusAIThreadID.isValid(first.threadId), "a generated id satisfies the contract")
+    require(first.threadId != first.id.uuidString, "the wire identity is its own field, not the local one")
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .millisecondsSince1970
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .millisecondsSince1970
+    guard let data = try? encoder.encode(first),
+          let restored = try? decoder.decode(AorusAIConversation.self, from: data) else {
+        fputs("AorusAIArtifactFlow test failed: the conversation did not round-trip\n", stderr)
+        exit(1)
+    }
+    require(restored.threadId == first.threadId, "§3: the same chat after a restart is the same id")
+
+    // A history written before this field existed must not take on a new identity every
+    // time it is read — that would make each launch a different chat to the backend.
+    let decoded = try? JSONSerialization.jsonObject(with: data)
+    guard let stored = decoded as? [String: Any] else {
+        fputs("AorusAIArtifactFlow test failed: the stored conversation is not an object\n", stderr)
+        exit(1)
+    }
+    var legacy = stored
+    legacy.removeValue(forKey: "threadId")
+    guard let legacyData = try? JSONSerialization.data(withJSONObject: legacy),
+          let firstRead = try? decoder.decode(AorusAIConversation.self, from: legacyData),
+          let secondRead = try? decoder.decode(AorusAIConversation.self, from: legacyData) else {
+        fputs("AorusAIArtifactFlow test failed: an upgraded conversation did not decode\n", stderr)
+        exit(1)
+    }
+    require(firstRead.threadId == secondRead.threadId, "an upgraded chat keeps one identity across reads")
+    require(firstRead.threadId == first.id.uuidString, "an upgraded chat falls back to its own local id")
+}
+
+/// §3's alphabet and bounds, and what a damaged history file is allowed to put on the wire.
+private func refusesAMalformedThreadId() {
+    require(!AorusAIThreadID.isValid(""), "an empty id is refused")
+    require(!AorusAIThreadID.isValid("short12"), "seven characters is under the bound")
+    require(AorusAIThreadID.isValid("abcd1234"), "eight characters is the lower bound")
+    require(AorusAIThreadID.isValid(String(repeating: "a", count: 80)), "eighty characters is the upper bound")
+    require(!AorusAIThreadID.isValid(String(repeating: "a", count: 81)), "eighty-one is over it")
+    require(AorusAIThreadID.isValid("a.b_c:d-e12"), "the documented punctuation is allowed")
+    require(!AorusAIThreadID.isValid("has space here"), "a space is not in the alphabet")
+    require(!AorusAIThreadID.isValid("путь-на-кириллице"), "non-ASCII is not in the alphabet")
+    require(!AorusAIThreadID.isValid("path/traversal/../x"), "a slash is not in the alphabet")
+
+    let payload = AorusAIAgentPayload(
+        messages: [AorusAIAgentPayload.Message(role: "user", content: "исправь заголовок")],
+        threadId: "bad id/../with slashes"
+    )
+    guard let data = try? JSONEncoder().encode(payload),
+          let body = String(data: data, encoding: .utf8) else { exit(1) }
+    require(!body.contains("aorus_thread_id"), "a malformed id is omitted rather than sent")
+
+    let repaired = AorusAIThreadID.sanitized("bad id", fallback: UUID().uuidString)
+    require(AorusAIThreadID.isValid(repaired), "a malformed stored id is replaced by a usable one")
+    require(AorusAIThreadID.isValid(AorusAIThreadID.sanitized(nil, fallback: "also bad")),
+            "an unusable fallback still yields a usable id")
+}
+
 @main
 private enum AorusAIArtifactFlowTests {
     static func main() {
@@ -451,6 +546,9 @@ private enum AorusAIArtifactFlowTests {
         rendersTheExpiredStates()
         buildsTheProfileTransportBlock()
         describesTheCard()
+        sendsOnlyTheThreadId()
+        theThreadIdIsOneChatForItsWholeLife()
+        refusesAMalformedThreadId()
         print("AorusAIArtifactFlow tests: OK")
     }
 }
