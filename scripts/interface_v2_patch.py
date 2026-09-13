@@ -991,37 +991,12 @@ def _patch_subtitle_button_glass(tg: Path) -> None:
         text,
         "    var subtitleArrowNode: ASImageNode?\n",
         "    var subtitleArrowNode: ASImageNode?\n"
-        "    // AorusGram: what the topic chip is made of under Interface 2.0, and the ink it\n"
-        "    // was last drawn with.\n"
-        "    private var aorusSubtitleGlass: GlassBackgroundView?\n"
-        "    private var aorusSubtitleInk: UIColor?\n",
+        "    // AorusGram: what the topic chip is made of under Interface 2.0. Its INK is not\n"
+        "    // set here: _patch_overlay_palette already routes both the text and the arrow\n"
+        "    // through `aorusOverlayInk`, which is the header's own reading of the page and a\n"
+        "    // better one than anything this patch could invent beside it.\n"
+        "    private var aorusSubtitleGlass: GlassBackgroundView?\n",
         "subtitle glass property",
-    )
-    text = _replace_once(
-        text,
-        "            if subtitleArrowNode.image == nil || themeUpdated {\n"
-        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: presentationData.theme.list.itemSecondaryTextColor)\n"
-        "            }\n"
-        "            self.subtitleNode.updateTintColor(color: presentationData.theme.list.itemSecondaryTextColor, transition: navigationTransition)\n",
-        "            // AorusGram: over glass the chip's ink comes from the page it sits on rather\n"
-        "            // than from the theme. The page is sampled off the avatar, so a pale photo\n"
-        "            // under a dark theme makes a pale page -- and theme-coloured ink on it is the\n"
-        "            // exact mismatch the action buttons beside this one already avoid.\n"
-        "            let aorusSubtitleInk: UIColor\n"
-        "            if UserDefaults.standard.bool(forKey: \"" + INTERFACE_V2_KEY + "\") {\n"
-        "                aorusSubtitleInk = AorusGlassPane.profilePageInk\n"
-        "            } else {\n"
-        "                aorusSubtitleInk = presentationData.theme.list.itemSecondaryTextColor\n"
-        "            }\n"
-        "            // The stock guard regenerates the arrow on a theme change only, and the page\n"
-        "            // can change without the theme changing: paging to a second avatar does\n"
-        "            // exactly that, and the arrow would keep the first photo's ink.\n"
-        "            if subtitleArrowNode.image == nil || themeUpdated || self.aorusSubtitleInk != aorusSubtitleInk {\n"
-        "                subtitleArrowNode.image = generateTintedImage(image: UIImage(bundleImageName: \"Item List/DisclosureArrow\"), color: aorusSubtitleInk)\n"
-        "                self.aorusSubtitleInk = aorusSubtitleInk\n"
-        "            }\n"
-        "            self.subtitleNode.updateTintColor(color: aorusSubtitleInk, transition: navigationTransition)\n",
-        "subtitle chip ink",
     )
     text = _replace_once(
         text,
