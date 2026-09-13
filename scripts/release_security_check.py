@@ -1068,6 +1068,7 @@ def main() -> int:
                     if name not in defined:
                         fail(errors, f"aorus_branding.py main() calls {name}(), which is not defined")
 
+    check_single_anti_screenshot_owner(root, errors)
     check_mirrored_sources(root, errors)
     check_declaration_attributes(root, errors)
     check_missing_override(root, errors)
@@ -1107,6 +1108,31 @@ _MIRROR_DIVERGENCE_ALLOWED = {
     "GlassMorphismComponents.swift": "the UI copy imports AorusGram for the shared entitlement authority",
     "AntiSpoofManager.swift": "status separator differs per module (• / -)",
 }
+
+
+def check_single_anti_screenshot_owner(root: Path, errors: list[str]) -> None:
+    """Keep capture protection state in one module and one process singleton."""
+    core_path = root / "AorusGram/Sources/Features/Privacy/AntiScreenshotManager.swift"
+    ui_path = root / "patches/submodules/AorusGramUI/Sources/Features/Privacy/AntiScreenshotManager.swift"
+    if ui_path.exists():
+        fail(
+            errors,
+            "AntiScreenshotManager must not be compiled into AorusGramUI: two module-local "
+            "singletons make the settings switch unable to remove the core-owned secure layer",
+        )
+    if not core_path.is_file():
+        fail(errors, "AorusGram core is missing AntiScreenshotManager.swift")
+        return
+    source = core_path.read_text(encoding="utf-8", errors="replace")
+    required = (
+        "public final class AntiScreenshotManager",
+        "public static let shared",
+        "public func enable()",
+        "public func disable()",
+    )
+    for marker in required:
+        if marker not in source:
+            fail(errors, f"AntiScreenshotManager must expose the shared core owner: missing {marker!r}")
 
 
 def check_mirrored_sources(root: Path, errors: list[str]) -> None:

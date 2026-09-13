@@ -17,7 +17,7 @@ public final class AorusGramManager {
         ) { [weak self] note in
             let locked = (note.userInfo?["locked"] as? Bool) ?? false
             if locked {
-                AntiScreenshotManager.shared.disable()
+                AorusGram.AntiScreenshotManager.shared.disable()
                 self?.mirrorFlatKeys()
             } else {
                 self?.save()   // flags restored by LicenseGate → re-apply real in-memory state
@@ -282,9 +282,9 @@ public final class AorusGramManager {
 
         // Never turn Anti-Screenshot on while the subscription is locked.
         if antiScreenshot && !licenseLocked {
-            AntiScreenshotManager.shared.enable()
+            AorusGram.AntiScreenshotManager.shared.enable()
         } else {
-            AntiScreenshotManager.shared.disable()
+            AorusGram.AntiScreenshotManager.shared.disable()
         }
 
         NotificationCenter.default.post(name: .aorusSettingsChanged, object: nil)

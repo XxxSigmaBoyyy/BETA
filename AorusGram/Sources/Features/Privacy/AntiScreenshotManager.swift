@@ -21,8 +21,8 @@ import Display
 //   because the layer tree is never torn down on background/foreground there
 //   is no black-screen regression. On every foreground we only VERIFY the
 //   protection is still attached and rebuild it if iOS tore it down.
-final class AntiScreenshotManager {
-    static let shared = AntiScreenshotManager()
+public final class AntiScreenshotManager {
+    public static let shared = AntiScreenshotManager()
     private init() {}
 
     private var isEnabled = false
@@ -34,7 +34,13 @@ final class AntiScreenshotManager {
 
     // MARK: - Lifecycle
 
-    func enable() {
+    public func enable() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.enable()
+            }
+            return
+        }
         guard !isEnabled else { return }
         isEnabled = true
         let nc = NotificationCenter.default
@@ -43,14 +49,25 @@ final class AntiScreenshotManager {
         nc.addObserver(self, selector: #selector(appDidBecomeActive),
                        name: UIApplication.didBecomeActiveNotification, object: nil)
         retryCount = 0
-        scheduleVerify(delay: 0.0)
+        // A settings toggle happens with an existing key window, so install in
+        // the same run-loop turn. The bounded retry remains for early startup.
+        verifyAndInstall()
     }
 
-    func disable() {
-        guard isEnabled else { return }
+    public func disable() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.disable()
+            }
+            return
+        }
+        guard isEnabled || protectedField != nil || brandingWindow != nil else { return }
         isEnabled = false
         NotificationCenter.default.removeObserver(self)
-        DispatchQueue.main.async { [weak self] in self?.uninstall() }
+        // Remove the secure canvas immediately. Deferring this to the next
+        // run-loop turn made the switch appear unreliable and could leave a
+        // stale installation owned by an earlier module singleton.
+        uninstall()
     }
 
     // MARK: - Events

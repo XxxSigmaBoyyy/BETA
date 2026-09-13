@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import AorusGram
 
 // Single entry point called once from AppDelegate after the account is ready.
 // aorus_branding.py patches AppDelegate.swift to insert:
@@ -46,7 +47,7 @@ public final class AorusGramBootstrap {
         // Anti-screenshot
         if AorusGramConfig.isEnabled(.antiScreenshot) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                AntiScreenshotManager.shared.enable()
+                AorusGram.AntiScreenshotManager.shared.enable()
             }
         }
 
