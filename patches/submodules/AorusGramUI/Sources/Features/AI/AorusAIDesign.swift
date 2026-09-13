@@ -376,141 +376,122 @@ public final class AorusAIWorkTrailView: UIView {
     }
 
     private func rebuild(phases: [AorusAIWorkPhase], palette: AorusAIPalette) {
-        // Rebuilt wholesale on purpose: a turn reports a handful of phases, the rows are
-        // plain views, and reconciling them would be more moving parts than redrawing.
+        // Rebuilt wholesale: a turn reports a handful of phases and the rows are plain
+        // views, so reconciling them would be more moving parts than redrawing.
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard !stack.isHidden else { return }
+
         for (offset, phase) in phases.enumerated() {
-            let isLast = offset == phases.count - 1
-            let rows = phase.files.filter { $0.isRenderable }
-            stack.addArrangedSubview(Self.phaseRow(
-                phase.label,
-                palette: palette,
-                isCurrent: isLast && !isFinishedState,
-                continuesBelow: !isLast || !rows.isEmpty
+            let files = phase.files.filter { $0.isRenderable }
+            let isLastPhase = offset == phases.count - 1
+            let label = UILabel()
+            label.font = .systemFont(ofSize: 12.5, weight: .medium)
+            label.textColor = (isLastPhase && !isFinishedState) ? palette.secondary : palette.tertiary
+            label.numberOfLines = 0
+            label.text = phase.label
+            stack.addArrangedSubview(BranchRow(
+                content: label,
+                depth: 0,
+                isLastAtDepth: isLastPhase && files.isEmpty,
+                ancestorContinues: [],
+                colour: palette.tertiary.withAlphaComponent(0.3)
             ))
-            for (fileOffset, file) in rows.enumerated() {
-                stack.addArrangedSubview(Self.fileRow(
-                    file,
-                    palette: palette,
-                    continuesBelow: !isLast || fileOffset < rows.count - 1
+            for (fileOffset, file) in files.enumerated() {
+                let row = UILabel()
+                row.font = .systemFont(ofSize: 12.0)
+                row.numberOfLines = 0
+                row.attributedText = Self.attributedRow(file, palette: palette)
+                stack.addArrangedSubview(BranchRow(
+                    content: row,
+                    depth: 1,
+                    isLastAtDepth: fileOffset == files.count - 1,
+                    // The trunk above only carries on while another phase is still to come.
+                    ancestorContinues: [!isLastPhase],
+                    colour: palette.tertiary.withAlphaComponent(0.3)
                 ))
             }
         }
     }
 
-    /// One link of the chain: the marker column on the left, the content on the right.
+    /// One line of a branch: the rules that lead to it, its own elbow, and its content.
     ///
-    /// The connector is drawn by the rows themselves rather than by one line behind them,
-    /// so a row knows whether anything follows it and the chain ends cleanly on the last
-    /// link instead of trailing into nothing.
-    private static func chainRow(marker: UIView,
-                                 content: UIView,
-                                 palette: AorusAIPalette,
-                                 continuesBelow: Bool,
-                                 markerSize: CGFloat,
-                                 topPadding: CGFloat) -> UIView {
-        let container = UIView()
-        marker.translatesAutoresizingMaskIntoConstraints = false
-        content.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(marker)
-        container.addSubview(content)
+    /// Drawn rather than assembled out of subviews. A branch is a handful of straight
+    /// segments whose lengths depend on the row's own height, and a shape layer laid out in
+    /// `layoutSubviews` expresses that directly — where a stack of spacer views would need
+    /// a constraint for every segment and would still not know where the middle of a
+    /// two-line label is.
+    private final class BranchRow: UIView {
+        /// How far one level of the branch steps to the right.
+        static let indent: CGFloat = 13.0
+        /// Where the first trunk runs, from the leading edge.
+        static let origin: CGFloat = 3.0
+        /// How far the elbow reaches out before the content begins.
+        static let reach: CGFloat = 8.0
 
-        var constraints: [NSLayoutConstraint] = [
-            marker.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.railCentre - markerSize / 2.0),
-            marker.topAnchor.constraint(equalTo: container.topAnchor, constant: topPadding),
-            marker.widthAnchor.constraint(equalToConstant: markerSize),
-            marker.heightAnchor.constraint(equalToConstant: markerSize),
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.railCentre + 11.0),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            content.topAnchor.constraint(equalTo: container.topAnchor),
-            content.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ]
+        private let shape = CAShapeLayer()
+        private let content: UIView
+        private let depth: Int
+        private let isLastAtDepth: Bool
+        private let ancestorContinues: [Bool]
 
-        if continuesBelow {
-            let connector = UIView()
-            connector.backgroundColor = palette.tertiary.withAlphaComponent(0.22)
-            connector.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(connector)
-            constraints += [
-                connector.centerXAnchor.constraint(equalTo: marker.centerXAnchor),
-                connector.widthAnchor.constraint(equalToConstant: 1.5),
-                connector.topAnchor.constraint(equalTo: marker.bottomAnchor, constant: 3.0),
-                connector.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: 5.0)
-            ]
+        init(content: UIView, depth: Int, isLastAtDepth: Bool, ancestorContinues: [Bool], colour: UIColor) {
+            self.content = content
+            self.depth = depth
+            self.isLastAtDepth = isLastAtDepth
+            self.ancestorContinues = ancestorContinues
+            super.init(frame: .zero)
+
+            shape.fillColor = UIColor.clear.cgColor
+            shape.strokeColor = colour.cgColor
+            shape.lineWidth = 1.0
+            // Square ends: a branch drawn with round caps reads as a diagram of bubbles.
+            shape.lineCap = .butt
+            layer.addSublayer(shape)
+
+            content.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(content)
+            NSLayoutConstraint.activate([
+                content.leadingAnchor.constraint(
+                    equalTo: leadingAnchor,
+                    constant: Self.origin + CGFloat(depth) * Self.indent + Self.reach + 5.0
+                ),
+                content.trailingAnchor.constraint(equalTo: trailingAnchor),
+                content.topAnchor.constraint(equalTo: topAnchor),
+                content.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
         }
-        NSLayoutConstraint.activate(constraints)
-        return container
-    }
 
-    /// Where the chain runs, measured from the leading edge.
-    private static let railCentre: CGFloat = 5.0
+        required init?(coder: NSCoder) { preconditionFailure("BranchRow is not built from a coder") }
 
-    /// A phase: a ring on the rail, hollow while it is the one being worked on and filled
-    /// once it is behind us, with the label beside it.
-    private static func phaseRow(_ text: String,
-                                 palette: AorusAIPalette,
-                                 isCurrent: Bool,
-                                 continuesBelow: Bool) -> UIView {
-        let size: CGFloat = 9.0
-        let marker = UIView()
-        marker.layer.cornerRadius = size / 2.0
-        marker.layer.borderWidth = 1.5
-        marker.layer.borderColor = palette.accent.withAlphaComponent(isCurrent ? 0.95 : 0.45).cgColor
-        marker.backgroundColor = isCurrent ? .clear : palette.accent.withAlphaComponent(0.45)
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let path = UIBezierPath()
+            // The elbow meets the content on the first line's centre, not on the row's, so a
+            // row that wraps to three lines still joins the branch where its text starts.
+            let firstLine = min(bounds.height, content.intrinsicContentSize.height > 0
+                ? min(content.intrinsicContentSize.height, 18.0)
+                : 18.0)
+            let joinY = (firstLine / 2.0).rounded()
 
-        let label = UILabel()
-        label.font = .systemFont(ofSize: 12.5, weight: .semibold)
-        label.textColor = isCurrent ? palette.label : palette.secondary
-        label.numberOfLines = 0
-        label.text = text
+            // The rules of every level above this one, carried straight down.
+            for (level, carries) in ancestorContinues.enumerated() where carries {
+                let x = Self.origin + CGFloat(level) * Self.indent
+                path.move(to: CGPoint(x: x, y: 0.0))
+                path.addLine(to: CGPoint(x: x, y: bounds.height))
+            }
 
-        if isCurrent {
-            // The live link breathes, so the eye finds what is happening now without a
-            // spinner or a second colour.
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 1.0
-            pulse.toValue = 0.35
-            pulse.duration = 0.9
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            marker.layer.add(pulse, forKey: "aorusPulse")
+            // This row's own rule: down to the join, and on to the bottom unless it is the
+            // last at its level — which is what makes a branch end instead of trail off.
+            let x = Self.origin + CGFloat(depth) * Self.indent
+            path.move(to: CGPoint(x: x, y: 0.0))
+            path.addLine(to: CGPoint(x: x, y: isLastAtDepth ? joinY : bounds.height))
+            // The elbow.
+            path.move(to: CGPoint(x: x, y: joinY))
+            path.addLine(to: CGPoint(x: x + Self.reach, y: joinY))
+
+            shape.frame = bounds
+            shape.path = path.cgPath
         }
-        return chainRow(
-            marker: marker, content: label, palette: palette,
-            continuesBelow: continuesBelow, markerSize: size, topPadding: 4.0
-        )
-    }
-
-    /// A file: a small glyph on the rail instead of a bullet, and the row beside it.
-    private static func fileRow(_ file: AorusAIFileChange,
-                                palette: AorusAIPalette,
-                                continuesBelow: Bool) -> UIView {
-        let size: CGFloat = 11.0
-        let glyph = UIImageView()
-        glyph.contentMode = .center
-        glyph.tintColor = palette.tertiary
-        let symbol: String
-        switch file.kind {
-        case .created: symbol = "plus"
-        case .edited: symbol = "pencil"
-        case .deleted: symbol = "minus"
-        }
-        glyph.image = UIImage(
-            systemName: symbol,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 7.0, weight: .bold)
-        )
-
-        let label = UILabel()
-        label.font = .systemFont(ofSize: 12.0)
-        label.numberOfLines = 0
-        label.attributedText = attributedRow(file, palette: palette)
-
-        return chainRow(
-            marker: glyph, content: label, palette: palette,
-            continuesBelow: continuesBelow, markerSize: size, topPadding: 2.0
-        )
     }
 
     static func attributedRow(_ file: AorusAIFileChange, palette: AorusAIPalette) -> NSAttributedString {

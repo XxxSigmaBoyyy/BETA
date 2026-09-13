@@ -511,8 +511,9 @@ private extension UIColor {
 /// TextKit 1 is requested explicitly through the designated initializer: on iOS 16 and
 /// later `UITextView` defaults to TextKit 2, where `layoutManager` exists only as a
 /// compatibility shim that silently migrates the view the first time it is touched.
-class AorusAIMentionTextView: UITextView {
+class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
     private var avatarObserver: NSObjectProtocol?
+    private weak var aorusMentionTap: UITapGestureRecognizer?
 
     /// Builds one with its own TextKit 1 stack.
     ///
@@ -531,10 +532,21 @@ class AorusAIMentionTextView: UITextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
+        // The recogniser must be invisible to every touch that is not on a pill.
+        //
+        // This class is the composer as well as the answer, and a bare recogniser added
+        // to a UITextView competes with the text interaction that makes it first
+        // responder — which is how tapping the AorusAI input stopped opening the
+        // keyboard. `gestureRecognizerShouldBegin` below refuses the touch unless it
+        // landed on a mention, so for every ordinary tap this recogniser never starts
+        // and the field behaves exactly as it did before it existed; the delegate also
+        // allows simultaneous recognition so that even on a pill nothing is starved.
         let tap = UITapGestureRecognizer(target: self, action: #selector(aorusHandleMentionTap(_:)))
-        // Does not fight selection or the caret: it only claims a touch that landed on a
-        // pill, and lets every other tap through untouched.
         tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        tap.delegate = self
+        aorusMentionTap = tap
         addGestureRecognizer(tap)
         avatarObserver = NotificationCenter.default.addObserver(
             forName: AorusAIMentionAvatarCache.changedNotification,
@@ -671,6 +683,19 @@ class AorusAIMentionTextView: UITextView {
             return nil
         }
         return box.mention
+    }
+
+    /// Only ever begins on a pill. Everything else — placing the caret, focusing the
+    /// composer, starting a selection — is left entirely to UIKit.
+    public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === aorusMentionTap else { return true }
+        guard onMentionTap != nil else { return false }
+        return mention(at: gestureRecognizer.location(in: self)) != nil
+    }
+
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                  shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        return gestureRecognizer === aorusMentionTap || other === aorusMentionTap
     }
 
     @objc private func aorusHandleMentionTap(_ recognizer: UITapGestureRecognizer) {
