@@ -24,10 +24,19 @@ private enum DetailSection: Int32 {
 }
 
 /// The Details list is a separate controller, but under Interface 2.0 it is still part of
-/// the profile the reader just opened. This view reuses that profile's exact page source:
-/// the stretched sampled row for an avatar, the published cover colour for a Premium
-/// background, or a transparent fallback that leaves the theme untouched for no avatar.
-private final class AorusDetailsPageBackdropView: UIImageView {
+/// the profile the reader just opened, so it takes that profile's page colour.
+///
+/// Flat, and deliberately not the profile's page IMAGE. That image is one blurred row of
+/// the avatar's bottom band, stretched sideways; on the profile it works because the photo
+/// it was read from is directly above, so each column of colour continues the column of
+/// photo over it. Here there is no photo, and the same row reads as vertical bands that
+/// stop dead at both edges — which is exactly what it looked like.
+///
+/// The flat colour is not a second, invented colour either: `pageBackgroundColor` is the
+/// weighted average of that same band, which is why `bottomBandSample` already falls back
+/// to painting flat with it when the row cannot be built. It is the profile's own colour
+/// with the left-to-right variation dropped, so it cannot read as unrelated.
+private final class AorusDetailsPageBackdropView: UIView {
     private let peerId: Int64
     private var observer: NSObjectProtocol?
     private let pageChanged: () -> Void
@@ -38,8 +47,6 @@ private final class AorusDetailsPageBackdropView: UIImageView {
         super.init(frame: .zero)
         self.tag = AorusGlassProfileTint.backdropTag
         self.isUserInteractionEnabled = false
-        self.contentMode = .scaleToFill
-        self.layer.magnificationFilter = .linear
         self.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         self.updatePage(notify: false)
         self.observer = NotificationCenter.default.addObserver(
@@ -60,10 +67,10 @@ private final class AorusDetailsPageBackdropView: UIImageView {
     }
 
     private func updatePage(notify: Bool) {
-        let nextImage = AorusGlassProfileTint.pageBackgroundImage(for: peerId)
+        // `.clear` for a peer with no sampled photo, which leaves the theme's own
+        // background showing rather than inventing a colour for it.
         let nextColor = AorusGlassProfileTint.pageBackgroundColor(for: peerId) ?? .clear
-        let changed = self.image !== nextImage || !(self.backgroundColor?.isEqual(nextColor) ?? false)
-        self.image = nextImage
+        let changed = !(self.backgroundColor?.isEqual(nextColor) ?? false)
         self.backgroundColor = nextColor
         if notify, changed {
             pageChanged()

@@ -1271,7 +1271,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private var loadingArtifactIds: Set<String> = []
     /// Turns whose work trail the reader has unfolded. A view preference, so it lives
     /// here and never in the stored conversation.
-    private var expandedWorkTrails: Set<UUID> = []
     /// The cancel handle of each running download, so a second tap stops the transfer.
     private var artifactDownloads: [String: AorusAIDownloadHandle] = [:]
     private var quotaTimer: Foundation.Timer?
@@ -3156,8 +3155,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             return UITableViewCell(style: .default, reuseIdentifier: nil)
         }
         let message = conversation.messages[indexPath.row]
-        // Set before configure: the cell reads it while laying the trail out.
-        cell.workTrailExpanded = expandedWorkTrails.contains(message.id)
         cell.configure(
             message: message,
             context: context,
@@ -3171,40 +3168,31 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         cell.onArtifact = { [weak self] artifact in self?.toggleArtifact(artifact) }
         cell.onCopy = { [weak self] in self?.presentCopiedFeedback() }
         cell.onRetry = { [weak self] in self?.retry(messageId: message.id) }
-        cell.onToggleWorkTrail = { [weak self] in self?.toggleWorkTrail(messageId: message.id) }
+        cell.onOpenWorkTrail = { [weak self] in self?.presentWorkTrail(messageId: message.id) }
         return cell
     }
 
     /// Folds or unfolds one turn's work trail and re-measures just that row.
     ///
-    /// The list is asked to re-run the row rather than the view being resized in place:
-    /// the cell's height comes from its own stack, and only the table can agree to the
-    /// new one. `performBatchUpdates` with no edits is what animates a height change
-    /// without reloading the row's contents and losing its glass.
-    private func toggleWorkTrail(messageId: UUID) {
-        if expandedWorkTrails.contains(messageId) {
-            expandedWorkTrails.remove(messageId)
-        } else {
-            expandedWorkTrails.insert(messageId)
-        }
-        guard let row = conversation.messages.firstIndex(where: { $0.id == messageId }) else { return }
-        let indexPath = IndexPath(row: row, section: 0)
-        if let cell = tableView.cellForRow(at: indexPath) as? AorusAIMessageCell {
-            cell.workTrailExpanded = expandedWorkTrails.contains(messageId)
-            cell.configure(
-                message: conversation.messages[row],
-                context: context,
-                theme: presentationData.theme,
-                canRetry: conversation.messages[row].role == .assistant
-                    && row == conversation.messages.count - 1
-                    && (conversation.messages[row].state == .failed || conversation.messages[row].state == .complete),
-                loadingArtifactIds: loadingArtifactIds
-            )
-        }
-        UIView.animate(withDuration: 0.28, delay: 0.0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
-            self.tableView.performBatchUpdates(nil)
-            self.tableView.layoutIfNeeded()
-        }
+    /// Opens the turn's trail as a half-screen sheet.
+    ///
+    /// It used to fold out inside the row, which meant the chat row changed height under
+    /// the reader and pushed the answer they were reading off the screen. The row is now a
+    /// fixed one line and nothing about the list moves.
+    ///
+    /// Read fresh from the conversation at the moment of the tap rather than captured: a
+    /// running turn gains phases while the line sits there, and the sheet has to show the
+    /// ones that arrived, not the ones that existed when the cell was configured.
+    private func presentWorkTrail(messageId: UUID) {
+        guard let message = conversation.messages.first(where: { $0.id == messageId }) else { return }
+        guard !message.workPhases.isEmpty else { return }
+        aorusAIPresentWorkTrail(
+            phases: message.workPhases,
+            isRunning: message.state == .streaming,
+            finishedAt: message.workFinishedAt,
+            theme: presentationData.theme,
+            from: self
+        )
     }
 
     /// Sends the last question again, having taken it and its failed answer out of the
@@ -4306,13 +4294,10 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private let regenerateButton = UIButton(type: .system)
     private let retryButton = UIButton(type: .system)
     private let typingIndicator = AorusAITypingIndicatorView()
-    /// Raised when the reader folds or unfolds the work trail.
-    var onToggleWorkTrail: (() -> Void)?
-    /// The reader's fold state for this row, set by the list before configure. Kept out
-    /// of the message because it is a view preference, not part of the conversation.
-    var workTrailExpanded = false
+    /// Raised when the reader taps the work-trail line, which opens it as a sheet.
+    var onOpenWorkTrail: (() -> Void)?
 
-    /// A turn is still working until it stops streaming. Only a stopped turn folds.
+    /// A turn is still working until it stops streaming.
     private func configureWorkTrail(message: AorusAIMessage, theme: PresentationTheme) {
         guard message.role == .assistant, !message.workPhases.isEmpty else {
             workTrail.isHidden = true
@@ -4329,7 +4314,6 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             phases: message.workPhases,
             isFinished: isFinished,
             duration: duration,
-            isExpanded: workTrailExpanded,
             theme: theme
         )
     }
@@ -4338,11 +4322,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     /// finishes. Keep the latest announced phase as the trail title through that gap;
     /// finished turns still collapse without a permanent duplicate heading.
     private static func workTrailTitle(for message: AorusAIMessage) -> String? {
+        // Once the agent has announced a phase, the trail line below is what says what it
+        // is doing — and it says it with the highlight crossing it. Repeating the same
+        // sentence here would print it twice, one line above the other.
+        guard message.workPhases.isEmpty else { return nil }
         if let status = message.statusLabel, !status.isEmpty {
             return status
-        }
-        if message.state == .streaming {
-            return message.workPhases.last?.label
         }
         return nil
     }
@@ -4384,7 +4369,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         // The current action is the title of the trail. Its branches sit directly below;
         // completed work remains readable while the live branch carries the motion.
         workTrail.isHidden = true
-        workTrail.onToggle = { [weak self] in self?.onToggleWorkTrail?() }
+        workTrail.onOpen = { [weak self] in self?.onOpenWorkTrail?() }
         contentStack.addArrangedSubview(statusLabel)
         contentStack.addArrangedSubview(workTrail)
         contentStack.addArrangedSubview(bubble)

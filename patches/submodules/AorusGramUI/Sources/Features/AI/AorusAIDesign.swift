@@ -268,160 +268,69 @@ final class AorusAIGroupBackgroundView: UIView {
 /// column of small type against the page, with a hairline rule down the left of each
 /// group's children so the hierarchy reads without drawing a container for it.
 public final class AorusAIWorkTrailView: UIView {
-    /// Called when the reader folds or unfolds the trail, so the list can re-measure the
-    /// row. The view does not know it is in a table and must not.
-    public var onToggle: (() -> Void)?
+    /// Called when the reader taps the line. The view does not know what a sheet is, and
+    /// must not: it is also built inside a table cell that is free to be reused.
+    public var onOpen: (() -> Void)?
 
-    private let summaryButton = UIButton(type: .system)
-    private let chevron = UIImageView()
-    private let stack = UIStackView()
-    private var palette: AorusAIPalette?
-    private var renderedPhases: [AorusAIWorkPhase] = []
+    private let line = PhaseLabel()
+    private var renderedText: String?
+    private var renderedActive = false
     private weak var renderedTheme: PresentationTheme?
-    private var renderedFinished = false
-    /// Whether the turn has stopped. Read by `rebuild` to decide which link of the
-    /// chain is the live one.
-    private var isFinishedState = false
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
 
-        stack.axis = .vertical
-        stack.spacing = 5.0
-        stack.alignment = .fill
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-
-        summaryButton.contentHorizontalAlignment = .leading
-        summaryButton.titleLabel?.font = .systemFont(ofSize: 12.5, weight: .medium)
-        summaryButton.addTarget(self, action: #selector(toggle), for: .touchUpInside)
-        summaryButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(summaryButton)
-
-        chevron.contentMode = .scaleAspectFit
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        chevron.image = UIImage(
-            systemName: "chevron.down",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 9.0, weight: .semibold)
-        )
-        addSubview(chevron)
-
+        line.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(line)
         NSLayoutConstraint.activate([
-            summaryButton.topAnchor.constraint(equalTo: topAnchor),
-            summaryButton.leadingAnchor.constraint(equalTo: leadingAnchor),
-            chevron.centerYAnchor.constraint(equalTo: summaryButton.centerYAnchor),
-            chevron.leadingAnchor.constraint(equalTo: summaryButton.trailingAnchor, constant: 4.0),
-            chevron.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+            line.topAnchor.constraint(equalTo: topAnchor),
+            line.leadingAnchor.constraint(equalTo: leadingAnchor),
+            line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
-        stackTop = stack.topAnchor.constraint(equalTo: topAnchor)
-        stackTop?.isActive = true
-        summaryBottom = summaryButton.bottomAnchor.constraint(equalTo: bottomAnchor)
-    }
 
-    private var stackTop: NSLayoutConstraint?
-    private var summaryBottom: NSLayoutConstraint?
-    private var summaryToStack: NSLayoutConstraint?
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(open)))
+    }
 
     public required init?(coder: NSCoder) { preconditionFailure("AorusAIWorkTrailView is not built from a coder") }
 
-    /// `isFinished` folds the trail; `isExpanded` is the reader's own choice, which only
-    /// matters once it is folded.
+    /// One line: the phase being worked on while the turn runs, what it cost once it
+    /// stops. The trail itself is a sheet, opened by tapping this.
+    ///
+    /// It used to be the whole trail, drawn inline and folded out in place. That made a
+    /// chat row change height under the reader and pushed the answer they were reading
+    /// off the screen, and it put a branch diagram in the middle of a conversation.
     public func configure(phases: [AorusAIWorkPhase],
                           isFinished: Bool,
                           duration: TimeInterval?,
-                          isExpanded: Bool,
                           theme: PresentationTheme) {
-        let palette = AorusAIPalette.resolve(theme)
-        self.palette = palette
-
         guard !phases.isEmpty else {
             isHidden = true
+            line.configure(text: "", color: .clear, accent: .clear, active: false)
             return
         }
         isHidden = false
 
-        isFinishedState = isFinished
-        let showsSummary = isFinished
-        let showsBody = !isFinished || isExpanded
-
-        summaryButton.isHidden = !showsSummary
-        chevron.isHidden = !showsSummary
-        summaryButton.setTitleColor(palette.tertiary, for: .normal)
-        chevron.tintColor = palette.tertiary
-        if showsSummary {
-            summaryButton.setTitle(Self.summaryText(duration: duration), for: .normal)
-            // A quarter turn rather than a second glyph, so the two states are one object.
-            chevron.transform = isExpanded ? CGAffineTransform(rotationAngle: .pi) : .identity
+        let palette = AorusAIPalette.resolve(theme)
+        let text = isFinished
+            ? Self.summaryText(duration: duration)
+            : (phases.last?.label ?? "")
+        let active = !isFinished
+        // This is re-read on every table pass, and re-configuring restarts the highlight.
+        guard renderedText != text || renderedActive != active || renderedTheme !== theme else {
+            return
         }
-
-        stack.isHidden = !showsBody
-        if renderedPhases != phases || renderedTheme !== theme || renderedFinished != isFinished || (showsBody && stack.arrangedSubviews.isEmpty) {
-            renderedPhases = phases
-            renderedTheme = theme
-            renderedFinished = isFinished
-            rebuild(phases: phases, palette: palette)
-        }
-
-        // The two layouts differ only in what the top of the stack is pinned to.
-        stackTop?.isActive = false
-        summaryToStack?.isActive = false
-        summaryBottom?.isActive = false
-        if showsSummary {
-            if showsBody {
-                if summaryToStack == nil {
-                    summaryToStack = stack.topAnchor.constraint(equalTo: summaryButton.bottomAnchor, constant: 6.0)
-                }
-                summaryToStack?.isActive = true
-            } else {
-                summaryBottom?.isActive = true
-            }
-        } else {
-            stackTop?.isActive = true
-        }
-    }
-
-    private func rebuild(phases: [AorusAIWorkPhase], palette: AorusAIPalette) {
-        // Rebuilt wholesale: a turn reports a handful of phases and the rows are plain
-        // views, so reconciling them would be more moving parts than redrawing.
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard !stack.isHidden else { return }
-
-        for (offset, phase) in phases.enumerated() {
-            let files = phase.files.filter { $0.isRenderable }
-            let isLastPhase = offset == phases.count - 1
-            let isActive = isLastPhase && !isFinishedState
-            let label = PhaseLabel()
-            label.configure(
-                text: phase.label,
-                color: palette.label,
-                accent: palette.accent,
-                active: isActive
-            )
-            stack.addArrangedSubview(BranchRow(
-                content: label,
-                depth: 0,
-                isLastAtDepth: isLastPhase && files.isEmpty,
-                ancestorContinues: [],
-                colour: palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)
-            ))
-            for (fileOffset, file) in files.enumerated() {
-                let row = UILabel()
-                row.font = .systemFont(ofSize: 12.0)
-                row.numberOfLines = 0
-                row.attributedText = Self.attributedRow(file, palette: palette)
-                stack.addArrangedSubview(BranchRow(
-                    content: row,
-                    depth: 1,
-                    isLastAtDepth: fileOffset == files.count - 1,
-                    // The trunk above only carries on while another phase is still to come.
-                    ancestorContinues: [!isLastPhase],
-                    colour: palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)
-                ))
-            }
-        }
+        renderedText = text
+        renderedActive = active
+        renderedTheme = theme
+        line.configure(
+            text: text,
+            // Running is the page's own secondary ink so the highlight has something to
+            // cross; a stopped turn recedes to tertiary, which is where it was before.
+            color: isFinished ? palette.tertiary : palette.secondary,
+            accent: palette.accent,
+            active: active
+        )
     }
 
     /// Full-strength text at rest, with one restrained highlight crossing only the phase
@@ -512,6 +421,14 @@ public final class AorusAIWorkTrailView: UIView {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            // A phase label wraps, and a wrapping label only reports the right height once
+            // it knows the width it has to wrap inside. Without this the view asks for one
+            // very long line and the chat row is measured a line too short.
+            if base.preferredMaxLayoutWidth != bounds.width {
+                base.preferredMaxLayoutWidth = bounds.width
+                highlight.preferredMaxLayoutWidth = bounds.width
+                invalidateIntrinsicContentSize()
+            }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             sweep.frame = highlight.bounds
@@ -552,7 +469,10 @@ public final class AorusAIWorkTrailView: UIView {
     /// `layoutSubviews` expresses that directly — where a stack of spacer views would need
     /// a constraint for every segment and would still not know where the middle of a
     /// two-line label is.
-    private final class BranchRow: UIView {
+    /// Internal rather than private: the work-trail sheet draws a phase's files with the
+    /// same branch, and a second copy of this drawing would be a second thing to keep
+    /// right.
+    final class BranchRow: UIView {
         /// How far one level of the branch steps to the right.
         static let indent: CGFloat = 13.0
         /// Where the first trunk runs, from the leading edge.
@@ -659,22 +579,37 @@ public final class AorusAIWorkTrailView: UIView {
     }
 
     static func summaryText(duration: TimeInterval?) -> String {
-        guard let duration, duration >= 1.0 else {
+        guard let spent = elapsedText(duration) else {
             return aorusAILocalized("Работал меньше секунды", "Worked for less than a second")
         }
+        return aorusAILocalized("Работал \(spent)", "Worked for \(spent)")
+    }
+
+    /// The same figure in the present tense, for a turn that is still going. The sheet's
+    /// heading re-reads this every second while it is open.
+    static func runningText(duration: TimeInterval?) -> String {
+        guard let spent = elapsedText(duration) else {
+            return aorusAILocalized("Работает", "Working")
+        }
+        return aorusAILocalized("Работает \(spent)", "Working for \(spent)")
+    }
+
+    /// nil for anything under a second, which neither tense has a useful way to say.
+    private static func elapsedText(_ duration: TimeInterval?) -> String? {
+        guard let duration, duration >= 1.0 else { return nil }
         let total = Int(duration.rounded())
         let minutes = total / 60
         let seconds = total % 60
         if minutes <= 0 {
-            return aorusAILocalized("Работал \(seconds) с", "Worked for \(seconds)s")
+            return aorusAILocalized("\(seconds) с", "\(seconds)s")
         }
         if seconds == 0 {
-            return aorusAILocalized("Работал \(minutes) мин", "Worked for \(minutes)m")
+            return aorusAILocalized("\(minutes) мин", "\(minutes)m")
         }
-        return aorusAILocalized("Работал \(minutes) мин \(seconds) с", "Worked for \(minutes)m \(seconds)s")
+        return aorusAILocalized("\(minutes) мин \(seconds) с", "\(minutes)m \(seconds)s")
     }
 
-    @objc private func toggle() {
-        onToggle?()
+    @objc private func open() {
+        onOpen?()
     }
 }

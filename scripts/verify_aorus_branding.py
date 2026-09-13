@@ -1880,7 +1880,10 @@ def main() -> None:
         "let secondsPerId = (last.1 - previous.1) / Double(idSpan)",
         "var persistedToFile = false",
         "AorusDetailsPageBackdropView",
-        "AorusGlassProfileTint.pageBackgroundImage(for: peerId)",
+        # Flat, from the band's own average. The stretched page IMAGE belongs to the
+        # profile, where the photo it was read from is directly above it; here it read as
+        # vertical bands cut off at both edges.
+        "AorusGlassProfileTint.pageBackgroundColor(for: peerId) ?? .clear",
         ".aorusGlassTheme(dark: !AorusGlassPane.isLight(aorusPage))",
     ):
         if marker not in account_details_text:
@@ -3783,14 +3786,41 @@ def main() -> None:
         # itself translucent, a wash has no defined result.
         if "static func mix(" not in ai_design_text or "controlFill: AorusAIPalette.mix(" not in ai_design_text:
             err.append("AorusAI: the control plate is no longer an opaque mixed colour")
+        # The chat shows ONE line for a turn's work — the phase being worked on, with the
+        # highlight crossing it, or what the turn cost. The trail itself is a sheet. An
+        # inline trail that folds out changes a chat row's height under the reader.
         for marker in (
             "private final class PhaseLabel",
             'sweep.add(animation, forKey: "aorusPhaseSweep")',
-            "palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)",
-            "renderedPhases != phases",
+            "public var onOpen: (() -> Void)?",
+            "renderedText != text",
         ):
             if marker not in ai_design_text:
-                err.append(f"AorusAI: polished work trail is missing {marker}")
+                err.append(f"AorusAI: the work-trail line is missing {marker}")
+        if "stack.addArrangedSubview(BranchRow(" in ai_design_text:
+            err.append("AorusAI: the work trail is drawn inline again instead of in its sheet")
+
+    # The trail itself: a half-screen sheet of the same kind the companion menu uses.
+    ai_trail = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIWorkTrailSheet.swift"
+    if not ai_trail.is_file():
+        err.append("AorusAI: missing submodules/AorusGramUI/Sources/Features/AI/AorusAIWorkTrailSheet.swift")
+    else:
+        ai_trail_text = ai_trail.read_text(encoding="utf-8", errors="replace")
+        for marker in (
+            "public func aorusAIPresentWorkTrail(",
+            # Same sheet family as the AI companion menu, not a second invention.
+            ".detents = [.medium(), .large()]",
+            "prefersGrabberVisible = true",
+            # A finished task is a checkmark; the running one turns.
+            'systemName: "checkmark"',
+            "spinner.setSpinning(isActive)",
+            # Its files hang off it as a branch, drawn by the one branch drawing there is.
+            "AorusAIWorkTrailView.BranchRow(",
+            # A task that touched nothing does not react at all.
+            "guard !renderableFiles(index).isEmpty else { return }",
+        ):
+            if marker not in ai_trail_text:
+                err.append(f"AorusAI: the work-trail sheet is missing {marker}")
 
     # Handles are drawn as people, inline, wherever they appear.
     ai_mention = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIMention.swift"
