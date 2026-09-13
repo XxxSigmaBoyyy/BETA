@@ -23,6 +23,54 @@ private enum DetailSection: Int32 {
     case note
 }
 
+/// The Details list is a separate controller, but under Interface 2.0 it is still part of
+/// the profile the reader just opened. This view reuses that profile's exact page source:
+/// the stretched sampled row for an avatar, the published cover colour for a Premium
+/// background, or a transparent fallback that leaves the theme untouched for no avatar.
+private final class AorusDetailsPageBackdropView: UIImageView {
+    private let peerId: Int64
+    private var observer: NSObjectProtocol?
+    private let pageChanged: () -> Void
+
+    init(peerId: Int64, pageChanged: @escaping () -> Void) {
+        self.peerId = peerId
+        self.pageChanged = pageChanged
+        super.init(frame: .zero)
+        self.tag = AorusGlassProfileTint.backdropTag
+        self.isUserInteractionEnabled = false
+        self.contentMode = .scaleToFill
+        self.layer.magnificationFilter = .linear
+        self.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        self.updatePage(notify: false)
+        self.observer = NotificationCenter.default.addObserver(
+            forName: AorusGlassProfileTint.pageDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updatePage(notify: true)
+        }
+    }
+
+    required init?(coder: NSCoder) { preconditionFailure("AorusDetailsPageBackdropView is not built from a coder") }
+
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func updatePage(notify: Bool) {
+        let nextImage = AorusGlassProfileTint.pageBackgroundImage(for: peerId)
+        let nextColor = AorusGlassProfileTint.pageBackgroundColor(for: peerId) ?? .clear
+        let changed = self.image !== nextImage || !(self.backgroundColor?.isEqual(nextColor) ?? false)
+        self.image = nextImage
+        self.backgroundColor = nextColor
+        if notify, changed {
+            pageChanged()
+        }
+    }
+}
+
 // MARK: - Entries
 
 private enum AccountDetailEntry: ItemListNodeEntry {
@@ -640,9 +688,11 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, p
         }))
     })
 
-    let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(context.sharedContext.presentationData, notePromise.get())
+    let pageRevision = ValuePromise<Int>(0, ignoreRepeated: true)
+    var currentPageRevision = 0
+    let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = combineLatest(context.sharedContext.presentationData, notePromise.get(), pageRevision.get())
         |> deliverOnMainQueue
-        |> map { presentationData, note -> (ItemListControllerState, (ItemListNodeState, Any)) in
+        |> map { presentationData, note, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
             // AorusGram: this screen is opened from a profile and has to continue that
             // profile's page instead of arriving as a flat near-black rectangle in the
             // middle of a tinted one.
@@ -662,7 +712,9 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, p
                let aorusPage = AorusGlassProfileTint.pageBackgroundColor(for: entityId)
                    ?? AorusGlassProfileTint.pageBackgroundColor {
                 presentationData = presentationData.withUpdated(
-                    theme: presentationData.theme.aorusWithPageBackground(aorusPage)
+                    theme: presentationData.theme
+                        .aorusGlassTheme(dark: !AorusGlassPane.isLight(aorusPage))
+                        .aorusWithPageBackground(aorusPage)
                 )
             }
             let ru = AorusLang.resolve(presentationData.strings.baseLanguageCode) == .ru
@@ -683,6 +735,14 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, p
         }
 
     let controller = ItemListController(context: context, state: signal)
+    if AorusInterfaceV2.isEnabled {
+        let backdrop = AorusDetailsPageBackdropView(peerId: entityId) {
+            currentPageRevision &+= 1
+            pageRevision.set(currentPageRevision)
+        }
+        backdrop.frame = controller.view.bounds
+        controller.view.insertSubview(backdrop, at: 0)
+    }
     weakController = controller
     return controller
 }

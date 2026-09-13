@@ -4324,6 +4324,19 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             theme: theme
         )
     }
+
+    /// `response.start` clears the transient status before the turn itself necessarily
+    /// finishes. Keep the latest announced phase as the trail title through that gap;
+    /// finished turns still collapse without a permanent duplicate heading.
+    private static func workTrailTitle(for message: AorusAIMessage) -> String? {
+        if let status = message.statusLabel, !status.isEmpty {
+            return status
+        }
+        if message.state == .streaming {
+            return message.workPhases.last?.label
+        }
+        return nil
+    }
     private let noticeCard = AorusAINoticeCard()
     /// The 9pt round dot the design blinks at the tail of a streaming answer. It lives
     /// inside the last text view so it can sit exactly after the last glyph.
@@ -4357,14 +4370,14 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         bubble.addSubview(bodyStack)
         // The design puts the progress line *above* the answer — "Читаю профиль диалога…"
         // is what the turn is doing before the text it produces, not a footnote under it.
-        statusLabel.font = .systemFont(ofSize: 13.0)
+        statusLabel.font = .systemFont(ofSize: 13.0, weight: .semibold)
         statusLabel.numberOfLines = 0
-        // The trail sits above the progress line, which is itself above the answer: what
-        // the turn did, then what it is doing, then what it produced.
+        // The current action is the title of the trail. Its branches sit directly below;
+        // completed work remains readable while the live branch carries the motion.
         workTrail.isHidden = true
         workTrail.onToggle = { [weak self] in self?.onToggleWorkTrail?() }
-        contentStack.addArrangedSubview(workTrail)
         contentStack.addArrangedSubview(statusLabel)
+        contentStack.addArrangedSubview(workTrail)
         contentStack.addArrangedSubview(bubble)
         noticeCard.isHidden = true
         noticeCard.onRetry = { [weak self] in self?.onRetry?() }
@@ -4563,8 +4576,9 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
                 return false
             }
         }
-        statusLabel.text = message.statusLabel
-        statusLabel.isHidden = message.statusLabel == nil
+        let workTrailTitle = Self.workTrailTitle(for: message)
+        statusLabel.text = workTrailTitle
+        statusLabel.isHidden = workTrailTitle == nil
         configureWorkTrail(message: message, theme: theme)
         copyText = message.rawText
         assistantActions.isHidden = !(message.role == .assistant && message.state == .complete && canRetry && !message.rawText.isEmpty)
@@ -4750,9 +4764,12 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             bodyStack.addArrangedSubview(card)
         }
 
-        statusLabel.textColor = palette.tertiary
-        statusLabel.text = message.statusLabel
-        statusLabel.isHidden = message.statusLabel == nil
+        // A work-trail title is hierarchy, not transient helper copy. Keep it at full ink
+        // while the active branch below supplies the animated state.
+        statusLabel.textColor = palette.label
+        let workTrailTitle = Self.workTrailTitle(for: message)
+        statusLabel.text = workTrailTitle
+        statusLabel.isHidden = workTrailTitle == nil
         configureWorkTrail(message: message, theme: theme)
         retryButton.tintColor = palette.accent
         copyText = message.rawText

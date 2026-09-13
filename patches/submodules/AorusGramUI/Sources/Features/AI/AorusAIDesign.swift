@@ -276,6 +276,9 @@ public final class AorusAIWorkTrailView: UIView {
     private let chevron = UIImageView()
     private let stack = UIStackView()
     private var palette: AorusAIPalette?
+    private var renderedPhases: [AorusAIWorkPhase] = []
+    private weak var renderedTheme: PresentationTheme?
+    private var renderedFinished = false
     /// Whether the turn has stopped. Read by `rebuild` to decide which link of the
     /// chain is the live one.
     private var isFinishedState = false
@@ -355,7 +358,12 @@ public final class AorusAIWorkTrailView: UIView {
         }
 
         stack.isHidden = !showsBody
-        rebuild(phases: phases, palette: palette)
+        if renderedPhases != phases || renderedTheme !== theme || renderedFinished != isFinished || (showsBody && stack.arrangedSubviews.isEmpty) {
+            renderedPhases = phases
+            renderedTheme = theme
+            renderedFinished = isFinished
+            rebuild(phases: phases, palette: palette)
+        }
 
         // The two layouts differ only in what the top of the stack is pinned to.
         stackTop?.isActive = false
@@ -384,17 +392,20 @@ public final class AorusAIWorkTrailView: UIView {
         for (offset, phase) in phases.enumerated() {
             let files = phase.files.filter { $0.isRenderable }
             let isLastPhase = offset == phases.count - 1
-            let label = UILabel()
-            label.font = .systemFont(ofSize: 12.5, weight: .medium)
-            label.textColor = (isLastPhase && !isFinishedState) ? palette.secondary : palette.tertiary
-            label.numberOfLines = 0
-            label.text = phase.label
+            let isActive = isLastPhase && !isFinishedState
+            let label = PhaseLabel()
+            label.configure(
+                text: phase.label,
+                color: palette.label,
+                accent: palette.accent,
+                active: isActive
+            )
             stack.addArrangedSubview(BranchRow(
                 content: label,
                 depth: 0,
                 isLastAtDepth: isLastPhase && files.isEmpty,
                 ancestorContinues: [],
-                colour: palette.tertiary.withAlphaComponent(0.3)
+                colour: palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)
             ))
             for (fileOffset, file) in files.enumerated() {
                 let row = UILabel()
@@ -407,9 +418,96 @@ public final class AorusAIWorkTrailView: UIView {
                     isLastAtDepth: fileOffset == files.count - 1,
                     // The trunk above only carries on while another phase is still to come.
                     ancestorContinues: [!isLastPhase],
-                    colour: palette.tertiary.withAlphaComponent(0.3)
+                    colour: palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)
                 ))
             }
+        }
+    }
+
+    /// Full-strength text at rest, with one restrained highlight crossing only the phase
+    /// that is running. The base label never dims: when the animation stops the row is the
+    /// same solid ink as every completed row, rather than fading into tertiary grey.
+    private final class PhaseLabel: UIView {
+        private let base = UILabel()
+        private let highlight = UILabel()
+        private let sweep = CAGradientLayer()
+        private var active = false
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            for label in [base, highlight] {
+                label.font = .systemFont(ofSize: 12.5, weight: .medium)
+                label.numberOfLines = 0
+                label.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(label)
+                NSLayoutConstraint.activate([
+                    label.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    label.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    label.topAnchor.constraint(equalTo: topAnchor),
+                    label.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+            }
+            sweep.startPoint = CGPoint(x: 0.0, y: 0.5)
+            sweep.endPoint = CGPoint(x: 1.0, y: 0.5)
+            sweep.colors = [
+                UIColor.clear.cgColor,
+                UIColor.white.cgColor,
+                UIColor.white.cgColor,
+                UIColor.clear.cgColor
+            ]
+            sweep.locations = [0.0, 0.42, 0.58, 1.0]
+            highlight.layer.mask = sweep
+        }
+
+        required init?(coder: NSCoder) { preconditionFailure("PhaseLabel is not built from a coder") }
+
+        override var intrinsicContentSize: CGSize {
+            return base.intrinsicContentSize
+        }
+
+        func configure(text: String, color: UIColor, accent: UIColor, active: Bool) {
+            self.active = active
+            base.text = text
+            base.textColor = color
+            highlight.text = text
+            highlight.textColor = .white
+            highlight.layer.shadowColor = accent.cgColor
+            highlight.layer.shadowOpacity = active ? 0.55 : 0.0
+            highlight.layer.shadowRadius = 4.0
+            highlight.layer.shadowOffset = .zero
+            highlight.isHidden = !active || UIAccessibility.isReduceMotionEnabled
+            accessibilityLabel = text
+            isAccessibilityElement = true
+            setNeedsLayout()
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            updateAnimation()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            sweep.frame = highlight.bounds
+            CATransaction.commit()
+            updateAnimation()
+        }
+
+        private func updateAnimation() {
+            sweep.removeAnimation(forKey: "aorusPhaseSweep")
+            guard active, window != nil, bounds.width > 1.0, !UIAccessibility.isReduceMotionEnabled else {
+                return
+            }
+            let animation = CABasicAnimation(keyPath: "transform.translation.x")
+            animation.fromValue = -bounds.width
+            animation.toValue = bounds.width
+            animation.duration = 1.8
+            animation.repeatCount = .infinity
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            sweep.add(animation, forKey: "aorusPhaseSweep")
         }
     }
 

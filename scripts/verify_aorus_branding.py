@@ -1879,6 +1879,9 @@ def main() -> None:
         "valuePromise.set(value.modify { _ in normalized })",
         "let secondsPerId = (last.1 - previous.1) / Double(idSpan)",
         "var persistedToFile = false",
+        "AorusDetailsPageBackdropView",
+        "AorusGlassProfileTint.pageBackgroundImage(for: peerId)",
+        ".aorusGlassTheme(dark: !AorusGlassPane.isLight(aorusPage))",
     ):
         if marker not in account_details_text:
             err.append(f"AccountDetails: official registration date / peer notes are missing {marker}")
@@ -3780,6 +3783,14 @@ def main() -> None:
         # itself translucent, a wash has no defined result.
         if "static func mix(" not in ai_design_text or "controlFill: AorusAIPalette.mix(" not in ai_design_text:
             err.append("AorusAI: the control plate is no longer an opaque mixed colour")
+        for marker in (
+            "private final class PhaseLabel",
+            'sweep.add(animation, forKey: "aorusPhaseSweep")',
+            "palette.label.withAlphaComponent(isActive ? 0.52 : 0.34)",
+            "renderedPhases != phases",
+        ):
+            if marker not in ai_design_text:
+                err.append(f"AorusAI: polished work trail is missing {marker}")
 
     # Handles are drawn as people, inline, wherever they appear.
     ai_mention = tg / "submodules" / "AorusGramUI" / "Sources" / "Features" / "AI" / "AorusAIMention.swift"
