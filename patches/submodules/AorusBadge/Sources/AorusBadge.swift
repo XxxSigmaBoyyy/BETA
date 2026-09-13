@@ -61,16 +61,14 @@ public enum AorusBadge {
     ///
     /// A value read back is bridged — `Int64` returns as `NSNumber` — so comparing the
     /// Swift values directly reports a difference that is not there. Both sides go
-    /// through the Foundation types, where `NSNumber` compares by numeric value.
+    /// through the Foundation types, where `NSNumber` compares by numeric value and a
+    /// dictionary compares element by element. They are wrapped in a one-element
+    /// `NSArray` rather than compared directly, because that gives both sides a single
+    /// concrete Foundation type with no bridging left to infer.
     private static func plistEqual(_ lhs: Any?, _ rhs: Any?) -> Bool {
-        switch (lhs, rhs) {
-        case (nil, nil):
-            return true
-        case let (left?, right?):
-            return NSDictionary(dictionary: ["v": left]).isEqual(to: ["v": right])
-        default:
-            return false
-        }
+        guard let left = lhs else { return rhs == nil }
+        guard let right = rhs else { return false }
+        return NSArray(array: [left]).isEqual(to: [right])
     }
 
     // Replace the complete signed roster in one critical section. The current

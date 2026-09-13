@@ -76,12 +76,29 @@ private func parsesBoundedBadgeSnapshot() {
     require(snapshot?.badges[123] == nil, "unknown-only assignments are omitted")
 }
 
-private func rejectsMalformedBadgeSnapshots() {
-    require(BadgeSnapshotResponse(json: [
+private func skipsUnreadablePeersInBadgeSnapshots() {
+    // One unreadable peer must NOT discard the roster.
+    //
+    // It used to, and that is how a revoke stopped applying: the client kept the
+    // previous roster, retried, failed on the same entry, and the revoked badge
+    // stayed on screen for good. A peer that cannot be read simply has no badges,
+    // which is the safe reading — a badge is only ever granted by an entry that
+    // parsed.
+    let unreadableRoster: [String: Any] = [
+        "not-a-peer": [[String: Any]](),
+        "-5": [["id": "dev", "until": NSNull()] as [String: Any]],
+        "99": NSNull(),
+        "6297603868": [["id": "verified", "until": NSNull()] as [String: Any]],
+    ]
+    let mixed = BadgeSnapshotResponse(json: [
         "server_now": 1_800_000_000,
         "revision": 1,
-        "badges": ["not-a-peer": []],
-    ]) == nil, "invalid peer ids reject the complete snapshot")
+        "badges": unreadableRoster,
+    ])
+    require(mixed != nil, "an unreadable peer does not discard the roster")
+    require(mixed?.badges[6_297_603_868]?.first?.id == .verified,
+            "the readable peers survive an unreadable one")
+    require(mixed?.badges.count == 1, "only the readable peer is kept")
 
     let malformedExpiry = BadgeSnapshotResponse(json: [
         "server_now": 1_800_000_000,
@@ -93,11 +110,38 @@ private func rejectsMalformedBadgeSnapshots() {
 
     let excessive = Array(repeating: ["id": "dev", "until": NSNull()],
                           count: BadgeSnapshotResponse.maximumBadgesPerPeer + 1)
+    let boundedRoster: [String: Any] = [
+        "42": excessive,
+        "6297603868": [["id": "dev", "until": NSNull()] as [String: Any]],
+    ]
+    let bounded = BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 1,
+        "badges": boundedRoster,
+    ])
+    require(bounded?.badges[42] == nil, "a peer over the per-peer bound is skipped")
+    require(bounded?.badges[6_297_603_868]?.first?.id == .dev,
+            "the per-peer bound does not discard the rest of the roster")
+
+    // The response AS A WHOLE is still refused when its shape is wrong or it is
+    // oversized. Those describe the response itself, and one of them is not
+    // partially trustworthy.
     require(BadgeSnapshotResponse(json: [
         "server_now": 1_800_000_000,
         "revision": 1,
-        "badges": ["42": excessive],
-    ]) == nil, "per-peer badge arrays are bounded")
+        "badges": "nope",
+    ]) == nil, "a roster that is not an object is refused whole")
+
+    let oneBadge: [[String: Any]] = [["id": "dev", "until": NSNull()]]
+    var oversized: [String: Any] = [:]
+    for index in 0...BadgeSnapshotResponse.maximumPeerCount {
+        oversized[String(index + 1)] = oneBadge
+    }
+    require(BadgeSnapshotResponse(json: [
+        "server_now": 1_800_000_000,
+        "revision": 1,
+        "badges": oversized,
+    ]) == nil, "an oversized roster is refused whole")
 }
 
 @main
@@ -108,7 +152,7 @@ private enum LicenseModelsTests {
         acceptsIntegralServerValues()
         parsesSignedPolicyAndBadges()
         parsesBoundedBadgeSnapshot()
-        rejectsMalformedBadgeSnapshots()
+        skipsUnreadablePeersInBadgeSnapshots()
         print("LicenseModels tests: OK")
     }
 }
