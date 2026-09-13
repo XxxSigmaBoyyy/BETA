@@ -432,6 +432,10 @@ public final class AorusAIWorkTrailView: UIView {
         private let highlight = UILabel()
         private let sweep = CAGradientLayer()
         private var active = false
+        /// The width the running sweep was built for, so a layout pass that changes
+        /// nothing does not restart it.
+        private var animatedWidth: CGFloat = 0.0
+        private var foregroundObserver: NSObjectProtocol?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -458,9 +462,28 @@ public final class AorusAIWorkTrailView: UIView {
             ]
             sweep.locations = [0.0, 0.42, 0.58, 1.0]
             highlight.layer.mask = sweep
+            // iOS strips every CAAnimation off the layer tree when the app is backgrounded
+            // and does not put them back. Nothing else invalidates this view's layout on
+            // return, so without this the shimmer dies the first time the reader glances
+            // away mid-turn and never comes back.
+            foregroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.animatedWidth = 0.0
+                self.updateAnimation()
+            }
         }
 
         required init?(coder: NSCoder) { preconditionFailure("PhaseLabel is not built from a coder") }
+
+        deinit {
+            if let foregroundObserver {
+                NotificationCenter.default.removeObserver(foregroundObserver)
+            }
+        }
 
         override var intrinsicContentSize: CGSize {
             return base.intrinsicContentSize
@@ -497,10 +520,20 @@ public final class AorusAIWorkTrailView: UIView {
         }
 
         private func updateAnimation() {
-            sweep.removeAnimation(forKey: "aorusPhaseSweep")
             guard active, window != nil, bounds.width > 1.0, !UIAccessibility.isReduceMotionEnabled else {
+                sweep.removeAnimation(forKey: "aorusPhaseSweep")
+                animatedWidth = 0.0
                 return
             }
+            // `layoutSubviews` runs far more often than the sweep changes — every batch
+            // update of the table, every rotation, every keyboard. Removing and re-adding
+            // the animation each time snapped the highlight back to the left edge, so it
+            // is left running unless it is genuinely absent or the width it was built for
+            // has moved.
+            if sweep.animation(forKey: "aorusPhaseSweep") != nil, animatedWidth == bounds.width {
+                return
+            }
+            sweep.removeAnimation(forKey: "aorusPhaseSweep")
             let animation = CABasicAnimation(keyPath: "transform.translation.x")
             animation.fromValue = -bounds.width
             animation.toValue = bounds.width
@@ -508,6 +541,7 @@ public final class AorusAIWorkTrailView: UIView {
             animation.repeatCount = .infinity
             animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             sweep.add(animation, forKey: "aorusPhaseSweep")
+            animatedWidth = bounds.width
         }
     }
 
