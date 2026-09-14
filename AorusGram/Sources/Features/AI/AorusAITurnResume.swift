@@ -197,6 +197,19 @@ public struct AorusAITurnCursor: Equatable {
         return .apply
     }
 
+    /// Starts a new stream of the SAME turn.
+    ///
+    /// `id:` numbers frames within one SSE response, not within a turn — and a turn is
+    /// several responses whenever the agent asks for a tool or a permission, because the
+    /// server closes the stream and the client opens the next one. Carrying the previous
+    /// stream's high-water mark into the next one made every frame of the continuation
+    /// look already-applied: the answer stopped mid-way, the work trail stopped growing,
+    /// and the turn sat on three dots for ever. The mark belongs to a stream, so it is
+    /// reset when one begins; the turn's identity and its timing are untouched.
+    public mutating func beginStream() {
+        lastAppliedSeq = 0
+    }
+
     /// Adopt the turn the server named. Called from `agent.start` and from
     /// `turn.resume`, which are the only two places a turn id comes from.
     public mutating func adopt(turnId newTurnId: String) {

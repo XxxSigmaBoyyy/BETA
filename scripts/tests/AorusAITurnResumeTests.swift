@@ -95,6 +95,31 @@ private func deduplicatesBySequenceNotByText() {
     require(legacy.admit(seq: nil, turnId: nil) == .apply, "and keeps applying")
 }
 
+/// A turn is several streams whenever the agent asks for a tool, and `id:` numbers
+/// frames within a stream. This is the case that broke: the continuation came in at
+/// seq 1 against a mark left at 47, every frame looked already-applied, and the turn
+/// hung on three dots with a half-written answer and no work trail.
+private func aContinuationStreamIsNotSwallowed() {
+    var cursor = AorusAITurnCursor()
+    cursor.adopt(turnId: "turn-7")
+    cursor.beginStream()
+    for seq in 1...47 {
+        require(cursor.admit(seq: seq, turnId: "turn-7") == .apply, "the first stream applies")
+    }
+
+    // The agent asked for a tool; the server closed the stream and the client opens the
+    // next one, numbered from the start again.
+    cursor.beginStream()
+    require(cursor.admit(seq: 1, turnId: "turn-7") == .apply,
+            "the continuation's first frame is not mistaken for a replay")
+    require(cursor.admit(seq: 2, turnId: "turn-7") == .apply, "and it keeps going")
+    require(cursor.admit(seq: 2, turnId: "turn-7") == .skipReplayed,
+            "while a genuine duplicate inside the stream is still skipped")
+
+    // Beginning a stream does not forget whose turn it is, or when it started.
+    require(cursor.turnId == "turn-7", "the turn identity survives a new stream")
+}
+
 private func aReplayIsReappliedFromTheStart() {
     // The replay re-sends the journal from the beginning. If the envelope's last_seq
     // were adopted as the cursor, every replayed frame would look already-applied and
@@ -165,6 +190,7 @@ private enum AorusAITurnResumeTests {
         parsesTheResumeEnvelope()
         refusesAHalfEnvelope()
         deduplicatesBySequenceNotByText()
+        aContinuationStreamIsNotSwallowed()
         aReplayIsReappliedFromTheStart()
         theTimerIsTheServersAndSurvivesResume()
         adoptingANewTurnStartsClean()

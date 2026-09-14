@@ -2056,6 +2056,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// accumulated `aorus_tool_results` are always attached and the body stays the
     /// documented one: same `messages`, one extra field (§6, §14).
     private func dispatchTransport() {
+        // Every call here opens a NEW event stream — the first one of a turn, and one more
+        // after each tool or permission round trip. Frames are numbered per stream, so the
+        // sequence mark starts over with it.
+        turnCursor.beginStream()
         // There is no path that reaches a continuation without a frozen request text, but a
         // silent return here would leave the turn live with no socket — a spinner and a
         // floating indicator that never end. Fail the turn instead of stalling it.
@@ -2377,6 +2381,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         isPreparingRequest = true
         updateComposer()
         streamGeneration += 1
+        turnCursor.beginStream()
         let generation = streamGeneration
         streamHandle = AorusAIClient.shared.resumeTurn(threadId: conversation.threadId, event: { [weak self] event, frame in
             guard let self, self.streamGeneration == generation else { return }
