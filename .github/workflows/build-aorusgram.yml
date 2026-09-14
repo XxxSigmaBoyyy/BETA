@@ -53,6 +53,7 @@ jobs:
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/AI/AorusAISSEParser.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAITurnResume.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
             aorusgram/scripts/tests/AorusAIArtifactFlowTests.swift \
             -o /tmp/aorus-ai-preflight/artifact-tests
@@ -112,6 +113,7 @@ jobs:
           swiftc -typecheck \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAITurnResume.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIMentionModel.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIStore.swift
