@@ -1097,9 +1097,16 @@ private final class AorusAIConversationCell: UITableViewCell {
             workingSweep.removeAnimation(forKey: "aorusConversationSweep")
             return
         }
-        // The brighter pass of the same name, in the page's accent. The mask is what
-        // moves; both labels stay exactly where they are.
-        titleHighlight.textColor = palette.accent
+        // A brighter pass of the same name — the page's own primary ink, never the
+        // accent: a violet gleam is a second colour crossing the list, and the shimmer
+        // is meant to read as the name lighting up rather than as something tinting it.
+        //
+        // The base is dropped to secondary for as long as the chat is working, so there
+        // is something for the highlight to be brighter THAN. On a dark page that makes
+        // it a white gleam over grey; on a light one, full black over grey. One rule,
+        // and it reads on both.
+        titleLabel.textColor = palette.secondary
+        titleHighlight.textColor = palette.label
         titleHighlight.font = titleLabel.font
         titleHighlight.text = titleLabel.text
         restartWorkingSweep()
@@ -1125,7 +1132,6 @@ private final class AorusAIConversationCell: UITableViewCell {
         position: AorusAIGroupPosition,
         isWorking: Bool = false
     ) {
-        setWorking(isWorking, palette: palette)
         self.backgroundColor = .clear
         self.contentView.backgroundColor = .clear
         cardView.configure(palette: palette, position: position, radius: 12.0, separatorInset: Self.contentInset)
@@ -1135,6 +1141,9 @@ private final class AorusAIConversationCell: UITableViewCell {
         dateLabel.textColor = palette.tertiary
         chevronView.tintColor = palette.tertiary.withAlphaComponent(0.7)
         titleLabel.text = conversation.title.isEmpty ? aorusAILocalized("Новый диалог", "New chat") : conversation.title
+        // After the title and its colour are set: the shimmer is built from both, and
+        // running it first meant the lines below quietly overwrote it.
+        setWorking(isWorking, palette: palette)
         let preview = conversation.messages.last(where: { !$0.rawText.isEmpty })?.rawText
             ?? aorusAILocalized("Начните разговор с AorusAI", "Start a conversation with AorusAI")
         // A handle the session knows is written as the person here too — without the
@@ -2094,7 +2103,11 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 // protocol's explicit `done` event completes it, and a `done` that announced
                 // a tool or a permission has already moved the generation on, so a
                 // legitimate intermediate stop never lands here.
-                self.finishStreaming(error: .serverUnavailable, preserveText: true)
+                //
+                // "обрыв транспорта ≠ done": the socket closing early says nothing about
+                // the turn, which the server is still running. Re-attach rather than
+                // report a failure — the same path a dropped connection takes.
+                self.recoverOrFail(error: .serverUnavailable)
             }
         })
         isPreparingRequest = false
@@ -2374,9 +2387,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             switch result {
             case .success:
                 // The replay ended without a terminal event: the turn is still running on
-                // the server and the socket simply closed. Leave it resumable rather than
-                // calling it a failure — "disconnect ≠ done ≠ Stop".
-                if self.streamHandle != nil { self.settleUnresumedTurn() }
+                // the server and the socket simply closed. Re-attach rather than call it
+                // finished — "disconnect ≠ done ≠ Stop" — bounded by the same allowance,
+                // so a turn that never terminates still settles instead of spinning.
+                if self.streamHandle != nil { self.recoverOrFail(error: .serverUnavailable) }
             case let .failure(error):
                 switch error {
                 case .resumeNotFound, .resumeUnavailable:
