@@ -95,7 +95,7 @@ public final class AorusAIClient {
     @discardableResult
     public func start(
         payload: AorusAIAgentPayload,
-        event: @escaping (AorusAIEvent) -> Void,
+        event: @escaping (AorusAIEvent, AorusAIFrame) -> Void,
         completion: @escaping (Result<Void, AorusAIClientError>) -> Void
     ) -> AorusAIStreamHandle? {
         guard LicenseKeyProvider.isProvisioned else {
@@ -119,6 +119,87 @@ public final class AorusAIClient {
             encoder.dateEncodingStrategy = .millisecondsSince1970
             encoder.outputFormatting = [.sortedKeys]
             guard let body = try? encoder.encode(payload),
+                  let request = self.signedRequest(method: "POST", path: "/v1/aorus/agent", body: body, contentType: "application/json", accept: "text/event-stream") else {
+                DispatchQueue.main.async {
+                    completion(.failure(LicenseKeyProvider.isProvisioned ? .malformedResponse : .notProvisioned))
+                }
+                return
+            }
+            let stream = AorusAIStreamOperation(request: request, event: event, completion: completion)
+            stream.start()
+            handle.installCancellation { stream.cancel() }
+        }
+        return handle
+    }
+
+    /// Re-attaches to a turn the server is still holding for this chat.
+    ///
+    /// The same route as an ordinary send, with a body that carries the thread and the
+    /// resume flag and nothing else. The reply is an event stream that begins with
+    /// `turn.resume` and then replays the journal, so the caller folds it in through the
+    /// one reducer it already uses for live events.
+    ///
+    /// `resumeNotFound` means there is nothing to resume. The contract forbids turning
+    /// that into a fresh send from inside the resume path, and this method does not: it
+    /// reports it and stops.
+    @discardableResult
+    public func resumeTurn(
+        threadId: String,
+        event: @escaping (AorusAIEvent, AorusAIFrame) -> Void,
+        completion: @escaping (Result<Void, AorusAIClientError>) -> Void
+    ) -> AorusAIStreamHandle? {
+        return startControlStream(
+            body: AorusAIAgentPayload.TurnControl.resume(threadId: threadId),
+            event: event,
+            completion: completion
+        )
+    }
+
+    /// Confirms to the server that a finished turn has been shown to the reader.
+    ///
+    /// Only ever sent for a server turn id, and only after its terminal state is on
+    /// screen — acknowledging earlier would let the server drop a journal the reader
+    /// has not actually seen.
+    public func ackTurn(
+        threadId: String,
+        turnId: String,
+        completion: @escaping (Result<Void, AorusAIClientError>) -> Void
+    ) {
+        requestQueue.async { [weak self] in
+            guard let self else { return }
+            let control = AorusAIAgentPayload.TurnControl.ack(threadId: threadId, turnId: turnId)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let body = try? encoder.encode(control),
+                  let request = self.signedRequest(method: "POST", path: "/v1/aorus/agent", body: body, contentType: "application/json", accept: "application/json") else {
+                DispatchQueue.main.async {
+                    completion(.failure(LicenseKeyProvider.isProvisioned ? .malformedResponse : .notProvisioned))
+                }
+                return
+            }
+            self.performData(request: request, completion: completion)
+        }
+    }
+
+    /// Shared plumbing for a turn-control body that answers with an event stream.
+    private func startControlStream(
+        body control: AorusAIAgentPayload.TurnControl,
+        event: @escaping (AorusAIEvent, AorusAIFrame) -> Void,
+        completion: @escaping (Result<Void, AorusAIClientError>) -> Void
+    ) -> AorusAIStreamHandle? {
+        guard LicenseKeyProvider.isProvisioned else {
+            completion(.failure(.notProvisioned))
+            return nil
+        }
+        let handle = AorusAIStreamHandle()
+        requestQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(.failure(.cancelled)) }
+                return
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let body = try? encoder.encode(control),
                   let request = self.signedRequest(method: "POST", path: "/v1/aorus/agent", body: body, contentType: "application/json", accept: "text/event-stream") else {
                 DispatchQueue.main.async {
                     completion(.failure(LicenseKeyProvider.isProvisioned ? .malformedResponse : .notProvisioned))
@@ -439,6 +520,22 @@ public final class AorusAIClient {
     fileprivate static func mapHTTP(_ status: Int, data: Data?) -> AorusAIClientError {
         let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let code = (object?["error"] as? String)?.lowercased() ?? ""
+        // Turn control first: these carry their meaning in the body's `error`, and two of
+        // them share a status with unrelated failures.
+        if code == "resume_not_found" { return .resumeNotFound }
+        if code == "resume_journal_unavailable" {
+            return .resumeUnavailable(state: object?["state"] as? String)
+        }
+        if code == "turn_in_progress" {
+            let turn = (object?["turn_id"] as? String) ?? ""
+            return .turnInProgress(
+                turnId: turn,
+                resumeAvailable: object?["resume_available"] as? Bool ?? false
+            )
+        }
+        if code == "invalid_turn_control" || code == "ack_turn_required" || code == "ack_turn_not_found" {
+            return .turnControlRejected(code: code)
+        }
         if status == 401 || status == 403 { return .authorization }
         if status == 429 || code.contains("quota") {
             return .quota(Self.quota(from: object))
@@ -532,7 +629,7 @@ public struct AorusAIArtifactProbe: Equatable {
 
 private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
     private let request: URLRequest
-    private let eventHandler: (AorusAIEvent) -> Void
+    private let eventHandler: (AorusAIEvent, AorusAIFrame) -> Void
     private let completionHandler: (Result<Void, AorusAIClientError>) -> Void
     private let parser = AorusAISSEParser()
     private let lock = NSLock()
@@ -546,7 +643,7 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
     private var receivedSuccessfulDone = false
     private var completed = false
 
-    init(request: URLRequest, event: @escaping (AorusAIEvent) -> Void, completion: @escaping (Result<Void, AorusAIClientError>) -> Void) {
+    init(request: URLRequest, event: @escaping (AorusAIEvent, AorusAIFrame) -> Void, completion: @escaping (Result<Void, AorusAIClientError>) -> Void) {
         self.request = request
         self.eventHandler = event
         self.completionHandler = completion
@@ -684,8 +781,8 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
         guard decoded.text != nil || !decoded.artifacts.isEmpty else { return }
         receivedSuccessfulDone = true
         DispatchQueue.main.async {
-            self.eventHandler(.completion(text: decoded.text, artifacts: decoded.artifacts))
-            self.eventHandler(.done(ok: true, state: nil))
+            self.eventHandler(.completion(text: decoded.text, artifacts: decoded.artifacts), AorusAIFrame())
+            self.eventHandler(.done(ok: true, state: nil), AorusAIFrame())
         }
     }
 
@@ -699,7 +796,8 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
                 if case .done(ok: true, state: _) = parsed {
                     receivedSuccessfulDone = true
                 }
-                DispatchQueue.main.async { self.eventHandler(parsed) }
+                let frame = AorusAIFrame(seq: raw.seq, serverTimeMs: raw.serverTimeMs)
+                DispatchQueue.main.async { self.eventHandler(parsed, frame) }
             }
         }
     }
@@ -732,6 +830,12 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             }
         }
         switch raw.name {
+        case "turn.resume":
+            // The head of a resumed stream. A malformed envelope yields nil rather than a
+            // partial one: acting on half of it would reset the reader's turn to a state
+            // the server never reported.
+            guard let info = AorusAIResumeInfo(json: object) else { return nil }
+            return .turnResume(info)
         case "agent.start":
             guard let turn = object["turn_id"] as? String, !turn.isEmpty else { return nil }
             return .agentStarted(turnId: turn, context: object["context"] as? String)

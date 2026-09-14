@@ -93,6 +93,12 @@ jobs:
             aorusgram/scripts/tests/AorusCodeCipherTests.swift \
             -o /tmp/aorus-ai-preflight/aorus-code-cipher-tests
           /tmp/aorus-ai-preflight/aorus-code-cipher-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAITurnResume.swift \
+            aorusgram/scripts/tests/AorusAITurnResumeTests.swift \
+            -o /tmp/aorus-ai-preflight/turn-resume-tests
+          /tmp/aorus-ai-preflight/turn-resume-tests
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \

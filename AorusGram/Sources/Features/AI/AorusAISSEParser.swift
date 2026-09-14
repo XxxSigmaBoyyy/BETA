@@ -4,10 +4,21 @@ public final class AorusAISSEParser {
     public struct Event: Equatable {
         public let name: String
         public let data: Data
+        /// The frame's `id:` — the server's monotonic sequence number for this turn.
+        ///
+        /// Carried because a resumed stream replays frames the client has already applied,
+        /// and the only sound way to tell a replay from new work is the sequence number:
+        /// deduplicating on the text would drop a legitimately repeated delta. nil when the
+        /// server did not number the frame, which every pre-V7 stream is.
+        public let seq: Int?
+        /// The frame's `aorus-time:` in unix milliseconds, when the server stamped one.
+        public let serverTimeMs: Int64?
 
-        public init(name: String, data: Data) {
+        public init(name: String, data: Data, seq: Int? = nil, serverTimeMs: Int64? = nil) {
             self.name = name
             self.data = data
+            self.seq = seq
+            self.serverTimeMs = serverTimeMs
         }
     }
 
@@ -22,6 +33,8 @@ public final class AorusAISSEParser {
     private var eventName = "message"
     private var dataLines: [Data] = []
     private var dataBytes = 0
+    private var eventSeq: Int?
+    private var eventServerTimeMs: Int64?
     /// Set when a line or an event has run past its ceiling. Everything up to the next
     /// event boundary is then discarded rather than accumulated, and the stream carries on
     /// with the next event instead of the connection being torn down.
@@ -69,6 +82,8 @@ public final class AorusAISSEParser {
         dataLines.removeAll(keepingCapacity: false)
         dataBytes = 0
         eventName = "message"
+        eventSeq = nil
+        eventServerTimeMs = nil
         isDiscardingLine = false
         isDiscardingEvent = false
         return []
@@ -108,6 +123,12 @@ public final class AorusAISSEParser {
             }
             dataBytes += value.count + 1
             dataLines.append(value)
+        } else if field == "id" {
+            // Bounded before it is parsed: an id line is a small integer, and a peer that
+            // sent megabytes here would otherwise be handed straight to Int().
+            eventSeq = Int(String(decoding: value.prefix(32), as: UTF8.self))
+        } else if field == "aorus-time" {
+            eventServerTimeMs = Int64(String(decoding: value.prefix(32), as: UTF8.self))
         }
     }
 
@@ -115,6 +136,13 @@ public final class AorusAISSEParser {
         defer {
             isDiscardingEvent = false
             dataBytes = 0
+            // Per the SSE specification the id persists across events until the server
+            // sends another one; this protocol stamps every frame, so the safe reading is
+            // to clear it and report nil rather than attribute one frame's number to the
+            // next frame — a wrong sequence number is worse than no sequence number, since
+            // the whole point of it is deciding what has already been applied.
+            eventSeq = nil
+            eventServerTimeMs = nil
         }
         guard !isDiscardingEvent else {
             dataLines.removeAll(keepingCapacity: false)
@@ -130,7 +158,12 @@ public final class AorusAISSEParser {
             if index != dataLines.startIndex { joined.append(0x0a) }
             joined.append(dataLines[index])
         }
-        events.append(Event(name: eventName.isEmpty ? "message" : eventName, data: joined))
+        events.append(Event(
+            name: eventName.isEmpty ? "message" : eventName,
+            data: joined,
+            seq: eventSeq,
+            serverTimeMs: eventServerTimeMs
+        ))
         eventName = "message"
         dataLines.removeAll(keepingCapacity: true)
     }

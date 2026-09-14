@@ -116,9 +116,16 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
     /// folded trail reports how long the work took, and after a reload there is no
     /// other way to know when it ended.
     public var workFinishedAt: Date?
+    /// When the SERVER says this turn started, from `turn.resume` / the turn journal.
+    ///
+    /// Authoritative for "Работал N": the work trail's own phase timestamps are local
+    /// and are rebuilt from scratch when a stream is replayed, so a turn resumed after
+    /// the app was closed for ten minutes would otherwise report starting just now.
+    /// nil for a turn the server never timed — every stream from before V7.
+    public var turnStartedAt: Date?
     public var errorCode: String?
 
-    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, workPhases: [AorusAIWorkPhase] = [], workFinishedAt: Date? = nil, errorCode: String? = nil) {
+    public init(id: UUID = UUID(), role: AorusAIMessageRole, rawText: String, createdAt: Date = Date(), state: AorusAIMessageState = .complete, telegramEntities: [AorusAITelegramEntity] = [], referencedMessage: AorusAIReferencedMessage? = nil, artifacts: [AorusAIArtifact] = [], statusLabel: String? = nil, workPhases: [AorusAIWorkPhase] = [], workFinishedAt: Date? = nil, turnStartedAt: Date? = nil, errorCode: String? = nil) {
         self.id = id
         self.role = role
         self.rawText = rawText
@@ -130,12 +137,13 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
         self.statusLabel = statusLabel
         self.workPhases = workPhases
         self.workFinishedAt = workFinishedAt
+        self.turnStartedAt = turnStartedAt
         self.errorCode = errorCode
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, role, rawText, createdAt, state, telegramEntities
-        case referencedMessage, artifacts, statusLabel, workPhases, workFinishedAt, errorCode
+        case referencedMessage, artifacts, statusLabel, workPhases, workFinishedAt, turnStartedAt, errorCode
     }
 
     /// Hand-written for the same reason the conversation's is.
@@ -159,6 +167,7 @@ public struct AorusAIMessage: Codable, Equatable, Identifiable {
         self.statusLabel = try container.decodeIfPresent(String.self, forKey: .statusLabel)
         self.workPhases = try container.decodeIfPresent([AorusAIWorkPhase].self, forKey: .workPhases) ?? []
         self.workFinishedAt = try container.decodeIfPresent(Date.self, forKey: .workFinishedAt)
+        self.turnStartedAt = try container.decodeIfPresent(Date.self, forKey: .turnStartedAt)
         self.errorCode = try container.decodeIfPresent(String.self, forKey: .errorCode)
     }
 }
@@ -622,6 +631,48 @@ public struct AorusAIAgentPayload: Encodable {
         }
     }
 
+    /// The body of a turn-control request: resume or acknowledge.
+    ///
+    /// Deliberately its own type rather than a flag on the full payload. The contract's
+    /// resume and ack bodies carry the thread and the control flag and NOTHING else —
+    /// no model, no stream, no messages — and encoding a full payload with a flag bolted
+    /// on would send fields the frozen server was never shown.
+    ///
+    /// Resume and ack are never combined: the server answers a body carrying both with
+    /// `invalid_turn_control`, so the two are separate initialisers and there is no way
+    /// to express the invalid one.
+    public struct TurnControl: Encodable {
+        public let threadId: String
+        public let resume: Bool?
+        public let ack: Bool?
+        public let ackTurnId: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case threadId = "aorus_thread_id"
+            case resume = "aorus_resume"
+            case ack = "aorus_ack"
+            case ackTurnId = "aorus_ack_turn_id"
+        }
+
+        public static func resume(threadId: String) -> TurnControl {
+            return TurnControl(threadId: threadId, resume: true, ack: nil, ackTurnId: nil)
+        }
+
+        /// Only ever sent for a server turn id, and only once its terminal state has
+        /// been shown to the reader.
+        public static func ack(threadId: String, turnId: String) -> TurnControl {
+            return TurnControl(threadId: threadId, resume: nil, ack: true, ackTurnId: turnId)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(threadId, forKey: .threadId)
+            if let resume { try container.encode(resume, forKey: .resume) }
+            if let ack { try container.encode(ack, forKey: .ack) }
+            if let ackTurnId { try container.encode(ackTurnId, forKey: .ackTurnId) }
+        }
+    }
+
     /// Builds the payload from the locally stored conversation.
     ///
     /// `history` must be the turns that precede the new request. Notices, empty
@@ -835,6 +886,9 @@ public struct AorusAIWorkPhase: Codable, Equatable, Identifiable {
 }
 
 public enum AorusAIEvent: Equatable {
+    /// The head of a resumed stream. Metadata about a turn already running on the
+    /// server — never a second assistant message, which the contract states outright.
+    case turnResume(AorusAIResumeInfo)
     case agentStarted(turnId: String, context: String?)
     case status(label: String, progress: Double?)
     /// A build/repair/diagnose/finalize phase. Only `label` is ever shown; `phase` is the
@@ -861,6 +915,17 @@ public enum AorusAIEvent: Equatable {
 }
 
 public enum AorusAIClientError: Error, Equatable {
+    /// There is no turn on the server to resume for this chat. Not a failure — it is
+    /// the ordinary answer for a chat whose last turn already finished, and the
+    /// contract is explicit that it must NOT be turned into a fresh send.
+    case resumeNotFound
+    /// The server has the turn but cannot replay it (409 `resume_journal_unavailable`).
+    case resumeUnavailable(state: String?)
+    /// A turn is still running and this is its server id (409 `turn_in_progress`).
+    case turnInProgress(turnId: String, resumeAvailable: Bool)
+    /// The server refused a resume/ack body: `invalid_turn_control`,
+    /// `ack_turn_required` or `ack_turn_not_found`.
+    case turnControlRejected(code: String)
     case notProvisioned
     case offline
     case timeout
