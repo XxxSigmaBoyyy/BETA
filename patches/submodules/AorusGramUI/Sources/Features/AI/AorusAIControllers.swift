@@ -1024,10 +1024,15 @@ private final class AorusAIConversationCell: UITableViewCell {
 
     private let cardView = AorusAIGroupBackgroundView()
     private let highlightView = UIView()
-    /// The sweep that says this chat is working. A gradient band moving right to left
-    /// across the row, laid over the card and under the text, so the row reads as alive
-    /// without anything being added to it.
+    /// The shimmer that says this chat is working: a highlight crossing the chat's NAME
+    /// from left to right, and nothing else. A band over the whole row read as a blur
+    /// sliding across the card — the row is a card of glass, and dragging a gradient
+    /// over it smears it rather than lighting it.
     private let workingSweep = CAGradientLayer()
+    /// The title drawn a second time, brighter, with the sweep as its mask. The base
+    /// title underneath never changes, so the name stays legible at every moment of the
+    /// animation instead of fading in and out.
+    private let titleHighlight = UILabel()
     private var isWorkingState = false
     private var workingObserver: NSObjectProtocol?
     private let titleLabel = UILabel()
@@ -1049,13 +1054,20 @@ private final class AorusAIConversationCell: UITableViewCell {
         highlightView.alpha = 0.0
         contentView.addSubview(cardView)
         cardView.addSubview(highlightView)
-        workingSweep.isHidden = true
-        // Right to left: the band starts off the trailing edge and travels to the
-        // leading one, which is the direction the brief asks for.
+        titleHighlight.isHidden = true
+        titleHighlight.font = titleLabel.font
+        titleHighlight.lineBreakMode = .byTruncatingTail
+        // Left to right, across the name only.
         workingSweep.startPoint = CGPoint(x: 0.0, y: 0.5)
         workingSweep.endPoint = CGPoint(x: 1.0, y: 0.5)
+        workingSweep.colors = [
+            UIColor.clear.cgColor,
+            UIColor.white.cgColor,
+            UIColor.white.cgColor,
+            UIColor.clear.cgColor
+        ]
         workingSweep.locations = [0.0, 0.42, 0.58, 1.0]
-        cardView.layer.addSublayer(workingSweep)
+        titleHighlight.layer.mask = workingSweep
         // iOS strips every animation off the layer tree when the app is backgrounded
         // and does not put it back, and a list row is not laid out again on return.
         workingObserver = NotificationCenter.default.addObserver(
@@ -1065,7 +1077,7 @@ private final class AorusAIConversationCell: UITableViewCell {
         ) { [weak self] _ in
             self?.restartWorkingSweep()
         }
-        [titleLabel, dateLabel, previewLabel, chevronView].forEach { cardView.addSubview($0) }
+        [titleLabel, dateLabel, previewLabel, chevronView, titleHighlight].forEach { cardView.addSubview($0) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -1080,25 +1092,27 @@ private final class AorusAIConversationCell: UITableViewCell {
     /// the row lighting up rather than as a colour laid on top of it.
     private func setWorking(_ working: Bool, palette: AorusAIPalette) {
         isWorkingState = working
-        workingSweep.isHidden = !working
+        titleHighlight.isHidden = !working
         guard working else {
             workingSweep.removeAnimation(forKey: "aorusConversationSweep")
             return
         }
-        let clear = palette.accent.withAlphaComponent(0.0).cgColor
-        let lit = palette.accent.withAlphaComponent(0.16).cgColor
-        workingSweep.colors = [clear, lit, lit, clear]
+        // The brighter pass of the same name, in the page's accent. The mask is what
+        // moves; both labels stay exactly where they are.
+        titleHighlight.textColor = palette.accent
+        titleHighlight.font = titleLabel.font
+        titleHighlight.text = titleLabel.text
         restartWorkingSweep()
     }
 
     private func restartWorkingSweep() {
-        guard isWorkingState, bounds.width > 1.0 else { return }
+        guard isWorkingState, titleHighlight.bounds.width > 1.0 else { return }
         // Left alone while it is already running, so a reload of the list does not snap
         // the band back to its starting edge.
         guard workingSweep.animation(forKey: "aorusConversationSweep") == nil else { return }
         let travel = CABasicAnimation(keyPath: "transform.translation.x")
-        travel.fromValue = cardView.bounds.width
-        travel.toValue = -cardView.bounds.width
+        travel.fromValue = -titleHighlight.bounds.width
+        travel.toValue = titleHighlight.bounds.width
         travel.duration = 1.7
         travel.repeatCount = .infinity
         travel.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -1156,19 +1170,6 @@ private final class AorusAIConversationCell: UITableViewCell {
         let width = contentView.bounds.width
         cardView.frame = CGRect(x: Self.cardInset, y: 0.0, width: max(0.0, width - Self.cardInset * 2.0), height: contentView.bounds.height)
         highlightView.frame = cardView.bounds
-        // The band is a third of the row wide and travels the whole of it. Its frame is
-        // set without an implicit animation: a layer frame change inside a table reload
-        // would otherwise slide visibly on its own.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        workingSweep.frame = CGRect(
-            x: 0.0,
-            y: 0.0,
-            width: max(1.0, cardView.bounds.width / 3.0),
-            height: cardView.bounds.height
-        )
-        CATransaction.commit()
-        restartWorkingSweep()
         let inset = Self.contentInset
         let cardWidth = cardView.bounds.width
         let chevronSize: CGFloat = 15.0
@@ -1177,6 +1178,20 @@ private final class AorusAIConversationCell: UITableViewCell {
         let dateWidth = min(70.0, ceil((dateLabel.text ?? "").size(withAttributes: [.font: UIFont.systemFont(ofSize: 12.0)]).width) + 1.0)
         dateLabel.frame = CGRect(x: max(inset, contentRight - dateWidth), y: 13.0, width: dateWidth, height: 18.0)
         titleLabel.frame = CGRect(x: inset, y: 12.0, width: max(0.0, dateLabel.frame.minX - 8.0 - inset), height: 20.0)
+        // The highlight is the same name in the same place; only its mask moves.
+        titleHighlight.frame = titleLabel.frame
+        // The band is a third of the name wide. Set without an implicit animation: a
+        // layer frame change inside a table reload would otherwise slide on its own.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        workingSweep.frame = CGRect(
+            x: 0.0,
+            y: 0.0,
+            width: max(1.0, titleHighlight.bounds.width / 3.0),
+            height: titleHighlight.bounds.height
+        )
+        CATransaction.commit()
+        restartWorkingSweep()
         previewLabel.frame = CGRect(x: inset, y: 35.0, width: max(0.0, contentRight - inset), height: 19.0)
     }
 }
@@ -1375,6 +1390,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private var turnCursor = AorusAITurnCursor()
     /// The turn whose terminal state has been shown and is waiting to be acknowledged.
     private var pendingAckTurnId: String?
+    /// A turn whose socket died while the app was away, waiting to be re-attached.
+    private var pendingResumeRecovery = false
+    private var resumeAttempts = 0
     private var previewURL: URL?
     /// Artifacts currently being fetched, by `artifactId`. Owned by the controller, not
     /// by the card, because every reload builds new cards.
@@ -1834,6 +1852,13 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // The socket does not survive being suspended, so a turn that was live when the app
         // went away is re-attached here rather than left to look broken. `resumeTurnIfNeeded`
         // does nothing when a stream is already running.
+        //
+        // A drop that happened while the app was away deliberately attempted nothing at
+        // the time, so its allowance is untouched and the first try happens now.
+        if pendingResumeRecovery {
+            pendingResumeRecovery = false
+            resumeAttempts = 0
+        }
         resumeTurnIfNeeded()
     }
 
@@ -1967,10 +1992,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         pendingReference = nil
         // Mentions are resolved on the device before the request leaves, so the model
         // is told who `@name` actually is instead of guessing from the handle.
+        // No client-written progress line here. The status row belongs to the agent: it
+        // says what the AGENT reported, and a sentence this client made up about its own
+        // preparation is not that. The typing indicator already says the turn is alive.
         let mentioned = Self.mentionedUsernames(in: entities)
-        if !mentioned.isEmpty, let index = conversation.messages.firstIndex(where: { $0.id == assistant.id }) {
-            conversation.messages[index].statusLabel = aorusAILocalized("Читаю профиль диалога…", "Reading the chat profile…")
-        }
         updateComposer()
         tableView.reloadData()
         jumpToNewestMessage(animated: true)
@@ -2052,6 +2077,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // with "AorusAI временно недоступен". Tapping Stop and sending again immediately did
         // the same thing to the new turn.
         streamGeneration += 1
+        // A fresh turn starts with a clean allowance: the attempts belong to one dropped
+        // turn, not to the chat.
+        resumeAttempts = 0
+        pendingResumeRecovery = false
         let generation = streamGeneration
         streamHandle = AorusAIClient.shared.start(payload: payload, event: { [weak self] event, frame in
             guard let self, self.streamGeneration == generation else { return }
@@ -2059,7 +2088,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         }, completion: { [weak self] result in
             guard let self, self.streamGeneration == generation else { return }
             if case let .failure(error) = result, error != .cancelled {
-                self.finishStreaming(error: error, preserveText: true)
+                self.recoverOrFail(error: error)
             } else if self.streamHandle != nil {
                 // A successful HTTP EOF is not a successful agent turn by itself. Only the
                 // protocol's explicit `done` event completes it, and a `done` that announced
@@ -2192,7 +2221,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             turnState = .awaitingTool(request)
             let label = request.label?.trimmingCharacters(in: .whitespacesAndNewlines)
             conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(
-                (label?.isEmpty == false) ? (label ?? "") : Self.toolStatusLabel(for: request)
+                (label?.isEmpty == false) ? (label ?? "") : ""
             )
         case let .toolResult(_, ok, label):
             // §8/§15: the backend's own bookkeeping is a transient status line, never a
@@ -2256,6 +2285,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private func applyResume(_ info: AorusAIResumeInfo) {
         guard let id = activeAssistantId,
               let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
+        // The server answered, so whatever dropped the last socket is behind us.
+        resumeAttempts = 0
+        pendingResumeRecovery = false
         turnCursor.apply(info, deviceNowMs: Int64(Date().timeIntervalSince1970 * 1000.0))
         turnId = info.turnId
         conversation.messages[index].rawText = ""
@@ -2352,7 +2384,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
                 case .cancelled:
                     break
                 default:
-                    self.finishStreaming(error: error, preserveText: true)
+                    self.recoverOrFail(error: error)
                 }
             }
         })
@@ -2360,6 +2392,47 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         updateComposer()
         if streamHandle == nil { settleUnresumedTurn() }
     }
+
+    /// A dropped connection is not the end of a turn.
+    ///
+    /// "Обрыв сети / фон приложения ≠ cancel" and "disconnect ≠ done ≠ Stop": the server
+    /// keeps running the turn whatever happens to this socket. Telling the reader the
+    /// connection failed — which is what closing the app for a moment used to produce —
+    /// is the client inventing a failure. It re-attaches instead, and only gives up
+    /// after the server itself has been asked and had nothing to offer.
+    ///
+    /// While the app is in the background nothing is attempted at all: the socket cannot
+    /// live there, so a try would fail on the spot and burn one of the attempts. The
+    /// need is remembered and acted on the moment the app is back.
+    private func recoverOrFail(error: AorusAIClientError) {
+        streamHandle = nil
+        switch error {
+        case .offline, .serverUnavailable, .timeout, .malformedResponse:
+            break
+        default:
+            finishStreaming(error: error, preserveText: true)
+            return
+        }
+        guard UIApplication.shared.applicationState == .active else {
+            pendingResumeRecovery = true
+            return
+        }
+        guard resumeAttempts < Self.maximumResumeAttempts else {
+            settleUnresumedTurn()
+            return
+        }
+        resumeAttempts += 1
+        // Spaced out so a server that is genuinely down is not hammered, and so a
+        // momentary drop has time to clear before the next try.
+        let delay = 1.2 * Double(resumeAttempts)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.resumeTurnIfNeeded()
+        }
+    }
+
+    /// How many times a dropped turn is re-attached before the client accepts that it
+    /// is gone. Bounded so a server that is truly unreachable cannot loop for ever.
+    private static let maximumResumeAttempts = 3
 
     /// Closes out a turn that cannot be resumed, without inventing an error.
     ///
@@ -2522,19 +2595,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     }
 
     /// The transient status shown while a tool runs. Never a chat message (§15, §18).
-    private static func toolStatusLabel(for request: AorusAIToolRequest) -> String {
-        let handle = request.username.map { "@\($0)" } ?? ""
-        if request.tool == AorusAITool.profileGet {
-            return handle.isEmpty
-                ? aorusAILocalized("Читаю профиль диалога…", "Reading the chat profile…")
-                : aorusAILocalized("Читаю профиль \(handle)…", "Reading the profile of \(handle)…")
-        }
-        if request.tool == AorusAITool.chatHistory {
-            return aorusAILocalized("Читаю переписку…", "Reading the chat…")
-        }
-        return aorusAILocalized("Выполняю…", "Working…")
-    }
-
     private func setTurnStatus(_ text: String) {
         guard let id = activeAssistantId, let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
         conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(text)
@@ -2571,7 +2631,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// Runs one `tool.request` and submits its result, whatever the outcome (§4, §12).
     private func execute(toolRequest request: AorusAIToolRequest) {
         turnState = .awaitingTool(request)
-        setTurnStatus(Self.toolStatusLabel(for: request))
         // The backend may ask for a conversation either way round: as a `permission.request`
         // carrying its own options, or as a plain `tool.request`. Both have to arrive at the
         // same question. Answering "unsupported_tool" here is what left the model to talk
@@ -2667,7 +2726,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             submit(toolResult: .failure(tool: request.tool, requestId: request.requestId, username: request.username, reason: "missing_username"))
             return
         }
-        setTurnStatus(Self.toolStatusLabel(for: request))
         let signal = profileFieldsSignal(username: username)
         |> timeout(6.0, queue: Queue.mainQueue(), alternate: .single(nil))
         |> deliverOnMainQueue
@@ -2844,7 +2902,6 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// it in the shape the backend reads: `result.messages[].sender_name/.text` (§10).
     private func executeHistoryTool(request: AorusAIPermissionRequest, limit: Int?, fromDate: Int64?, toDate: Int64?) {
         turnState = .executingHistoryTool(request)
-        setTurnStatus(aorusAILocalized("Читаю переписку…", "Reading the chat…"))
         guard let username = request.username, !username.isEmpty else {
             submit(toolResult: .failure(tool: request.tool, requestId: request.requestId, username: request.username, reason: "missing_username"))
             return
@@ -3830,13 +3887,6 @@ private final class AorusAIComposerView: UIView {
     let textView = AorusAIMentionTextView.make()
     private let container = UIView()
     private let containerGlass = GlassBackgroundView(frame: CGRect())
-    // Every control in the composer stands on its own pane of glass rather than on a
-    // flat fill. A tinted circle over glass is a coloured disc, not glass — so the
-    // tint moves to the glyph and the pane underneath stays clear.
-    private let sendGlass = GlassBackgroundView(frame: CGRect())
-    private let dictationGlass = GlassBackgroundView(frame: CGRect())
-    private let dictationCancelGlass = GlassBackgroundView(frame: CGRect())
-    private let dictationDoneGlass = GlassBackgroundView(frame: CGRect())
     private let placeholder = UILabel()
     private let referenceView = UIView()
     private let referenceLine = UIView()
@@ -4002,7 +4052,12 @@ private final class AorusAIComposerView: UIView {
         self.context = context
         self.theme = theme
         let palette = AorusAIPalette.resolve(theme)
-        backgroundColor = palette.plainBackground
+        // Clear, so the capsule below IS the panel rather than a pane of glass laid on top
+        // of an opaque plate. Filling this view with the page colour put a solid sheet
+        // directly behind the glass: glass samples what is behind it, and what was behind it
+        // was a flat colour, so it could only ever come out as a tinted slab. The chat now
+        // runs under the composer the way it does under Telegram's own.
+        backgroundColor = .clear
         // The input is a pane of Telegram's own glass, the same component the navigation
         // capsules are made of, rather than a blur with a border drawn to look like one.
         container.backgroundColor = .clear
@@ -4020,11 +4075,9 @@ private final class AorusAIComposerView: UIView {
         referenceClose.tintColor = palette.tertiary
         dictationWave.configure(palette: palette)
         dictationCancel.tintColor = palette.secondary
-        dictationCancel.backgroundColor = .clear
-        // The accent survives as the glyph: over glass it still reads as the affirmative
-        // control without turning the pane into a solid disc.
-        dictationDone.tintColor = palette.accent
-        dictationDone.backgroundColor = .clear
+        dictationCancel.backgroundColor = palette.fill
+        dictationDone.tintColor = palette.onAccent
+        dictationDone.backgroundColor = palette.accent
         refreshReferenceLabel()
         textView.configureMentions(context: context, theme: theme)
         // The theme decides the base colour every run is drawn in, so the last render is
@@ -4061,8 +4114,6 @@ private final class AorusAIComposerView: UIView {
         sendButton.layer.cornerRadius = buttonSize / 2.0
         let micSize = AorusAIComposerView.dictationButtonSize
         dictationButton.frame = CGRect(x: sendButton.frame.minX - micSize - 7, y: buttonY + floor((buttonSize - micSize) / 2.0), width: micSize, height: micSize)
-        applyButtonGlass(sendGlass, to: sendButton, cornerRadius: buttonSize / 2.0)
-        applyButtonGlass(dictationGlass, to: dictationButton, cornerRadius: micSize / 2.0)
         let refHeight: CGFloat = reference == nil ? 0 : 32
         referenceView.frame = CGRect(x: 14, y: 6, width: container.bounds.width - 28, height: refHeight)
         referenceLine.frame = CGRect(x: 0, y: 5, width: 2, height: max(0, refHeight - 10))
@@ -4085,8 +4136,6 @@ private final class AorusAIComposerView: UIView {
             height: doneSize
         )
         dictationDone.layer.cornerRadius = doneSize / 2.0
-        applyButtonGlass(dictationCancelGlass, to: dictationCancel, cornerRadius: cancelSize / 2.0)
-        applyButtonGlass(dictationDoneGlass, to: dictationDone, cornerRadius: doneSize / 2.0)
         let waveLeft = dictationCancel.frame.maxX + 12.0
         dictationWave.frame = CGRect(
             x: waveLeft,
@@ -4121,29 +4170,6 @@ private final class AorusAIComposerView: UIView {
         return containerHeight + 8
     }
 
-    /// Stands one control on its own pane of glass.
-    ///
-    /// Inserted at index 0 so it sits under the glyph, and hidden from touches so the
-    /// button keeps receiving them. `isDark` comes from the theme rather than from the
-    /// page, because the composer floats over the chat's own background and not over a
-    /// sampled profile page.
-    private func applyButtonGlass(_ glass: GlassBackgroundView, to button: UIButton, cornerRadius: CGFloat) {
-        guard button.bounds.width > 1.0, button.bounds.height > 1.0 else { return }
-        if glass.superview !== button {
-            glass.isUserInteractionEnabled = false
-            button.insertSubview(glass, at: 0)
-        }
-        glass.frame = button.bounds
-        glass.update(
-            size: button.bounds.size,
-            cornerRadius: cornerRadius,
-            isDark: theme?.overallDarkAppearance ?? true,
-            tintColor: GlassBackgroundView.TintColor(kind: .clear),
-            isInteractive: false,
-            transition: .immediate
-        )
-    }
-
     func invalidateHeight() {
         placeholder.isHidden = !textView.text.isEmpty
         applyMentionStyling()
@@ -4151,14 +4177,17 @@ private final class AorusAIComposerView: UIView {
     }
 
     private func refreshButton() {
-        // A pane of glass with an accent glyph. The tint used to live in a filled circle,
-        // which over the glass composer read as a solid disc pasted onto it; moving the
-        // accent to the glyph keeps "send" and, mid-answer, "stop" just as legible.
+        // A filled accent circle with a plain glyph, as in the design: the tint lives in the
+        // circle, so the same control reads as "send" and, mid-answer, as "stop".
+        //
+        // NOT a pane of glass. Glass inside a 30-point circle is a blurred disc — it
+        // samples what is behind it at that size and reads as a smudge, which is exactly
+        // what putting one here did to every control in the composer.
         let palette = theme.map { AorusAIPalette.resolve($0) }
         let configuration = UIImage.SymbolConfiguration(pointSize: isGenerating ? 13 : 17, weight: .semibold)
         sendButton.setImage(UIImage(systemName: isGenerating ? "stop.fill" : "arrow.up")?.withConfiguration(configuration), for: .normal)
-        sendButton.tintColor = palette?.accent ?? .white
-        sendButton.backgroundColor = .clear
+        sendButton.tintColor = palette?.onAccent ?? .white
+        sendButton.backgroundColor = palette?.accent
         sendButton.isEnabled = isGenerating || canSend
         sendButton.alpha = sendButton.isEnabled ? 1 : 0.42
         sendButton.accessibilityLabel = isGenerating ? aorusAILocalized("Остановить", "Stop") : aorusAILocalized("Отправить", "Send")
