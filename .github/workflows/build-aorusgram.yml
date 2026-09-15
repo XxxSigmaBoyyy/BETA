@@ -126,6 +126,13 @@ jobs:
             echo "parsing $source"
             swiftc -frontend -parse "$source"
           done
+          # The module's own core: AorusL10n and the twenty-thousand-entry string table it
+          # reads. Both are edited by hand and by script, and a single unbalanced quote in
+          # either is a syntax error that nothing else here would see until Bazel did.
+          for source in aorusgram/patches/submodules/AorusGramUI/Sources/Core/*.swift; do
+            echo "parsing $source"
+            swiftc -frontend -parse "$source"
+          done
 
       # Cache only an immutable, unmodified upstream checkout. The working copy is
       # recreated below on every run, so build-time HMAC injection can never leak

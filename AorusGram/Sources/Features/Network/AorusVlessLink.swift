@@ -34,7 +34,8 @@ public struct AorusVlessServer: Codable, Equatable {
     /// "" or "xtls-rprx-vision". Anything else is dropped at parse time rather than passed to
     /// the core, which would refuse the whole configuration for one unknown word.
     public let flow: String
-    /// Xray's transport name, already normalised ("raw" → "tcp", "h2" → "http").
+    /// Xray's transport name, already normalised ("raw" → "tcp", "splithttp" → "xhttp"). For a
+    /// Hysteria 2 server this is "hysteria", which is what the core calls its QUIC transport.
     public let network: String
     /// "none", "tls" or "reality".
     public let security: String
@@ -52,6 +53,16 @@ public struct AorusVlessServer: Codable, Equatable {
     /// gRPC multi-mode / xhttp mode, whichever the transport reads it as.
     public let mode: String?
     public let allowInsecure: Bool
+    /// Hysteria2's Salamander obfuscation password. Nil for every other protocol, and for a
+    /// Hysteria2 server whose operator did not turn obfuscation on.
+    public let obfsPassword: String?
+    /// `pinSHA256` from a Hysteria2 link: the SHA-256 of the certificate the server must present,
+    /// in the colon-hex notation OpenSSL prints. Self-signed Hysteria2 deployments pin instead of
+    /// chaining to a public root, and dropping it would mean accepting any certificate at all.
+    public let pinnedCertSha256: String?
+    /// A Hysteria2 port-hopping range ("20000-50000"): the ports the client rotates its UDP
+    /// association across. Nil when the server stays on the one port the address names.
+    public let portHopping: String?
     /// The original URI. Kept so a configuration can be exported back to the clipboard exactly
     /// as it arrived, which is the only form another client will accept.
     public let link: String
@@ -79,6 +90,9 @@ public struct AorusVlessServer: Codable, Equatable {
         headerType: String?,
         mode: String?,
         allowInsecure: Bool,
+        obfsPassword: String? = nil,
+        pinnedCertSha256: String? = nil,
+        portHopping: String? = nil,
         link: String
     ) {
         self.id = id
@@ -103,6 +117,9 @@ public struct AorusVlessServer: Codable, Equatable {
         self.headerType = headerType
         self.mode = mode
         self.allowInsecure = allowInsecure
+        self.obfsPassword = obfsPassword
+        self.pinnedCertSha256 = pinnedCertSha256
+        self.portHopping = portHopping
         self.link = link
     }
 
@@ -138,6 +155,9 @@ public struct AorusVlessServer: Codable, Equatable {
         self.headerType = try container.decodeIfPresent(String.self, forKey: .headerType)
         self.mode = try container.decodeIfPresent(String.self, forKey: .mode)
         self.allowInsecure = try container.decodeIfPresent(Bool.self, forKey: .allowInsecure) ?? false
+        self.obfsPassword = try container.decodeIfPresent(String.self, forKey: .obfsPassword)
+        self.pinnedCertSha256 = try container.decodeIfPresent(String.self, forKey: .pinnedCertSha256)
+        self.portHopping = try container.decodeIfPresent(String.self, forKey: .portHopping)
         self.link = try container.decodeIfPresent(String.self, forKey: .link) ?? ""
     }
 
@@ -168,6 +188,9 @@ public struct AorusVlessServer: Codable, Equatable {
         try container.encodeIfPresent(self.headerType, forKey: .headerType)
         try container.encodeIfPresent(self.mode, forKey: .mode)
         try container.encode(self.allowInsecure, forKey: .allowInsecure)
+        try container.encodeIfPresent(self.obfsPassword, forKey: .obfsPassword)
+        try container.encodeIfPresent(self.pinnedCertSha256, forKey: .pinnedCertSha256)
+        try container.encodeIfPresent(self.portHopping, forKey: .portHopping)
         try container.encode(self.link, forKey: .link)
     }
 
@@ -177,6 +200,7 @@ public struct AorusVlessServer: Codable, Equatable {
         case id, name, proto, address, port, credential, userId, encryption, flow, network
         case security, serverName, fingerprint, publicKey, shortId, spiderX, alpn, path, host
         case serviceName, headerType, mode, allowInsecure, link
+        case obfsPassword, pinnedCertSha256, portHopping
     }
 
     /// How the protocol is spelled in every other client's interface.
@@ -188,6 +212,8 @@ public struct AorusVlessServer: Codable, Equatable {
             return "Trojan"
         case "shadowsocks":
             return "Shadowsocks"
+        case "hysteria2":
+            return "Hysteria2"
         default:
             return "VLESS"
         }
@@ -205,6 +231,22 @@ public struct AorusVlessServer: Codable, Equatable {
             // thing there is to say about the wire — and it is what a user picks between.
             if !self.encryption.isEmpty {
                 parts.append(self.encryption.uppercased())
+            }
+            parts.append("\(self.address):\(self.port)")
+            return parts.joined(separator: " | ")
+        }
+        if self.proto == "hysteria2" {
+            // Hysteria2 is QUIC and always TLS, so naming either would say nothing. What does
+            // distinguish two entries is whether the packets are obfuscated and whether the
+            // association hops ports — both of which decide whether it survives a given network.
+            parts.append("QUIC")
+            if self.obfsPassword != nil {
+                parts.append("Salamander")
+            }
+            if self.portHopping != nil {
+                // A technical token, like "Reality" and "Vision" above: every string this file
+                // produces is one, and the translated prose belongs to the screen that shows it.
+                parts.append("Hopping")
             }
             parts.append("\(self.address):\(self.port)")
             return parts.joined(separator: " | ")
@@ -287,7 +329,17 @@ public enum AorusVlessLink {
     /// Xray transports this client can build a working outbound for. A key using anything else
     /// is refused at import: accepting it would produce a configuration the core rejects, and
     /// the user would see "does not connect" instead of "not supported".
-    private static let supportedNetworks: Set<String> = ["tcp", "ws", "grpc", "http", "httpupgrade", "xhttp"]
+    ///
+    /// `http`/`h2` is deliberately absent. Xray REMOVED that transport — `TransportProtocol.Build`
+    /// answers "the feature has been removed" for `h2`, `h3` and `http`, and a stream settings
+    /// block it cannot build fails the WHOLE configuration, so the core never starts. Accepting
+    /// such a key produced a card that could only ever say "does not connect". `quic` is gone from
+    /// this core for the same reason and was never accepted here.
+    private static let supportedNetworks: Set<String> = ["tcp", "ws", "grpc", "httpupgrade", "xhttp"]
+    /// Transports the core used to carry and no longer does. Named so a key using one is refused
+    /// as "not supported" rather than as damaged text, and so the removal above cannot be quietly
+    /// undone by someone adding the name back to the set.
+    private static let removedNetworks: Set<String> = ["http", "h2", "h3", "quic"]
     private static let supportedSecurities: Set<String> = ["none", "tls", "reality"]
     /// uTLS ClientHello shapes. Same list the signed profile allows, for the same reason: an
     /// unknown fingerprint is a configuration the core will not start.
@@ -306,12 +358,17 @@ public enum AorusVlessLink {
         "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305",
         "none", "plain"
     ]
-    /// Every scheme this parser will look at. `hysteria2`, `hy2`, `tuic` and `wireguard` are
-    /// deliberately absent and named here so the refusal can say why: they are separate protocols
-    /// that Xray has no outbound for, so accepting one would produce a card that cannot connect.
-    private static let keySchemes = ["vless://", "vmess://", "trojan://", "ss://"]
+    /// Every scheme this parser will look at. `tuic`, `wireguard` and the rest are deliberately
+    /// absent and named below so the refusal can say why: they are separate protocols that this
+    /// core has no outbound for, so accepting one would produce a card that cannot connect.
+    private static let keySchemes = ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://", "hy2://"]
+    /// Schemes that are recognisably proxy keys and are not ones this core can dial.
+    ///
+    /// `hysteria://` — Hysteria **1** — stays here even though Hysteria 2 is now carried: they are
+    /// different wire protocols, and the outbound refuses anything whose `version` is not 2. A
+    /// version-1 key accepted as a version-2 one would fail at the handshake with nothing to say.
     private static let foreignSchemes = [
-        "hysteria://", "hysteria2://", "hy2://", "tuic://", "wireguard://", "wg://",
+        "hysteria://", "tuic://", "wireguard://", "wg://",
         "juicity://", "snell://", "ssr://", "socks://", "socks5://"
     ]
 
@@ -381,7 +438,13 @@ public enum AorusVlessLink {
                 continue
             }
             guard let server = parseKey(candidate) else {
-                sawBrokenKey = true
+                // A key that names a transport this core no longer carries is not damaged text,
+                // and saying so sends the user looking for a typo that is not there.
+                if namesAnUnsupportedFeature(candidate) {
+                    sawForeignProtocol = true
+                } else {
+                    sawBrokenKey = true
+                }
                 continue
             }
             guard !seen.contains(server.id) else { continue }
@@ -458,9 +521,49 @@ public enum AorusVlessLink {
             return parseTrojan(normalized)
         case "ss://":
             return parseShadowsocks(normalized)
+        case "hysteria2://", "hy2://":
+            return parseHysteria2(normalized, scheme: scheme)
         default:
             return parseServer(normalized)
         }
+    }
+
+    /// Whether a key this parser refused is one it refused for want of support, rather than one
+    /// that is damaged.
+    ///
+    /// Two cases: a transport this core removed, and a Hysteria 2 key obfuscated with something
+    /// other than the one mask this core implements. Read from the URI's own query and, for the
+    /// base64 shape of a VMess key, from the object it carries — which is where that shape puts
+    /// the transport name. Used only to pick the message, so a false negative costs nothing but a
+    /// less exact one.
+    static func namesAnUnsupportedFeature(_ uri: String) -> Bool {
+        guard uri.count <= 8192 else { return false }
+        if let mark = uri.firstIndex(of: "?") {
+            var tail = String(uri[uri.index(after: mark)...])
+            if let hash = tail.firstIndex(of: "#") {
+                tail = String(tail[..<hash])
+            }
+            let query = parseQuery(tail)
+            let network = (query["type"] ?? query["net"] ?? "").lowercased()
+            if removedNetworks.contains(network) {
+                return true
+            }
+            if let obfs = query["obfs"]?.lowercased(), !obfs.isEmpty, obfs != "salamander" {
+                return true
+            }
+        }
+        guard uri.lowercased().hasPrefix("vmess://") else { return false }
+        let body = String(uri.dropFirst("vmess://".count))
+        guard !body.contains("@"), let text = decodeBase64Text(body),
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let raw = object as? [String: Any] else {
+            return false
+        }
+        for (key, value) in raw where key.lowercased() == "net" {
+            return removedNetworks.contains((jsonString(value) ?? "").lowercased())
+        }
+        return false
     }
 
     /// One `vless://` URI, or nil when it is not one this client can carry.
@@ -642,6 +745,172 @@ public enum AorusVlessLink {
         )
     }
 
+    /// One `hysteria2://` (or `hy2://`) key.
+    ///
+    /// Hysteria 2 is QUIC rather than TCP, so none of the transport machinery above applies to it:
+    /// there is no `type=`, the security layer is always TLS, and the credential travels in an
+    /// HTTP/3 request header rather than in a protocol handshake. What it does have that nothing
+    /// else here does is Salamander packet obfuscation, certificate pinning and port hopping —
+    /// each of which decides whether the server is reachable at all on a given network, so each is
+    /// carried rather than dropped.
+    ///
+    /// Version 1 (`hysteria://`) is a different wire protocol and is refused by name elsewhere.
+    public static func parseHysteria2(_ uri: String, scheme: String) -> AorusVlessServer? {
+        guard uri.count <= 8192, uri.lowercased().hasPrefix(scheme) else { return nil }
+        var rest = String(uri.dropFirst(scheme.count))
+        guard !rest.isEmpty else { return nil }
+
+        var remark: String?
+        if let hash = rest.firstIndex(of: "#") {
+            let fragment = String(rest[rest.index(after: hash)...])
+            rest = String(rest[..<hash])
+            let cleaned = (fragment.removingPercentEncoding ?? fragment)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                remark = String(cleaned.prefix(64))
+            }
+        }
+        var query: [String: String] = [:]
+        if let mark = rest.firstIndex(of: "?") {
+            query = parseQuery(String(rest[rest.index(after: mark)...]))
+            rest = String(rest[..<mark])
+        }
+
+        // Last "@" for the same reason as everywhere else: an auth string may carry one, a
+        // hostname never does. Hysteria 2 allows the whole "user:password" pair here and passes
+        // it on verbatim, so it is not split.
+        guard let at = rest.lastIndex(of: "@") else { return nil }
+        let rawAuth = String(rest[..<at])
+        let auth = rawAuth.removingPercentEncoding ?? rawAuth
+        guard !auth.isEmpty, auth.count <= 256 else { return nil }
+
+        // The URI writes its authority as `host:port/`, and clients that build it through a URL
+        // type leave that slash — and sometimes a path — behind. The transport's own path is
+        // fixed, so nothing here addresses anything and it is dropped.
+        var authority = String(rest[rest.index(after: at)...])
+        if let slash = authority.firstIndex(of: "/") {
+            authority = String(authority[..<slash])
+        }
+        // The port is optional in this scheme and defaults to 443. Bracketed IPv6 without a port
+        // ends in "]", which is why the test is not simply "contains a colon".
+        if !authority.contains(":") || (authority.hasPrefix("[") && authority.hasSuffix("]")) {
+            authority += ":443"
+        }
+        guard let (address, port) = splitHostPort(authority) else { return nil }
+
+        // Salamander is the one obfuscation this core implements, as a UDP mask. Any other name
+        // is a transformation we cannot reproduce, and a client that cannot reproduce it sends
+        // packets the server drops — so the key is refused instead of imported as a dead card.
+        var obfsPassword: String?
+        if let obfs = query["obfs"]?.lowercased(), !obfs.isEmpty {
+            guard obfs == "salamander" else { return nil }
+            guard let password = query["obfs-password"] ?? query["obfspassword"],
+                  !password.isEmpty, password.count <= 256 else {
+                return nil
+            }
+            obfsPassword = password
+        }
+
+        // OpenSSL's colon-hex, which is the notation this scheme and the core agree on. Validated
+        // rather than passed through: a value the core cannot parse fails the whole configuration.
+        var pinnedCertSha256: String?
+        if let pin = query["pinsha256"], !pin.isEmpty {
+            guard let digest = certificateDigest(pin) else { return nil }
+            pinnedCertSha256 = digest
+        }
+
+        // A port range or list the UDP association rotates across. Same reasoning: the core parses
+        // this itself and refuses the configuration outright if it cannot.
+        var portHopping: String?
+        if let raw = query["mport"] ?? query["ports"], !raw.isEmpty {
+            let compact = raw.replacingOccurrences(of: " ", with: "")
+            // ASCII digits only: `isNumber` alone is true of Arabic-Indic and fullwidth digits,
+            // which the core's own port parser would then refuse — failing the configuration
+            // whole rather than this one key.
+            guard compact.count <= 128,
+                  compact.contains(where: { $0.isASCII && $0.isNumber }),
+                  compact.allSatisfy({ ($0.isASCII && $0.isNumber) || $0 == "-" || $0 == "," }) else {
+                return nil
+            }
+            portHopping = compact
+        }
+
+        let serverName = normalizedHostname(query["sni"] ?? query["peer"])
+        let allowInsecure = ["1", "true", "yes"].contains(
+            (query["insecure"] ?? query["allowinsecure"] ?? "").lowercased()
+        )
+
+        var canonicalFields: [String] = []
+        canonicalFields.append("hysteria2")
+        canonicalFields.append(address)
+        canonicalFields.append(String(port))
+        canonicalFields.append(auth)
+        canonicalFields.append(serverName ?? "")
+        canonicalFields.append(obfsPassword ?? "")
+        canonicalFields.append(pinnedCertSha256 ?? "")
+        canonicalFields.append(portHopping ?? "")
+        canonicalFields.append(allowInsecure ? "1" : "0")
+
+        return AorusVlessServer(
+            id: identityDigest(canonicalFields),
+            name: remark ?? "\(address):\(port)",
+            proto: "hysteria2",
+            address: address,
+            port: port,
+            credential: auth,
+            encryption: "",
+            flow: "",
+            // The core's own name for this transport, which is what `streamSettings.network` has
+            // to say for the hysteria outbound to accept the stream it is handed.
+            network: "hysteria",
+            security: "tls",
+            serverName: serverName,
+            fingerprint: nil,
+            publicKey: nil,
+            shortId: nil,
+            spiderX: nil,
+            // Hysteria 2 is HTTP/3 over QUIC. Xray fills an empty ALPN with "h2, http/1.1", which
+            // this server will not negotiate, so it is spelled out rather than left to the default.
+            alpn: ["h3"],
+            path: nil,
+            host: nil,
+            serviceName: nil,
+            headerType: nil,
+            mode: nil,
+            allowInsecure: allowInsecure,
+            obfsPassword: obfsPassword,
+            pinnedCertSha256: pinnedCertSha256,
+            portHopping: portHopping,
+            link: uri
+        )
+    }
+
+    /// A certificate digest in the notation this core reads — colons removed, lower case — or nil
+    /// when the value is not one.
+    ///
+    /// Checked rather than passed through in both directions. A digest the core cannot parse fails
+    /// the whole configuration, and Clash overloads the field it arrives in: on every other
+    /// protocol `fingerprint` names a uTLS ClientHello shape ("chrome"), and only on Hysteria 2
+    /// does it hold a certificate hash.
+    private static func certificateDigest(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let compact = value.replacingOccurrences(of: ":", with: "").lowercased()
+        // ASCII only, for the same reason the hopping range is: `isHexDigit` is true of fullwidth
+        // digits too, and the core decodes this with a hex decoder that is not.
+        guard compact.count == 64, compact.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        return compact
+    }
+
+    /// The short content digest that gives a server row its identity. Every field that changes the
+    /// wire goes in, so two credentials on one host stay two rows.
+    private static func identityDigest(_ fields: [String]) -> String {
+        let canonical = fields.joined(separator: "|")
+        return SHA256.hash(data: Data(canonical.utf8))
+            .prefix(10)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     /// The parts of a `scheme://userinfo@host:port?query#remark` key.
     private struct UriParts {
         let userInfo: String
@@ -752,15 +1021,17 @@ public enum AorusVlessLink {
         if network == "raw" || network.isEmpty {
             network = "tcp"
         }
-        if network == "h2" {
-            network = "http"
-        }
         // Xray renamed this transport from `splithttp` to `xhttp`, and a great many panels
         // still publish the old spelling. It is the same wire — the same settings block,
         // the same outbound — so a key that uses it was being refused over a name.
         if network == "splithttp" {
             network = "xhttp"
         }
+        // `h2` is NOT folded onto `http` any more. It used to be, and `http` used to be in the
+        // supported set, but this core removed that transport: it answers "the feature has been
+        // removed" and the whole configuration fails to load, so the core never starts. Such a
+        // key is refused now, which at least says so, instead of importing a card that cannot
+        // connect and reporting it as the server's fault.
         guard supportedNetworks.contains(network) else { return nil }
 
         var security = (query["security"] ?? "none").lowercased()
@@ -842,14 +1113,9 @@ public enum AorusVlessLink {
         canonicalFields.append((query["headertype"] ?? "").lowercased())
         canonicalFields.append((query["mode"] ?? "").lowercased())
         canonicalFields.append(allowInsecure ? "1" : "0")
-        let canonical = canonicalFields.joined(separator: "|")
-        let digest = SHA256.hash(data: Data(canonical.utf8))
-            .prefix(10)
-            .map { String(format: "%02x", $0) }
-            .joined()
 
         return AorusVlessServer(
-            id: digest,
+            id: identityDigest(canonicalFields),
             name: remark ?? "\(address):\(port)",
             proto: proto,
             address: address,
@@ -1009,6 +1275,37 @@ public enum AorusVlessLink {
             }
             guard let method = jsonString(server["method"])?.lowercased() else { return nil }
             return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        case "hysteria":
+            // The address is the outbound's own; the credential belongs to the transport. Version
+            // 1 is a different wire protocol and this outbound refuses it, so it is refused here.
+            guard jsonString(settings["version"]) == "2",
+                  let host = jsonString(settings["address"]),
+                  let port = jsonString(settings["port"]),
+                  let hysteria = stream["hysteriaSettings"] as? [String: Any],
+                  let auth = jsonString(hysteria["auth"]) else {
+                return nil
+            }
+            let tls = stream["tlsSettings"] as? [String: Any]
+            var obfsPassword: String?
+            if let masks = (stream["finalmask"] as? [String: Any])?["udp"] as? [[String: Any]] {
+                for mask in masks where jsonString(mask["type"])?.lowercased() == "salamander" {
+                    obfsPassword = jsonString((mask["settings"] as? [String: Any])?["password"])
+                }
+            }
+            let hop = ((stream["finalmask"] as? [String: Any])?["quicParams"] as? [String: Any])
+                .flatMap { $0["udpHop"] as? [String: Any] }
+                .flatMap { jsonString($0["ports"]) }
+            return buildHysteria2Uri(
+                auth: auth,
+                host: host,
+                port: port,
+                sni: jsonString(tls?["serverName"]),
+                insecure: (tls?["allowInsecure"] as? Bool) ?? false,
+                obfsPassword: obfsPassword,
+                pinnedCertSha256: jsonString(tls?["pinnedPeerCertSha256"]),
+                portHopping: hop,
+                remark: remark
+            )
         default:
             return nil
         }
@@ -1023,9 +1320,6 @@ public enum AorusVlessLink {
         // under the name below.
         if network == "splithttp" {
             network = "xhttp"
-        }
-        if network == "h2" {
-            network = "http"
         }
         query["type"] = network
         query["security"] = (jsonString(stream["security"]) ?? "none").lowercased()
@@ -1104,8 +1398,11 @@ public enum AorusVlessLink {
         proto: String,
         name: String?
     ) -> String? {
-        guard let host = jsonString(fields["server"]),
-              let port = jsonString(fields["server_port"]) else {
+        guard let host = jsonString(fields["server"]) else { return nil }
+        // A Hysteria 2 entry that hops ports writes `server_ports` and may leave `server_port`
+        // out entirely. The first port of the range is as good a one to open with as any, and
+        // no other protocol here has that key, so nothing else changes.
+        guard let port = jsonString(fields["server_port"]) ?? singboxFirstHopPort(fields) else {
             return nil
         }
         let remark = jsonString(fields["tag"]) ?? name
@@ -1130,9 +1427,62 @@ public enum AorusVlessLink {
                 return nil
             }
             return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        case "hysteria2":
+            guard let password = jsonString(fields["password"]) else { return nil }
+            let tls = fields["tls"] as? [String: Any]
+            // Salamander is the one mask this core implements. An entry obfuscated with anything
+            // else, or one that names Salamander without its password, is refused rather than
+            // imported without the mask — a client that does not obfuscate sends packets such a
+            // server drops, so it would import as a card that cannot connect.
+            var obfsPassword: String?
+            if let obfs = fields["obfs"] as? [String: Any] {
+                guard (jsonString(obfs["type"]) ?? "salamander").lowercased() == "salamander",
+                      let password = jsonString(obfs["password"]) else {
+                    return nil
+                }
+                obfsPassword = password
+            } else if let named = jsonString(fields["obfs"]) {
+                guard named.lowercased() == "salamander",
+                      let password = jsonString(fields["obfs_password"]) ?? jsonString(fields["obfs-password"]) else {
+                    return nil
+                }
+                obfsPassword = password
+            }
+            // sing-box writes a hopping range as a list of "2000:3000" entries; the core this
+            // build dials with spells the same range with a dash.
+            var hopping: String?
+            if let ports = fields["server_ports"] as? [Any] {
+                let ranges = ports.compactMap { jsonString($0)?.replacingOccurrences(of: ":", with: "-") }
+                hopping = ranges.isEmpty ? nil : ranges.joined(separator: ",")
+            }
+            return buildHysteria2Uri(
+                auth: password,
+                host: host,
+                port: port,
+                sni: jsonString(tls?["server_name"]),
+                insecure: (tls?["insecure"] as? Bool) ?? false,
+                obfsPassword: obfsPassword,
+                pinnedCertSha256: nil,
+                portHopping: hopping,
+                remark: remark
+            )
         default:
             return nil
         }
+    }
+
+    /// The first port of a sing-box `server_ports` range ("2000:3000" → "2000"), or nil when the
+    /// entry names no range at all.
+    private static func singboxFirstHopPort(_ fields: [String: Any]) -> String? {
+        guard let ports = fields["server_ports"] as? [Any] else { return nil }
+        for entry in ports {
+            guard let text = jsonString(entry) else { continue }
+            let first = text.split(whereSeparator: { $0 == ":" || $0 == "-" }).first.map(String.init) ?? text
+            if let number = Int(first), (1 ... 65_535).contains(number) {
+                return String(number)
+            }
+        }
+        return nil
     }
 
     private static func singboxStreamQuery(_ fields: [String: Any]) -> [String: String] {
@@ -1363,10 +1713,9 @@ public enum AorusVlessLink {
             return nil
         }
         let remark = block["name"]
-        var network = (block["network"] ?? "tcp").lowercased()
-        if network == "h2" {
-            network = "http"
-        }
+        // `h2` is no longer folded onto `http`: this core carries neither, so the name is passed
+        // through as written and refused for what it is.
+        let network = (block["network"] ?? "tcp").lowercased()
         var query: [String: String] = ["type": network]
         // Clash spells trojan's TLS nowhere because trojan is always over TLS.
         var security = (block["tls"] == "true" || proto == "trojan") ? "tls" : "none"
@@ -1387,11 +1736,6 @@ public enum AorusVlessLink {
             if let value = block["\(prefix).headers.host"] ?? block["\(prefix).host"] { query["host"] = value }
         case "grpc":
             if let value = block["grpc-opts.grpc-service-name"] { query["serviceName"] = value }
-        case "http":
-            if let value = block["h2-opts.path"] { query["path"] = value }
-            if let value = block["h2-opts.host"] {
-                query["host"] = value.split(separator: ",").first.map(String.init) ?? value
-            }
         default:
             break
         }
@@ -1410,6 +1754,32 @@ public enum AorusVlessLink {
         case "ss", "shadowsocks":
             guard let password = block["password"], let method = block["cipher"]?.lowercased() else { return nil }
             return buildShadowsocksUri(method: method, password: password, host: host, port: port, remark: remark)
+        case "hysteria2", "hy2":
+            guard let password = block["password"] ?? block["auth"] ?? block["auth-str"] else { return nil }
+            var obfsPassword: String?
+            if let obfs = block["obfs"]?.lowercased(), !obfs.isEmpty {
+                // Same rule as everywhere else: the one mask this core has, with its password, or
+                // the entry is refused rather than imported unmasked and unable to connect.
+                guard obfs == "salamander",
+                      let mask = block["obfs-password"], !mask.isEmpty else {
+                    return nil
+                }
+                obfsPassword = mask
+            }
+            // On a Hysteria 2 entry Clash's `fingerprint` is a certificate digest — the value the
+            // link scheme calls `pinSHA256` — while on every other protocol the same key names a
+            // uTLS ClientHello shape. It is checked before it is believed.
+            return buildHysteria2Uri(
+                auth: password,
+                host: host,
+                port: port,
+                sni: block["sni"] ?? block["servername"],
+                insecure: block["skip-cert-verify"] == "true",
+                obfsPassword: obfsPassword,
+                pinnedCertSha256: certificateDigest(block["fingerprint"]),
+                portHopping: block["ports"],
+                remark: remark
+            )
         default:
             return nil
         }
@@ -1468,6 +1838,49 @@ public enum AorusVlessLink {
         return text
     }
 
+    /// The `hysteria2://` link one configuration entry describes.
+    ///
+    /// Written out as a link, like every other protocol here, so the document readers and the
+    /// clipboard share one validation path — and so the row keeps a link the user can copy into
+    /// another client.
+    private static func buildHysteria2Uri(
+        auth: String,
+        host: String,
+        port: String,
+        sni: String?,
+        insecure: Bool,
+        obfsPassword: String?,
+        pinnedCertSha256: String?,
+        portHopping: String?,
+        remark: String?
+    ) -> String? {
+        var query: [String: String] = [:]
+        if let sni, !sni.isEmpty {
+            query["sni"] = sni
+        }
+        if insecure {
+            query["insecure"] = "1"
+        }
+        if let obfsPassword, !obfsPassword.isEmpty {
+            query["obfs"] = "salamander"
+            query["obfs-password"] = obfsPassword
+        }
+        if let pinnedCertSha256, !pinnedCertSha256.isEmpty {
+            query["pinSHA256"] = pinnedCertSha256
+        }
+        if let portHopping, !portHopping.isEmpty {
+            query["mport"] = portHopping
+        }
+        return buildUri(
+            scheme: "hysteria2",
+            userInfo: auth,
+            host: host,
+            port: port,
+            query: query,
+            remark: remark
+        )
+    }
+
     /// An IPv6 literal has to be bracketed before a port can be appended to it.
     private static func bracketedHost(_ host: String) -> String {
         guard host.contains(":"), !host.hasPrefix("[") else { return host }
@@ -1486,6 +1899,20 @@ public enum AorusVlessLink {
         udpEnabled: Bool,
         muxEnabled: Bool
     ) -> String? {
+        // Refused here rather than handed to the core. A transport this build no longer imports
+        // can still be sitting in a store written by an older one, and a `streamSettings` block
+        // the core cannot build fails the WHOLE configuration — so the failure would arrive as
+        // "the core rejected the config" with nothing pointing at which server did it.
+        guard !removedNetworks.contains(server.network) else { return nil }
+
+        if server.proto == "hysteria2" {
+            return hysteria2Configuration(
+                server: server,
+                localPort: localPort,
+                udpEnabled: udpEnabled
+            )
+        }
+
         var settings: [String: Any] = [:]
         switch server.proto {
         case "vmess":
@@ -1595,12 +2022,6 @@ public enum AorusVlessLink {
                 "serviceName": server.serviceName ?? "",
                 "multiMode": server.mode == "multi"
             ]
-        case "http":
-            var http: [String: Any] = ["path": server.path ?? "/"]
-            if let host = server.host {
-                http["host"] = [host]
-            }
-            streamSettings["httpSettings"] = http
         default:
             if server.headerType == "http" {
                 var request: [String: Any] = ["path": [server.path ?? "/"]]
@@ -1622,6 +2043,80 @@ public enum AorusVlessLink {
         let mux = muxEnabled && server.flow.isEmpty
         outbound["mux"] = ["enabled": mux, "concurrency": mux ? 8 : -1]
 
+        return wrapConfiguration(outbound: outbound, localPort: localPort, udpEnabled: udpEnabled)
+    }
+
+    /// The Xray configuration for one Hysteria 2 server.
+    ///
+    /// Built apart from the one above because almost nothing is shared: the outbound carries the
+    /// address itself rather than a `vnext`/`servers` list, the credential travels in the
+    /// transport rather than in the outbound, and there is no mux — QUIC already multiplexes, and
+    /// Xray's own mux over it would be a second layer doing the same work.
+    ///
+    /// Every key below is what this core reads, checked against its configuration structs:
+    /// `HysteriaClientConfig{version,address,port}` for the outbound, `HysteriaConfig{version,auth}`
+    /// under `hysteriaSettings`, `Salamander{password}` as a UDP mask under `finalmask`, and
+    /// `UdpHop{ports}` under `finalmask.quicParams`.
+    private static func hysteria2Configuration(
+        server: AorusVlessServer,
+        localPort: Int,
+        udpEnabled: Bool
+    ) -> String? {
+        var tls: [String: Any] = [
+            "serverName": server.serverName ?? server.address,
+            "allowInsecure": server.allowInsecure,
+            // The transport speaks HTTP/3. An empty ALPN is filled in by the core with
+            // "h2, http/1.1", which this server will not negotiate.
+            "alpn": server.alpn.isEmpty ? ["h3"] : server.alpn
+        ]
+        if let pinned = server.pinnedCertSha256, !pinned.isEmpty {
+            tls["pinnedPeerCertSha256"] = pinned
+        }
+
+        // Spelled out with their types rather than left to inference: every one of these is a
+        // dictionary of mixed value types inside an `Any`, which is exactly the shape Swift
+        // declines to infer on its own.
+        let hysteriaSettings: [String: Any] = ["version": 2, "auth": server.credential]
+        var streamSettings: [String: Any] = [
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": tls,
+            "hysteriaSettings": hysteriaSettings
+        ]
+
+        var finalMask: [String: Any] = [:]
+        if let obfs = server.obfsPassword, !obfs.isEmpty {
+            let mask: [String: Any] = ["type": "salamander", "settings": ["password": obfs]]
+            finalMask["udp"] = [mask]
+        }
+        if let hopping = server.portHopping, !hopping.isEmpty {
+            let quicParams: [String: Any] = ["udpHop": ["ports": hopping]]
+            finalMask["quicParams"] = quicParams
+        }
+        if !finalMask.isEmpty {
+            streamSettings["finalmask"] = finalMask
+        }
+
+        let outboundSettings: [String: Any] = [
+            "version": 2,
+            "address": server.address,
+            "port": server.port
+        ]
+        let outbound: [String: Any] = [
+            "tag": "aorus-user-outbound",
+            "protocol": "hysteria",
+            "settings": outboundSettings,
+            "streamSettings": streamSettings
+        ]
+        return wrapConfiguration(outbound: outbound, localPort: localPort, udpEnabled: udpEnabled)
+    }
+
+    /// One outbound and the loopback SOCKS inbound that feeds it, serialised.
+    private static func wrapConfiguration(
+        outbound: [String: Any],
+        localPort: Int,
+        udpEnabled: Bool
+    ) -> String? {
         let config: [String: Any] = [
             "log": ["loglevel": "warning"],
             "inbounds": [[
