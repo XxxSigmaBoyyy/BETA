@@ -1402,6 +1402,15 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     /// A turn whose socket died while the app was away, waiting to be re-attached.
     private var pendingResumeRecovery = false
     private var resumeAttempts = 0
+    /// Whether the app is in the foreground, tracked rather than asked.
+    ///
+    /// Asking `UIApplication.shared.applicationState` at the moment a socket dies reads the
+    /// state of an app that is in the middle of leaving: the notification that the user
+    /// switched away has not arrived yet, so the answer is still `.active` and the recovery
+    /// starts spending its three attempts on a connection that cannot exist. All three were
+    /// gone within seven seconds, the turn was then settled as failed, and coming back showed
+    /// "AorusAI временно недоступен" for a turn the server was very probably still running.
+    private var isForeground = UIApplication.shared.applicationState == .active
     private var previewURL: URL?
     /// Artifacts currently being fetched, by `artifactId`. Owned by the controller, not
     /// by the card, because every reload builds new cards.
@@ -1645,6 +1654,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        // Both edges of the transition, because the moment a socket dies is usually before
+        // either of the two above: `willResignActive` is the first notice that the user is
+        // leaving, and `didBecomeActive` is the first moment a new socket can actually be
+        // opened. Recovering on `willEnterForeground` alone meant the first try was made
+        // while the app was still `.inactive`, and anything that went wrong with it was
+        // deferred to a foreground transition that had already happened.
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResignActive), name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
         if let initialPrompt, !initialPrompt.isEmpty { composer.text = initialPrompt }
         scheduleQuotaResetIfNeeded()
         updateComposer()
@@ -1661,8 +1678,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         AorusAIActiveTurnCenter.shared.release(key: activeTurnKey, controller: self)
         // A turn the store still calls streaming is one the app was closed in the middle
         // of. Ask the server what became of it instead of declaring a failure the client
-        // invented.
+        // invented — and the same for one a dead socket already made this client call
+        // failed, which is a guess the server can still correct.
         resumeTurnIfNeeded()
+        reopenTurnLostToTheSocket()
         // A question that arrived while the screen was closed is asked now, not lost: the
         // turn was waiting for it and would otherwise never be answered.
         if let prompt = deferredUserPrompt {
@@ -1854,6 +1873,25 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // extra runtime instead, so an answer that is a second away from finishing does
         // finish, and only an expiring background task ends it — with its text kept.
         beginBackgroundGraceIfNeeded()
+    }
+
+    @objc private func appWillResignActive() {
+        isForeground = false
+    }
+
+    /// The app is genuinely back on screen. This is where a turn is re-attached.
+    ///
+    /// Everything the recovery gave up on while the app was away is forgiven here: the
+    /// allowance is handed back in full, because none of it was ever spent on a connection
+    /// that had a chance. Then the server is asked what became of the turn — including for a
+    /// turn this client already gave up on, which is the case that made returning to the app
+    /// show an error for work the server had very likely finished.
+    @objc private func appDidBecomeActive() {
+        isForeground = true
+        pendingResumeRecovery = false
+        resumeAttempts = 0
+        resumeTurnIfNeeded()
+        reopenTurnLostToTheSocket()
     }
 
     @objc private func appWillEnterForeground() {
@@ -2432,7 +2470,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             finishStreaming(error: error, preserveText: true)
             return
         }
-        guard UIApplication.shared.applicationState == .active else {
+        guard isForeground else {
             pendingResumeRecovery = true
             return
         }
@@ -2445,8 +2483,60 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // momentary drop has time to clear before the next try.
         let delay = 1.2 * Double(resumeAttempts)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.resumeTurnIfNeeded()
+            guard let self else { return }
+            // Checked again here, not only when the failure arrived. The wait is over a
+            // second long and the user may have left inside it — and a try made with the app
+            // gone cannot succeed, so it would only spend an attempt that the return home
+            // needs.
+            guard self.isForeground else {
+                self.pendingResumeRecovery = true
+                return
+            }
+            self.resumeTurnIfNeeded()
         }
+    }
+
+    /// The error codes that mean "this socket went away", as opposed to "the server said no".
+    ///
+    /// Only a turn that ended for one of these is worth asking the server about again. A
+    /// refusal — authorization, quota, a rejected turn — is the server's answer and asking
+    /// twice would not change it.
+    private static let socketErrorCodes: Set<String> = [
+        "offline", "timeout", "server_unavailable", "malformed_response"
+    ]
+
+    /// How long after a turn was lost it is still worth asking the server about.
+    ///
+    /// The server does not keep a journal for ever, and a message that flipped from an error
+    /// back to "working" an hour later would be a surprise rather than a recovery.
+    private static let reopenWindow: TimeInterval = 15.0 * 60.0
+
+    /// Ask again about a turn this client gave up on because the connection died.
+    ///
+    /// This is the case the whole recovery existed for and still did not cover. Once the
+    /// attempts were spent the turn was marked failed, and nothing ever asked again — so
+    /// leaving the app for a moment and coming back showed "AorusAI временно недоступен"
+    /// for a turn that was very probably still running, or had already finished, on the
+    /// server. The message is put back into its working state and the server is asked; if
+    /// the server genuinely does not have it, `resumeTurnIfNeeded` settles it again, and
+    /// this time the failure is the server's answer rather than this client's guess.
+    ///
+    /// Only ever for a turn the SOCKET ended, only for the newest message, only inside the
+    /// window the server keeps a journal for, and never while something is already running.
+    private func reopenTurnLostToTheSocket() {
+        guard streamHandle == nil, !isPreparingRequest, !isDiscarded else { return }
+        guard let index = conversation.messages.lastIndex(where: { $0.role == .assistant }) else { return }
+        let message = conversation.messages[index]
+        guard message.state == .failed,
+              let code = message.errorCode, Self.socketErrorCodes.contains(code),
+              Date().timeIntervalSince(message.createdAt) < Self.reopenWindow else {
+            return
+        }
+        conversation.messages[index].state = .streaming
+        conversation.messages[index].statusLabel = nil
+        conversation.messages[index].errorCode = nil
+        reloadMessage(id: message.id)
+        resumeTurnIfNeeded()
     }
 
     /// How many times a dropped turn is re-attached before the client accepts that it
@@ -5910,17 +6000,36 @@ private final class AorusAICodeCard: UIView {
 /// Vertical scrolling deliberately stays with the conversation: nested vertical scroll
 /// views make long answers feel stuck and fight the table view's pan gesture.
 private final class AorusAITableCard: UIView {
-    private final class CellLabel: UILabel {
+    /// A cell is a text view, not a label, for one reason: a label's text cannot be
+    /// selected. Holding a figure in a table used to copy the whole cell in one go, which
+    /// is not what anyone means by "I want this number" — they want to drag over the part
+    /// they need, the way they can in every other piece of text on the screen.
+    private final class CellTextView: UITextView {
         static let inset = UIEdgeInsets(top: 9.0, left: 10.0, bottom: 9.0, right: 10.0)
 
-        override func drawText(in rect: CGRect) {
-            super.drawText(in: rect.inset(by: Self.inset))
+        init() {
+            super.init(frame: .zero, textContainer: nil)
+            isEditable = false
+            isSelectable = true
+            isScrollEnabled = false
+            textContainerInset = Self.inset
+            textContainer.lineFragmentPadding = 0
+            textContainer.lineBreakMode = .byWordWrapping
+            adjustsFontForContentSizeCategory = false
+            // The view supplies the cell's own surface and hairline, so it must not also
+            // draw the system's rounded text background.
+            layer.cornerRadius = 0
+            clipsToBounds = true
         }
+        required init?(coder: NSCoder) { fatalError() }
     }
 
     private let scrollView = UIScrollView()
     private let canvas = UIView()
-    private var labels: [[CellLabel]] = []
+    private var cells: [[CellTextView]] = []
+    /// What each column needs for its own content. `columnWidths` is this stretched to the
+    /// card, and the two differ whenever the table is narrower than the bubble it is in.
+    private var naturalColumnWidths: [CGFloat] = []
     private var columnWidths: [CGFloat] = []
     private var rowHeights: [CGFloat] = []
     private var contentHeight: CGFloat = 0.0
@@ -5936,56 +6045,13 @@ private final class AorusAITableCard: UIView {
         addSubview(scrollView)
         scrollView.addSubview(canvas)
         isAccessibilityElement = false
-        // A table's cells are labels, and a label cannot be selected — so holding a
-        // number in a table used to do nothing at all and there was no way to get it
-        // out. A long press now offers the cell under the finger and the whole table.
-        let press = UILongPressGestureRecognizer(target: self, action: #selector(aorusHandleLongPress(_:)))
-        press.minimumPressDuration = 0.35
-        canvas.addGestureRecognizer(press)
         canvas.isUserInteractionEnabled = true
     }
 
-    /// The text of the cell under `point`, if the finger is on one.
-    private func aorusCellText(at point: CGPoint) -> String? {
-        for row in labels {
-            for label in row where label.frame.contains(point) {
-                let value = (label.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                return value.isEmpty ? nil : value
-            }
-        }
-        return nil
-    }
-
-    /// The whole table as tab-separated rows, which is what a spreadsheet and a chat
-    /// both paste sensibly.
-    private func aorusTableText() -> String {
-        return labels
-            .map { row in row.map { ($0.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: "\t") }
-            .joined(separator: "\n")
-    }
-
-    /// Raised after a long press put something on the pasteboard, so the chat can show
-    /// the same confirmation it shows for the answer's own Copy button.
+    /// Raised after something in the table was copied, so the chat can show the same
+    /// confirmation it shows for the answer's own Copy button. Selection puts the text on
+    /// the pasteboard through the system menu, so nothing here has to.
     var onCopied: (() -> Void)?
-
-    /// Long press copies: the cell under the finger, or the whole table when the press
-    /// lands between cells.
-    ///
-    /// Deliberately one action and no menu. A menu here means `UIEditMenuInteraction`,
-    /// which needs a delegate to carry custom actions and exists only from iOS 16 — two
-    /// version-dependent moving parts for a choice the press position already makes.
-    /// The whole table goes out as tab-separated rows, which both a spreadsheet and a
-    /// chat paste sensibly.
-    @objc private func aorusHandleLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        guard recognizer.state == .began else { return }
-        let value = aorusCellText(at: recognizer.location(in: canvas)) ?? aorusTableText()
-        guard !value.isEmpty else { return }
-        UIPasteboard.general.string = value
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        onCopied?()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
 
     override var intrinsicContentSize: CGSize {
         return CGSize(width: UIView.noIntrinsicMetric, height: max(1.0, contentHeight))
@@ -6000,7 +6066,8 @@ private final class AorusAITableCard: UIView {
         let rows = [table.headers] + table.rows
         guard !rows.isEmpty, table.columnCount > 0 else {
             canvas.subviews.forEach { $0.removeFromSuperview() }
-            labels.removeAll(keepingCapacity: true)
+            cells.removeAll(keepingCapacity: true)
+            naturalColumnWidths = []
             columnWidths = []
             rowHeights = []
             contentHeight = 0.0
@@ -6010,16 +6077,17 @@ private final class AorusAITableCard: UIView {
 
         let bodyFont = UIFont.systemFont(ofSize: 13.5)
         let headerFont = UIFont.systemFont(ofSize: 13.5, weight: .semibold)
-        columnWidths = (0 ..< table.columnCount).map { column in
+        naturalColumnWidths = (0 ..< table.columnCount).map { column in
             var width: CGFloat = 84.0
             for (rowIndex, row) in rows.enumerated() {
                 let value = column < row.count ? AorusAIMarkdown.displayTypography(row[column]) : ""
                 let font = rowIndex == 0 ? headerFont : bodyFont
-                let measured = (value as NSString).size(withAttributes: [.font: font]).width + CellLabel.inset.left + CellLabel.inset.right
+                let measured = (value as NSString).size(withAttributes: [.font: font]).width + CellTextView.inset.left + CellTextView.inset.right
                 width = max(width, min(220.0, ceil(measured)))
             }
             return width
         }
+        columnWidths = naturalColumnWidths
 
         var renderedRows: [[NSAttributedString]] = []
         rowHeights = []
@@ -6033,13 +6101,13 @@ private final class AorusAITableCard: UIView {
                 if rowIndex == 0 {
                     mutable.addAttribute(.font, value: headerFont, range: NSRange(location: 0, length: mutable.length))
                 }
-                let available = max(1.0, columnWidths[column] - CellLabel.inset.left - CellLabel.inset.right)
+                let available = max(1.0, naturalColumnWidths[column] - CellTextView.inset.left - CellTextView.inset.right)
                 let bounds = mutable.boundingRect(
                     with: CGSize(width: available, height: 500.0),
                     options: [.usesLineFragmentOrigin, .usesFontLeading],
                     context: nil
                 )
-                height = max(height, min(104.0, ceil(bounds.height) + CellLabel.inset.top + CellLabel.inset.bottom))
+                height = max(height, min(104.0, ceil(bounds.height) + CellTextView.inset.top + CellTextView.inset.bottom))
                 rendered.append(mutable)
             }
             renderedRows.append(rendered)
@@ -6049,45 +6117,52 @@ private final class AorusAITableCard: UIView {
         // Streaming tables grow one row (and often one cell) at a time. Keep the existing
         // label grid whenever its shape is still a prefix of the new table; recreating a
         // full 7 x 118 periodic table on every response.delta is needless main-thread work.
-        let reusableGrid = labels.isEmpty || (
-            labels.count <= rows.count && labels.allSatisfy { $0.count == table.columnCount }
+        let reusableGrid = cells.isEmpty || (
+            cells.count <= rows.count && cells.allSatisfy { $0.count == table.columnCount }
         )
         if !reusableGrid {
             canvas.subviews.forEach { $0.removeFromSuperview() }
-            labels.removeAll(keepingCapacity: true)
+            cells.removeAll(keepingCapacity: true)
         }
         for rowIndex in rows.indices {
-            var rowLabels: [CellLabel] = rowIndex < labels.count ? labels[rowIndex] : []
+            var rowCells: [CellTextView] = rowIndex < cells.count ? cells[rowIndex] : []
             for column in 0 ..< table.columnCount {
-                let label: CellLabel
-                if column < rowLabels.count {
-                    label = rowLabels[column]
+                let cell: CellTextView
+                if column < rowCells.count {
+                    cell = rowCells[column]
                 } else {
-                    label = CellLabel()
-                    canvas.addSubview(label)
-                    rowLabels.append(label)
+                    cell = CellTextView()
+                    canvas.addSubview(cell)
+                    rowCells.append(cell)
                 }
-                label.numberOfLines = 0
-                label.lineBreakMode = .byWordWrapping
-                label.attributedText = renderedRows[rowIndex][column]
-                label.textAlignment = table.alignments[column].textAlignment
-                label.backgroundColor = rowIndex == 0
-                    ? palette.accentSoft
-                    : (rowIndex.isMultiple(of: 2) ? palette.fill : .clear)
-                label.layer.borderWidth = UIScreenPixel
-                label.layer.borderColor = palette.separator.cgColor
-                label.isAccessibilityElement = true
+                cell.attributedText = renderedRows[rowIndex][column]
+                cell.textAlignment = table.alignments[column].textAlignment
+                cell.tintColor = palette.accent
+                // The head of the table is NOT the accent colour. The accent is this app's
+                // one loud colour and it is spent on things the reader is meant to act on;
+                // a column heading is not one, and a violet bar across every answer that
+                // happens to contain a table reads as decoration. It is the same neutral
+                // surface every other control in the app sits on, one step up from the
+                // body so the heading still separates.
+                //
+                // And the body rows are all the same. The grey/black banding underneath
+                // was a second pattern fighting the hairline grid that already separates
+                // the rows, and it is the grid that does that job properly.
+                cell.backgroundColor = rowIndex == 0 ? palette.controlFill : .clear
+                cell.layer.borderWidth = UIScreenPixel
+                cell.layer.borderColor = palette.separator.cgColor
+                cell.isAccessibilityElement = true
                 if rowIndex == 0 {
-                    label.accessibilityTraits = .header
-                    label.accessibilityLabel = rows[rowIndex][column]
+                    cell.accessibilityTraits = .header
+                    cell.accessibilityLabel = rows[rowIndex][column]
                 } else {
                     let header = table.headers[column]
-                    let cell = rows[rowIndex][column]
-                    label.accessibilityLabel = header.isEmpty ? cell : header + ": " + cell
+                    let value = rows[rowIndex][column]
+                    cell.accessibilityLabel = header.isEmpty ? value : header + ": " + value
                 }
             }
-            if rowIndex >= labels.count {
-                labels.append(rowLabels)
+            if rowIndex >= cells.count {
+                cells.append(rowCells)
             }
         }
 
@@ -6099,18 +6174,47 @@ private final class AorusAITableCard: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         scrollView.frame = bounds
+        columnWidths = Self.stretched(naturalColumnWidths, toFill: bounds.width)
         let width = columnWidths.reduce(0.0, +)
         canvas.frame = CGRect(x: 0.0, y: 0.0, width: width, height: contentHeight)
         scrollView.contentSize = canvas.bounds.size
         var y: CGFloat = 0.0
-        for rowIndex in labels.indices {
+        for rowIndex in cells.indices {
             var x: CGFloat = 0.0
-            for column in labels[rowIndex].indices {
-                labels[rowIndex][column].frame = CGRect(x: x, y: y, width: columnWidths[column], height: rowHeights[rowIndex])
+            for column in cells[rowIndex].indices where column < columnWidths.count {
+                cells[rowIndex][column].frame = CGRect(x: x, y: y, width: columnWidths[column], height: rowHeights[rowIndex])
                 x += columnWidths[column]
             }
             y += rowHeights[rowIndex]
         }
+    }
+
+    /// The column widths a table of this content should be drawn at inside a card `width`
+    /// points wide.
+    ///
+    /// A two-column table needs perhaps two hundred points and the bubble it sits in is
+    /// three hundred and forty. The columns were drawn at what they needed and the rest of
+    /// the card stayed bare — a block of the table's own surface to the right of the last
+    /// column, which is the "artefact of empty space" it looks like, because that is
+    /// exactly what it was. The slack is shared out across the columns instead, in
+    /// proportion to what each one asked for, so the table fills its card.
+    ///
+    /// Only ever wider. A table that genuinely needs more room than the card keeps its
+    /// natural widths and scrolls sideways, as it did — and widening a column can only
+    /// ever reduce the height its text needs, so the rows measured earlier stay tall
+    /// enough and nothing is clipped.
+    static func stretched(_ natural: [CGFloat], toFill width: CGFloat) -> [CGFloat] {
+        let total = natural.reduce(0.0, +)
+        guard !natural.isEmpty, width > 0.0, total > 0.0, total < width else { return natural }
+        var result = natural.map { $0 + (width - total) * ($0 / total) }
+        // Rounding each column independently loses up to a point per column, which would
+        // leave a hairline of bare card at the right edge — the same artefact, smaller.
+        // The last column takes whatever the others left.
+        for index in result.indices.dropLast() {
+            result[index] = (result[index] * 2.0).rounded() / 2.0
+        }
+        result[result.count - 1] = width - result.dropLast().reduce(0.0, +)
+        return result
     }
 }
 
@@ -6469,11 +6573,21 @@ private enum AorusAIMarkdown {
         for delimiter in ["\\(", "\\)", "\\[", "\\]"] {
             value = value.replacingOccurrences(of: delimiter, with: "")
         }
+        // Display math is delimited by a PAIR of dollars and has to be unwrapped before the
+        // single-dollar rule, which would otherwise take the first two and leave the rest.
+        value = replacing(pattern: #"\$\$([\s\S]+?)\$\$"#, in: value) { $0[0] }
         value = replacing(pattern: #"(?<!\\)\$([^$\n]+)\$"#, in: value) { $0[0] }
         value = replacing(pattern: #"\\text\{([^{}]*)\}"#, in: value) { $0[0] }
-        value = replacing(pattern: #"\\sqrt\{([^{}]+)\}"#, in: value) { "√" + $0[0] }
+        value = replacing(pattern: #"\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}"#, in: value) { captures in
+            // An nth root: the degree sits on the radical sign.
+            return (canSuperscript(captures[0]) ? superscript(captures[0]) : captures[0]) + "√" + grouped(captures[1])
+        }
+        value = replacing(pattern: #"\\sqrt\{([^{}]+)\}"#, in: value) { "√" + grouped($0[0]) }
+        value = replacing(pattern: #"\\(?:d|t)frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
+            return fraction(numerator: captures[0], denominator: captures[1])
+        }
         value = replacing(pattern: #"\\frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
-            return captures[0] + "⁄" + captures[1]
+            return fraction(numerator: captures[0], denominator: captures[1])
         }
 
         let commands: [(String, String)] = [
@@ -6492,12 +6606,63 @@ private enum AorusAIMarkdown {
             value = value.replacingOccurrences(of: command, with: replacement)
         }
 
+        // An exponent the author grouped, either way of grouping it.
         value = replacing(pattern: #"\^\{([^{}]+)\}"#, in: value) { superscript($0[0]) }
-        value = replacing(pattern: #"\^([+\-−=()0-9]+)"#, in: value) { superscript($0[0]) }
+        value = replacing(pattern: #"\^\(([^()]+)\)"#, in: value) { superscript($0[0]) }
+        // And an ungrouped one, which is ONE term and nothing more.
+        //
+        // The old rule took every following `+`, `-`, `=` and bracket as well, so `x^2+1` —
+        // which is x squared plus one — came out as `x²⁺¹`, an exponent of three. Bracket a
+        // sum around it and it got worse: `(x^2+1)` ended `⁾`, the closing bracket pulled up
+        // into the exponent and left unmatched. A bare exponent is a signed number or a
+        // single letter; anything longer is grouped by whoever wrote it.
+        value = replacing(pattern: #"\^([+\-−]?[0-9]+|[A-Za-z])"#, in: value) { captures in
+            return canSuperscript(captures[0]) ? superscript(captures[0]) : "^" + captures[0]
+        }
         value = replacing(pattern: #"_\{([^{}]+)\}"#, in: value) { subscriptText($0[0]) }
-        value = replacing(pattern: #"_([+\-−=()0-9]+)"#, in: value) { subscriptText($0[0]) }
+        value = replacing(pattern: #"_\(([^()]+)\)"#, in: value) { subscriptText($0[0]) }
+        value = replacing(pattern: #"_([+\-−]?[0-9]+|[A-Za-z])"#, in: value) { captures in
+            return canSubscript(captures[0]) ? subscriptText(captures[0]) : "_" + captures[0]
+        }
         value = value.replacingOccurrences(of: "\\{", with: "{").replacingOccurrences(of: "\\}", with: "}")
         return value
+    }
+
+    /// One fraction, set the way it is meant to be read.
+    ///
+    /// Two things were wrong with writing the two halves either side of a slash and
+    /// stopping there. A compound half came out ambiguous — `\frac{x+1}{2}` became
+    /// `x+1⁄2`, which every reader parses as `x + ½`, the wrong value — and a simple
+    /// fraction did not look like a fraction at all, just two characters and a slash.
+    private static func fraction(numerator: String, denominator: String) -> String {
+        let top = numerator.trimmingCharacters(in: .whitespaces)
+        let bottom = denominator.trimmingCharacters(in: .whitespaces)
+        guard !top.isEmpty, !bottom.isEmpty else { return top + "⁄" + bottom }
+        // Short and simple on both sides: raised over lowered across a fraction slash, which
+        // is how a typesetter writes ³⁄₄ and reads at a glance as one value.
+        if top.count <= 2, bottom.count <= 2, canSuperscript(top), canSubscript(bottom) {
+            return superscript(top) + "⁄" + subscriptText(bottom)
+        }
+        return grouped(top) + "⁄" + grouped(bottom)
+    }
+
+    /// Brackets anything that is more than a single term, so a slash or a radical cannot
+    /// silently rebind it. `x+1` becomes `(x+1)`; `2x`, `x²` and `(a+b)` are left alone.
+    private static func grouped(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count > 1 else { return trimmed }
+        if trimmed.hasPrefix("("), trimmed.hasSuffix(")") { return trimmed }
+        let breaking = CharacterSet(charactersIn: "+-−±∓×÷·/, ")
+        guard trimmed.rangeOfCharacter(from: breaking) != nil else { return trimmed }
+        return "(" + trimmed + ")"
+    }
+
+    private static func canSuperscript(_ source: String) -> Bool {
+        return !source.isEmpty && superscript(source).first != "^"
+    }
+
+    private static func canSubscript(_ source: String) -> Bool {
+        return !source.isEmpty && subscriptText(source).first != "_"
     }
 
     private static func superscript(_ source: String) -> String {
