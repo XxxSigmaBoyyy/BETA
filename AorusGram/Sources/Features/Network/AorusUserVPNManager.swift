@@ -413,9 +413,16 @@ public final class AorusUserVPNManager {
         let servers = config.servers
         guard !servers.isEmpty else { return }
 
+        // A TCP handshake says nothing about a server that is only listening on UDP. Hysteria 2 is
+        // QUIC, so a connect to its port fails whether the server is healthy or not — and fails
+        // only after the whole probe timeout, which with a subscription full of them is a long
+        // sweep spent recording measurements that mean nothing. Those rows are left unmeasured,
+        // which the list already draws as "no handshake" rather than as a server that is down.
+        let measurable = servers.filter { $0.respondsToTcpHandshake }
+
         // Reserve the entire sweep atomically. A second tap used to skip all busy rows, complete
         // an empty DispatchGroup immediately and select a server from stale partial results.
-        let serverIds = Set(servers.map(\.id))
+        let serverIds = Set(measurable.map(\.id))
         self.lock.lock()
         let overlapsExistingSweep = !self.serversBeingProbed.isDisjoint(with: serverIds)
         if !overlapsExistingSweep {
@@ -425,7 +432,7 @@ public final class AorusUserVPNManager {
         guard !overlapsExistingSweep else { return }
 
         let group = DispatchGroup()
-        for server in servers {
+        for server in measurable {
             group.enter()
             AorusTcpLatencyProbe.measure(
                 host: server.address,

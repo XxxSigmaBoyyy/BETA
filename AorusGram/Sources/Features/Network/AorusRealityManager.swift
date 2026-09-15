@@ -1635,8 +1635,16 @@ extension AorusRealityManager {
                 recordDiagnostic(stage: "user_failover", detail: "candidate_\(index)")
             }
             guard userLaneStartServerLocked(candidate: candidate, patient: index == 0, deadline: roundDeadline) else {
+                // Remember the refusal so the next round walks past it and reaches servers this
+                // one never got to. Only when the walk is still live: a lane the user switched off
+                // mid-round, or a round another tap superseded, says nothing about the server.
+                if AorusUserVPNStore.shared.isActive, !userLaneRoundIsStale {
+                    AorusUserVPNStore.shared.recordBringUpFailure(serverId: candidate.server.id)
+                }
                 continue
             }
+            // It came up: whatever it did a moment ago is not worth holding against it.
+            AorusUserVPNStore.shared.clearBringUpFailure(serverId: candidate.server.id)
             // The stored selection follows the lane only once the lane is actually up. Moving it on
             // every failed attempt is what made the ticked server change several times a second
             // while nothing connected, and a choice the user made by hand is not ours to overwrite

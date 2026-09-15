@@ -468,6 +468,39 @@ public final class AorusUserVPNStore {
         self.updateConfig(id: configId) { config in config.muxEnabled = value }
     }
 
+    /// When each server last refused to bring the lane up.
+    ///
+    /// In memory only, and deliberately so: it exists to rotate one session's walk away from
+    /// servers that have just been tried and failed, and a fresh launch has no reason to carry a
+    /// grudge from the last one. Nothing on disk changes shape because of it either.
+    private var bringUpFailures: [String: TimeInterval] = [:]
+    /// How long a failure keeps a server at the back of the walk. Long enough that the next round
+    /// of three candidates is a different three, short enough that a server which was merely having
+    /// a bad minute comes back on its own.
+    private static let bringUpFailurePenalty: TimeInterval = 300.0
+
+    /// Remember that this server did not come up, so the next round walks past it.
+    public func recordBringUpFailure(serverId: String) {
+        self.lock.lock()
+        self.bringUpFailures[serverId] = Date().timeIntervalSince1970
+        self.lock.unlock()
+    }
+
+    /// Forget that it ever did. Called when the same server comes up, so one bad minute does not
+    /// hold it back for the rest of the penalty.
+    public func clearBringUpFailure(serverId: String) {
+        self.lock.lock()
+        self.bringUpFailures.removeValue(forKey: serverId)
+        self.lock.unlock()
+    }
+
+    /// Whether a recent failure is still holding this server back. The caller already holds the
+    /// lock — this must not take it again.
+    private func isHeldBackLocked(_ serverId: String, now: TimeInterval) -> Bool {
+        guard let failedAt = self.bringUpFailures[serverId] else { return false }
+        return now - failedAt < Self.bringUpFailurePenalty
+    }
+
     public func setLatency(serverId: String, value: Double?) {
         self.lock.lock()
         if let value {
@@ -543,10 +576,24 @@ public final class AorusUserVPNStore {
 
         var result: [AorusVlessCandidate] = []
         var seen = Set<String>()
+        let now = Date().timeIntervalSince1970
         for config in ordered {
             // Sorted by measured handshake, unmeasured after everything measured. `Double.infinity`
             // rather than a large constant so no real measurement can ever sort past it.
+            //
+            // A server that has just refused to come up goes behind one that has not been tried at
+            // all, whatever the handshake said about it. Without that, a round takes the same three
+            // fastest servers every time and the walk never reaches the rest: a blocked server
+            // still completes a TCP handshake quickly — it is the protocol handshake that fails —
+            // so it keeps its place at the front of the list for as long as it stays blocked. That
+            // is also what would have kept a Hysteria 2 server, which cannot be measured at all,
+            // permanently out of reach in a list that has anything else in it.
             let sorted = config.servers.sorted { first, second in
+                let firstHeldBack = self.isHeldBackLocked(first.id, now: now)
+                let secondHeldBack = self.isHeldBackLocked(second.id, now: now)
+                if firstHeldBack != secondHeldBack {
+                    return !firstHeldBack
+                }
                 let firstValue = self.latencies[first.id].flatMap { $0 > 0.0 ? $0 : nil } ?? .infinity
                 let secondValue = self.latencies[second.id].flatMap { $0 > 0.0 ? $0 : nil } ?? .infinity
                 return firstValue < secondValue

@@ -277,6 +277,16 @@ public struct AorusVlessServer: Codable, Equatable {
         return parts.joined(separator: " | ")
     }
 
+    /// Whether a plain TCP handshake to this server's own address measures anything about it.
+    ///
+    /// False for Hysteria 2. It is QUIC: the port is open for UDP and nothing whatsoever answers a
+    /// TCP connect, healthy server or not. Timing that connect does not produce a slow reading — it
+    /// produces a failure, after spending the entire probe timeout to get there, and a failure that
+    /// says nothing about the server. Such a row is left unmeasured instead.
+    public var respondsToTcpHandshake: Bool {
+        return self.network != "hysteria"
+    }
+
     /// The same line without the address, for a row that also has to fit a measured handshake and a
     /// "best server" label on one line of a list. The address is what a hostname of any length
     /// truncates away, and of the three it is the one the row's own title already stands for.

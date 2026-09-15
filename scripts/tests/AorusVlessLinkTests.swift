@@ -291,6 +291,13 @@ private func parsesAHysteria2Key() {
     require(short.proto == "hysteria2" && short.port == 443, "the port defaults to 443")
     require(short.obfsPassword == nil && short.portHopping == nil, "and nothing is invented")
 
+    // A TCP handshake to a Hysteria 2 server measures nothing: it is QUIC, so nothing answers a
+    // TCP connect whether the server is healthy or not. The latency sweep skips such rows on this
+    // flag rather than spending its whole timeout to record a failure that says nothing.
+    require(!server.respondsToTcpHandshake, "a Hysteria 2 server is not measured over TCP")
+    require(AorusVlessLink.parseKey(key(1))?.respondsToTcpHandshake == true,
+            "and every server that does listen on TCP still is")
+
     require(short.summary.contains("Hysteria2"), "the row says what it is")
     require(servers[0].summary.contains("Salamander"), "and says the packets are masked")
     require(servers[0].summary.contains("Hopping"), "and that the association hops ports")
