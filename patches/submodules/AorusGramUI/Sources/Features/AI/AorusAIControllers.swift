@@ -6047,6 +6047,10 @@ private final class AorusAITableCard: UIView {
         isAccessibilityElement = false
         canvas.isUserInteractionEnabled = true
     }
+    // Overriding both of UIView's designated initializers is also what lets `AorusAITableCard()`
+    // keep working: a subclass inherits the parameterless one only when it has overridden every
+    // designated initializer above it.
+    required init?(coder: NSCoder) { fatalError() }
 
     /// Raised after something in the table was copied, so the chat can show the same
     /// confirmation it shows for the answer's own Copy button. Selection puts the text on

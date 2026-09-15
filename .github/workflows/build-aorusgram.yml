@@ -40,6 +40,11 @@ jobs:
       - name: AorusAI module scope preflight
         run: python3 aorusgram/scripts/aorus_ai_scope_check.py aorusgram
 
+      # Parsing does not resolve initializers, so a UIKit subclass missing `init(coder:)`
+      # is syntactically perfect and fails an hour into the build — twice now.
+      - name: UIKit initializer preflight
+        run: python3 aorusgram/scripts/uikit_required_init_check.py aorusgram
+
       - name: AorusAI transport and store preflight
         run: |
           mkdir -p /tmp/aorus-ai-preflight/module-cache
