@@ -30,6 +30,10 @@ public final class AorusUserVPNManager {
     private let requestTimeout: TimeInterval = 20.0
     /// A TCP handshake that has not completed by now is not a server anyone wants to be on.
     private let latencyTimeout: TimeInterval = 3.0
+    /// How many servers one sweep measures at a time. Small enough that a subscription carrying
+    /// the full `maximumServersPerImport` does not open two hundred and fifty-six sockets in one
+    /// burst, large enough that a list of the size people actually have is measured in one pass.
+    private let probeBatchSize = 24
     /// How often the connection screen's own sweep may run. Long enough that opening the screen
     /// twice is one sweep, short enough that a list left open catches a server coming back.
     private let visibleSweepInterval: TimeInterval = 30.0
@@ -42,6 +46,12 @@ public final class AorusUserVPNManager {
     private var configsBeingUpdated = Set<String>()
     private var refreshWaiters: [String: [(AorusVlessImportError?) -> Void]] = [:]
     private var serversBeingProbed = Set<String>()
+    /// When each subscription was last ATTEMPTED, successfully or not.
+    ///
+    /// `updatedAt` only moves when a refresh works, so a subscription that cannot be refreshed
+    /// stayed "stale" forever and was retried on every single tick — a request every five minutes,
+    /// indefinitely, against an endpoint that had already said no. This is what spaces those out.
+    private var lastRefreshAttemptAt: [String: TimeInterval] = [:]
     private var lastVisibleSweepAt: TimeInterval = 0.0
     /// The tick that makes "Обновлять автоматически" mean something while the app is open.
     private let autoUpdateQueue = DispatchQueue(label: "aorusgram.uservpn.autoupdate", qos: .utility)
@@ -293,6 +303,13 @@ public final class AorusUserVPNManager {
         for config in AorusUserVPNStore.shared.configs {
             guard config.isSubscription, config.autoUpdate else { continue }
             guard now - config.updatedAt > self.subscriptionStaleInterval else { continue }
+            // And not more often than that, whatever the last attempt did. Asking again
+            // immediately is not what a panel that just refused needs, and the tick runs three
+            // times inside one stale interval.
+            self.lock.lock()
+            let lastAttempt = self.lastRefreshAttemptAt[config.id] ?? 0.0
+            self.lock.unlock()
+            guard now - lastAttempt > self.subscriptionStaleInterval else { continue }
             self.refreshSubscription(configId: config.id, completion: nil)
         }
     }
@@ -314,6 +331,7 @@ public final class AorusUserVPNManager {
         let alreadyRunning = self.configsBeingUpdated.contains(configId)
         if !alreadyRunning {
             self.configsBeingUpdated.insert(configId)
+            self.lastRefreshAttemptAt[configId] = Date().timeIntervalSince1970
         }
         self.lock.unlock()
         guard !alreadyRunning else { return }
@@ -323,6 +341,10 @@ public final class AorusUserVPNManager {
             guard let self else { return }
             switch result {
             case let .failure(error):
+                // Recorded on the card. A subscription that can no longer be fetched used to go
+                // on showing the traffic and the expiry of the last fetch that worked, which is
+                // indistinguishable from everything being fine.
+                AorusUserVPNStore.shared.markUpdateFailed(configId: configId)
                 self.finishRefresh(configId: configId, error: error)
             case let .success(payload):
                 AorusUserVPNStore.shared.replaceServers(
@@ -404,21 +426,25 @@ public final class AorusUserVPNManager {
 
     /// Measure every server of a configuration, and optionally move onto the best one.
     ///
-    /// This is a TCP handshake to the server's own address, not a proxied request: measuring
-    /// through the core would mean starting it once per server and interrupting whatever the
-    /// user is doing on the one that already works.
+    /// A round trip to the server's own address, not a proxied request: measuring through the core
+    /// would mean starting it once per server and interrupting whatever the user is doing on the
+    /// one that already works. Which round trip depends on the protocol — a TCP handshake for the
+    /// ones that listen on TCP, and the answer QUIC obliges a server to give for Hysteria 2, which
+    /// does not.
     public func probeAllServers(configId: String, selectFastest: Bool) {
         guard AorusLicenseAccess.isAllowed else { return }
         guard let config = AorusUserVPNStore.shared.config(id: configId) else { return }
         let servers = config.servers
         guard !servers.isEmpty else { return }
 
-        // A TCP handshake says nothing about a server that is only listening on UDP. Hysteria 2 is
-        // QUIC, so a connect to its port fails whether the server is healthy or not — and fails
-        // only after the whole probe timeout, which with a subscription full of them is a long
-        // sweep spent recording measurements that mean nothing. Those rows are left unmeasured,
-        // which the list already draws as "no handshake" rather than as a server that is down.
-        let measurable = servers.filter { $0.respondsToTcpHandshake }
+        // Each server is measured the way its own protocol can be measured. A TCP handshake says
+        // nothing about one that listens only on UDP, so Hysteria 2 is timed by the round trip
+        // QUIC obliges a server to answer instead — see `AorusQuicLatencyProbe`. What cannot be
+        // measured at all is a Hysteria 2 server behind Salamander obfuscation, which unwraps
+        // every packet with a key derived from a password and drops a plain probe as noise; those
+        // rows stay unmeasured, which the list draws as "no handshake" rather than as a server
+        // that is down.
+        let measurable = servers.filter { $0.latencyProbe != .unmeasurable }
 
         // Reserve the entire sweep atomically. A second tap used to skip all busy rows, complete
         // an empty DispatchGroup immediately and select a server from stale partial results.
@@ -431,40 +457,83 @@ public final class AorusUserVPNManager {
         self.lock.unlock()
         guard !overlapsExistingSweep else { return }
 
-        let group = DispatchGroup()
-        for server in measurable {
-            group.enter()
-            AorusTcpLatencyProbe.measure(
-                host: server.address,
-                port: server.port,
-                timeout: self.latencyTimeout
-            ) { [weak self] latency in
-                guard let self else {
-                    group.leave()
-                    return
-                }
-                self.lock.lock()
-                self.serversBeingProbed.remove(server.id)
-                self.lock.unlock()
-                AorusUserVPNStore.shared.setLatency(serverId: server.id, value: latency)
-                group.leave()
+        self.postActivity()
+        self.probeInBatches(measurable) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.finishSweep(configId: configId, selectFastest: selectFastest)
             }
         }
-        self.postActivity()
-        group.notify(queue: .main) { [weak self] in
-            guard let self else { return }
-            self.postActivity()
-            guard selectFastest else { return }
-            guard let best = AorusUserVPNStore.shared.fastestServerId(configId: configId) else { return }
-            // Only when the winner is meaningfully better than what is selected. Handshake times to
-            // two servers in the same datacentre differ by a few milliseconds of jitter from one
-            // sweep to the next, so a bare minimum reselects on noise -- and with the lane running,
-            // every reselection is a core restart, which is a connection that never settles.
-            guard AorusUserVPNStore.shared.selectionIsWorthMoving(to: best, margin: self.reselectMargin) else {
+    }
+
+    /// Measure a list a batch at a time.
+    ///
+    /// Not all at once. A subscription may carry up to `maximumServersPerImport` servers, and
+    /// opening that many sockets in one go is a burst this client has no reason to make — and on
+    /// the concurrent queue the probes run on, every one of them also wants a thread the moment
+    /// its timeout fires. A batch is small enough that the probes inside it genuinely run beside
+    /// each other, which is what makes each reading its own round trip rather than the round trip
+    /// plus the wait behind everything queued in front of it.
+    private func probeInBatches(_ servers: [AorusVlessServer], completion: @escaping () -> Void) {
+        let size = self.probeBatchSize
+        func runBatch(from index: Int) {
+            guard index < servers.count else {
+                completion()
                 return
             }
-            self.selectServer(id: best)
+            let batch = servers[index ..< min(index + size, servers.count)]
+            let group = DispatchGroup()
+            for server in batch {
+                group.enter()
+                let record: (Double?) -> Void = { [weak self] latency in
+                    defer { group.leave() }
+                    guard let self else { return }
+                    self.lock.lock()
+                    self.serversBeingProbed.remove(server.id)
+                    self.lock.unlock()
+                    AorusUserVPNStore.shared.setLatency(serverId: server.id, value: latency)
+                }
+                switch server.latencyProbe {
+                case .quic:
+                    AorusQuicLatencyProbe.measure(
+                        host: server.address,
+                        port: server.port,
+                        timeout: self.latencyTimeout,
+                        completion: record
+                    )
+                case .tcpHandshake:
+                    AorusTcpLatencyProbe.measure(
+                        host: server.address,
+                        port: server.port,
+                        timeout: self.latencyTimeout,
+                        completion: record
+                    )
+                case .unmeasurable:
+                    // Filtered out before this is called. Answered rather than dropped so the
+                    // bookkeeping balances whatever a later edit does to that filter.
+                    record(nil)
+                }
+            }
+            group.notify(queue: self.autoUpdateQueue) {
+                runBatch(from: index + size)
+            }
         }
+        runBatch(from: 0)
+    }
+
+    /// What a finished sweep is allowed to change.
+    private func finishSweep(configId: String, selectFastest: Bool) {
+        self.postActivity()
+        guard selectFastest else { return }
+        guard let best = AorusUserVPNStore.shared.fastestServerId(configId: configId) else { return }
+        // Only when the winner is meaningfully better than what is selected. Handshake times to
+        // two servers in the same datacentre differ by a few milliseconds of jitter from one
+        // sweep to the next, so a bare minimum reselects on noise -- and with the lane running,
+        // every reselection is a core restart, which is a connection that never settles.
+        guard AorusUserVPNStore.shared.selectionIsWorthMoving(to: best, margin: self.reselectMargin) else {
+            return
+        }
+        self.selectServer(id: best)
     }
 
     // MARK: - Settings that the running core depends on
@@ -850,13 +919,17 @@ public final class AorusUserVPNManager {
             let sum = upload.addingReportingOverflow(download)
             used = sum.overflow ? nil : sum.partialValue
         }
+        // Zero is reported as zero rather than dropped. A panel sends `total=0` or `expire=0`
+        // for a plan with no limit, and dropping it meant the previous, non-zero value survived —
+        // so a card went on showing a cap or a date the account no longer has. Both are drawn
+        // only when positive, so a zero reaching the store is what makes the row disappear.
         var total: Int64?
-        if let value = fields["total"], value > 0 {
-            total = value
+        if let value = fields["total"] {
+            total = max(0, value)
         }
         var expire: TimeInterval?
-        if let value = fields["expire"], value > 0 {
-            expire = TimeInterval(value)
+        if let value = fields["expire"] {
+            expire = TimeInterval(max(0, value))
         }
         return (used, total, expire)
     }
@@ -902,7 +975,16 @@ private final class AorusUserVPNRedirectDelegate: NSObject, URLSessionTaskDelega
 /// that, and only for the one server it is running. As a way to order a list of fourteen nodes
 /// it is exactly right, and it costs one socket per server.
 enum AorusTcpLatencyProbe {
-    private static let queue = DispatchQueue(label: "com.aorusgram.uservpn.latency", qos: .utility)
+    /// Concurrent, and that is not a detail. A sweep measures every server at once, and on a
+    /// SERIAL queue every connection's state handler — the thing that reads the clock — waits
+    /// behind the handlers of all the probes before it. The first server to answer was timed
+    /// honestly and the rest carried that queue inside their figures, which is why one row could
+    /// read a plausible number and its neighbours on the same continent read wildly higher ones.
+    private static let queue = DispatchQueue(
+        label: "com.aorusgram.uservpn.latency",
+        qos: .utility,
+        attributes: .concurrent
+    )
 
     /// Milliseconds, or nil when the address did not answer in time.
     static func measure(host: String, port: Int, timeout: TimeInterval, completion: @escaping (Double?) -> Void) {

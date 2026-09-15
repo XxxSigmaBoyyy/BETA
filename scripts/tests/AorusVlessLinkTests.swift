@@ -294,9 +294,14 @@ private func parsesAHysteria2Key() {
     // A TCP handshake to a Hysteria 2 server measures nothing: it is QUIC, so nothing answers a
     // TCP connect whether the server is healthy or not. The latency sweep skips such rows on this
     // flag rather than spending its whole timeout to record a failure that says nothing.
-    require(!server.respondsToTcpHandshake, "a Hysteria 2 server is not measured over TCP")
-    require(AorusVlessLink.parseKey(key(1))?.respondsToTcpHandshake == true,
-            "and every server that does listen on TCP still is")
+    require(server.latencyProbe == .quic, "a Hysteria 2 server is measured over QUIC, not TCP")
+    require(AorusVlessLink.parseKey(key(1))?.latencyProbe == .tcpHandshake,
+            "and every server that does listen on TCP still is measured that way")
+    // Salamander unwraps every packet with a key derived from a password, so a plain probe is
+    // discarded as noise. "No answer" would mean "we cannot ask", so nothing is claimed.
+    require(AorusVlessLink.parseKey("hy2://p@gate.example.com:443?obfs=salamander&obfs-password=m")?
+        .latencyProbe == .unmeasurable,
+        "an obfuscated Hysteria 2 server is not given a figure it cannot have")
 
     require(short.summary.contains("Hysteria2"), "the row says what it is")
     require(servers[0].summary.contains("Salamander"), "and says the packets are masked")

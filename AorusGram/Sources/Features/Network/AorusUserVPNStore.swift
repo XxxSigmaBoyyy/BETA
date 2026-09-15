@@ -34,6 +34,12 @@ public struct AorusVlessConfig: Codable, Equatable {
     public var trafficUsed: Int64?
     public var trafficTotal: Int64?
     public var expiresAt: TimeInterval?
+    /// When the last refresh of this subscription failed, or nil when the last one succeeded.
+    ///
+    /// Without it a card that can no longer be refreshed goes on showing the traffic and the
+    /// expiry of the last refresh that worked — which is the same thing it shows when everything
+    /// is fine, so a subscription that has run out reads exactly like one that has not.
+    public var lastUpdateFailedAt: TimeInterval?
 
     public init(
         id: String,
@@ -48,7 +54,8 @@ public struct AorusVlessConfig: Codable, Equatable {
         callsEnabled: Bool,
         trafficUsed: Int64?,
         trafficTotal: Int64?,
-        expiresAt: TimeInterval?
+        expiresAt: TimeInterval?,
+        lastUpdateFailedAt: TimeInterval? = nil
     ) {
         self.id = id
         self.name = name
@@ -63,6 +70,7 @@ public struct AorusVlessConfig: Codable, Equatable {
         self.trafficUsed = trafficUsed
         self.trafficTotal = trafficTotal
         self.expiresAt = expiresAt
+        self.lastUpdateFailedAt = lastUpdateFailedAt
     }
 
     /// Decoded field by field with defaults so that adding a setting in a later build does not
@@ -82,11 +90,31 @@ public struct AorusVlessConfig: Codable, Equatable {
         self.trafficUsed = try container.decodeIfPresent(Int64.self, forKey: .trafficUsed)
         self.trafficTotal = try container.decodeIfPresent(Int64.self, forKey: .trafficTotal)
         self.expiresAt = try container.decodeIfPresent(TimeInterval.self, forKey: .expiresAt)
+        self.lastUpdateFailedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .lastUpdateFailedAt)
     }
 
     public var isSubscription: Bool {
         guard let url = self.subscriptionUrl else { return false }
         return !url.isEmpty
+    }
+
+    /// Whether the panel's own expiry date has passed.
+    ///
+    /// Nothing compared this against the clock before, so a card whose subscription had run out
+    /// went on reading "Действует до <дата>" with the date already behind it — which is exactly
+    /// how a finished subscription came to look like a live one.
+    ///
+    /// Zero means "no expiry" rather than "expired in 1970": that is what a panel sends when the
+    /// plan does not run out, and it is how this field is written when one says so.
+    public var isExpired: Bool {
+        guard let expiresAt = self.expiresAt, expiresAt > 0.0 else { return false }
+        return expiresAt < Date().timeIntervalSince1970
+    }
+
+    /// Whether the panel's own traffic allowance is used up.
+    public var isOutOfTraffic: Bool {
+        guard let total = self.trafficTotal, total > 0, let used = self.trafficUsed else { return false }
+        return used >= total
     }
 }
 
@@ -381,9 +409,23 @@ public final class AorusUserVPNStore {
             if let value = trafficUsed { stored.configs[index].trafficUsed = value }
             if let value = trafficTotal { stored.configs[index].trafficTotal = value }
             if let value = expiresAt { stored.configs[index].expiresAt = value }
+            // The refresh worked, so whatever went wrong before it is history.
+            stored.configs[index].lastUpdateFailedAt = nil
             if Self.server(id: stored.selectedServerId, in: stored.configs) == nil {
                 stored.selectedServerId = self.fallbackServerId(stored, preferring: configId)
             }
+        }
+    }
+
+    /// Record that a refresh did not work.
+    ///
+    /// `updatedAt` is deliberately left alone: it says when these servers and these counters were
+    /// last actually true, and a failed attempt did not make them any truer. What changes is that
+    /// the card can now say so instead of presenting stale numbers as current ones.
+    public func markUpdateFailed(configId: String) {
+        self.update { stored in
+            guard let index = stored.configs.firstIndex(where: { $0.id == configId }) else { return }
+            stored.configs[index].lastUpdateFailedAt = Date().timeIntervalSince1970
         }
     }
 

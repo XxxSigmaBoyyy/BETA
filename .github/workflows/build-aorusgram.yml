@@ -72,6 +72,12 @@ jobs:
           /tmp/aorus-ai-preflight/vless-link-tests
           swiftc \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/Network/AorusQuicLatencyProbe.swift \
+            aorusgram/scripts/tests/AorusQuicProbeTests.swift \
+            -o /tmp/aorus-ai-preflight/quic-probe-tests
+          /tmp/aorus-ai-preflight/quic-probe-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/Subscription/LicenseModels.swift \
             aorusgram/scripts/tests/LicenseModelsTests.swift \
             -o /tmp/aorus-ai-preflight/license-model-tests

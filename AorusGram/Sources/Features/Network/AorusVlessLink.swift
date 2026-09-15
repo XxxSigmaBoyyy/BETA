@@ -277,14 +277,28 @@ public struct AorusVlessServer: Codable, Equatable {
         return parts.joined(separator: " | ")
     }
 
-    /// Whether a plain TCP handshake to this server's own address measures anything about it.
-    ///
-    /// False for Hysteria 2. It is QUIC: the port is open for UDP and nothing whatsoever answers a
-    /// TCP connect, healthy server or not. Timing that connect does not produce a slow reading — it
-    /// produces a failure, after spending the entire probe timeout to get there, and a failure that
-    /// says nothing about the server. Such a row is left unmeasured instead.
-    public var respondsToTcpHandshake: Bool {
-        return self.network != "hysteria"
+    /// How this server's round trip can be measured, if at all.
+    public enum LatencyProbe: Equatable {
+        /// Time the three-way handshake. What every VLESS client calls a ping.
+        case tcpHandshake
+        /// Time the answer QUIC obliges a server to give to a packet naming a version it cannot
+        /// support. Hysteria 2 listens only on UDP: a TCP connect to it fails whether the server
+        /// is healthy or not, so timing that connect says nothing at all.
+        case quic
+        /// Nothing honest can be measured from here. A Hysteria 2 server behind Salamander
+        /// obfuscation unwraps every packet it receives with a key derived from a password and
+        /// discards a plain probe as noise — so "no answer" would mean "we cannot ask", not "the
+        /// server is down", and a row is better left without a figure than given a false one.
+        ///
+        /// Spelled out rather than called `none`, which in any optional context would read as
+        /// `Optional.none` and mean something else entirely.
+        case unmeasurable
+    }
+
+    /// Which of the three this server is.
+    public var latencyProbe: LatencyProbe {
+        guard self.network == "hysteria" else { return .tcpHandshake }
+        return self.obfsPassword == nil ? .quic : .unmeasurable
     }
 
     /// The same line without the address, for a row that also has to fit a measured handshake and a

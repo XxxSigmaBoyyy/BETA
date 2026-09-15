@@ -472,11 +472,20 @@ func aorusUserVPNConfigDetail(config: AorusVlessConfig, updating: Bool, l10n: Ao
         return l10n.userVPNUpdating
     }
     var parts: [String] = [l10n.userVPNServerCount(config.servers.count)]
-    if config.updatedAt > 0.0 {
-        parts.append(l10n.userVPNUpdatedAt(aorusUserVPNDateTimeText(config.updatedAt)))
-    }
-    if let expires = config.expiresAt, expires > 0.0 {
+    // Once the date has gone by, that it has gone by is the fact worth the space — the date
+    // itself was still being printed after "до", which read as a subscription that was fine.
+    if config.isExpired {
+        parts.append(l10n.userVPNExpiredShort)
+    } else if let expires = config.expiresAt, expires > 0.0 {
         parts.append(l10n.userVPNExpiresShort(aorusUserVPNDateText(expires)))
+    }
+    // And in the same place: "обновлено 12:30" next to numbers that could not be refreshed since
+    // is the line saying everything is current when it is not. The line is kept to three parts so
+    // it still fits the row.
+    if config.lastUpdateFailedAt != nil {
+        parts.append(l10n.userVPNUpdateFailedShort)
+    } else if config.updatedAt > 0.0 {
+        parts.append(l10n.userVPNUpdatedAt(aorusUserVPNDateTimeText(config.updatedAt)))
     }
     return parts.joined(separator: " | ")
 }
@@ -766,8 +775,13 @@ final class AorusUserVPNTrafficItemNode: ListViewItemNode, ItemListItemNode {
                     strongSelf.bottomStripeNode.backgroundColor = item.presentationData.theme.list.itemBlocksSeparatorColor
                     strongSelf.backgroundNode.backgroundColor = item.presentationData.theme.list.itemBlocksBackgroundColor
                     strongSelf.trackNode.backgroundColor = item.presentationData.theme.list.itemSecondaryTextColor.withAlphaComponent(0.2)
-                    strongSelf.fillNode.backgroundColor = aorusConnectionLinkColor(theme: item.presentationData.theme)
                 }
+                // Set every time rather than only when the theme changes: it depends on the item,
+                // not on the theme. A full bar in the same colour as a half-full one is the one
+                // state the user needs to be able to read at a glance — the allowance is gone.
+                strongSelf.fillNode.backgroundColor = progress >= 1.0
+                    ? item.presentationData.theme.list.itemDestructiveColor
+                    : aorusConnectionLinkColor(theme: item.presentationData.theme)
 
                 let _ = usedApply()
                 let _ = totalApply()

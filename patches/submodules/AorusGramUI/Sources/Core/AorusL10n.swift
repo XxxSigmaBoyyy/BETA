@@ -492,7 +492,13 @@ public struct AorusL10n {
     } // AORUS-VPN
     public func userVPNExpiresShort(_ value: String) -> String {
         return t("до %@", "until %@").replacingOccurrences(of: "%@", with: value)
-    } // AORUS-VPN
+    }
+    /// Shown in place of the date once the date has gone by. The date itself stops being the
+    /// useful fact at that point — that it has passed is.
+    public var userVPNExpiredShort: String { t("подписка истекла", "subscription expired") } // AORUS-VPN
+    /// Shown in place of "обновлено <время>" when the last refresh did not work, so that stale
+    /// numbers are not presented as current ones.
+    public var userVPNUpdateFailedShort: String { t("не обновляется", "not updating") } // AORUS-VPN // AORUS-VPN
     public func userVPNLatency(_ milliseconds: Int) -> String {
         return t("%@ мс", "%@ ms").replacingOccurrences(of: "%@", with: "\(milliseconds)")
     } // AORUS-VPN
@@ -548,6 +554,7 @@ public struct AorusL10n {
     } // AORUS-VPN
     public var userVPNTrafficHeader: String { t("ТРАФИК", "TRAFFIC") } // AORUS-VPN
     public var userVPNExpiresTitle: String { t("Действует до", "Valid until") } // AORUS-VPN
+    public var userVPNExpiredTitle: String { t("Истекла", "Expired") } // AORUS-VPN
     public var userVPNCopyKey: String { t("Копировать ключ", "Copy key") } // AORUS-VPN
     public var userVPNKeyCopied: String { t("Ключ скопирован", "Key copied") } // AORUS-VPN
     public var userVPNDeleteConfig: String { t("Удалить конфигурацию", "Delete configuration") } // AORUS-VPN

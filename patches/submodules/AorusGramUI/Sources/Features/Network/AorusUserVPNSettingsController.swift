@@ -359,7 +359,13 @@ private func aorusUserVPNSettingsEntries(
             entries.append(.traffic(theme, used, config.trafficTotal))
         }
         if let expires = config.expiresAt, expires > 0.0 {
-            entries.append(.expires(theme, l10n.userVPNExpiresTitle, aorusUserVPNDateText(expires)))
+            // "Действует до" was printed whatever the date said, so a subscription that had run
+            // out still announced itself as valid.
+            entries.append(.expires(
+                theme,
+                config.isExpired ? l10n.userVPNExpiredTitle : l10n.userVPNExpiresTitle,
+                aorusUserVPNDateText(expires)
+            ))
         }
     }
 
