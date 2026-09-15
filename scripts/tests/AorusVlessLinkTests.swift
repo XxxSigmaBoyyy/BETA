@@ -291,17 +291,16 @@ private func parsesAHysteria2Key() {
     require(short.proto == "hysteria2" && short.port == 443, "the port defaults to 443")
     require(short.obfsPassword == nil && short.portHopping == nil, "and nothing is invented")
 
-    // A TCP handshake to a Hysteria 2 server measures nothing: it is QUIC, so nothing answers a
-    // TCP connect whether the server is healthy or not. The latency sweep skips such rows on this
-    // flag rather than spending its whole timeout to record a failure that says nothing.
-    require(server.latencyProbe == .quic, "a Hysteria 2 server is measured over QUIC, not TCP")
+    // Each protocol is measured the way it can be. Nothing answers a TCP connect to a Hysteria 2
+    // server, healthy or not, so a plain one is timed over QUIC instead.
+    require(short.latencyProbe == .quic, "a Hysteria 2 server is measured over QUIC, not TCP")
     require(AorusVlessLink.parseKey(key(1))?.latencyProbe == .tcpHandshake,
             "and every server that does listen on TCP still is measured that way")
-    // Salamander unwraps every packet with a key derived from a password, so a plain probe is
-    // discarded as noise. "No answer" would mean "we cannot ask", so nothing is claimed.
-    require(AorusVlessLink.parseKey("hy2://p@gate.example.com:443?obfs=salamander&obfs-password=m")?
-        .latencyProbe == .unmeasurable,
-        "an obfuscated Hysteria 2 server is not given a figure it cannot have")
+    // This one carries Salamander, which unwraps every packet with a key derived from a password
+    // and discards a plain probe as noise. "No answer" would mean "we cannot ask", so the row is
+    // left without a figure rather than given a false one.
+    require(server.latencyProbe == .unmeasurable,
+            "an obfuscated Hysteria 2 server is not given a figure it cannot have")
 
     require(short.summary.contains("Hysteria2"), "the row says what it is")
     require(servers[0].summary.contains("Salamander"), "and says the packets are masked")
