@@ -862,13 +862,35 @@ def main() -> int:
     se_binder = (root / "AorusGram/Sources/Security/AorusSeKeyBinder.swift").read_text(encoding="utf-8")
     if "static var hasDeviceKey: Bool" not in se_binder:
         fail(errors, "Secure Enclave wrapper must expose authenticated migration state")
-    if "!AorusSeKeyBinder.hasDeviceKey" not in license_store:
-        fail(errors, "a failed Secure Enclave decrypt must not fall back to plaintext")
+    # The wrapper has to SAY which of the two it produced. `bind` returns the plaintext
+    # unchanged when no Secure Enclave key can be had, and a reader that cannot tell that
+    # apart from ciphertext either loses the data or accepts anything. The envelope makes
+    # the question unnecessary, so it is what both stores must be built on.
+    for marker in ("static func protect(", "static func open(", "private static func seal("):
+        if marker not in se_binder:
+            fail(errors, f"Secure Enclave wrapper is not self-describing — missing {marker}")
+    if "AorusSeKeyBinder.protect(data)" not in license_store:
+        fail(errors, "the licence cache is not written through the self-describing envelope")
 
     user_vpn_store = (root / "AorusGram/Sources/Features/Network/AorusUserVPNStore.swift").read_text(encoding="utf-8")
-    for marker in ("stateEnvelopePrefix", "AorusSeKeyBinder.bind(clear)", "AorusSeKeyBinder.unbind(payload)"):
+    for marker in (
+        "stateEnvelopePrefixV2",
+        "AorusSeKeyBinder.protect(clear)",
+        "AorusSeKeyBinder.open(",
+        # The v1 repair is bounded: a payload that will not decrypt is accepted only when
+        # it is literally this store's own JSON. ECIES output begins with an EC point and
+        # can never begin with "{", so this cannot become a plaintext fallback for
+        # ciphertext that genuinely failed to open.
+        "private static func looksLikeState(",
+    ):
         if marker not in user_vpn_store:
             fail(errors, f"user VPN credentials are not device-wrapped — missing {marker}")
+    # Pinned at the CALL SITE, not just the helper: a rule that only checks the helper
+    # exists passes while the branch beside it hands the payload back unconditionally.
+    if "return Self.looksLikeState(payload) ? payload : nil" not in user_vpn_store:
+        fail(errors, "the user VPN v1 repair must be bounded to this store's own JSON")
+    if "data.first == 0x7B" not in user_vpn_store:
+        fail(errors, "the user VPN v1 repair must check the payload really is that JSON")
     user_vpn_manager = (root / "AorusGram/Sources/Features/Network/AorusUserVPNManager.swift").read_text(encoding="utf-8")
     for marker in ("refreshWaiters", "AorusUserVPNRedirectDelegate", "addingReportingOverflow"):
         if marker not in user_vpn_manager:

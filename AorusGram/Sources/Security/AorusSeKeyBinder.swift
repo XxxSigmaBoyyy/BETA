@@ -14,6 +14,63 @@ import Security
 
 enum AorusSeKeyBinder {
 
+    // MARK: - Self-describing envelope
+    //
+    // `bind` falls back to returning the plaintext unchanged when no Secure Enclave key
+    // can be had, and the caller cannot tell that apart from ciphertext. That is a data
+    // loss waiting to happen, and it happened: a save made while the key was unavailable
+    // — a background launch before the device's first unlock, where a key with
+    // `AfterFirstUnlockThisDeviceOnly` can neither be read nor created — wrote plaintext
+    // that the next launch tried to decrypt. Decryption failed, a key existed by then, so
+    // the blob was judged corrupt and the user's imported servers were dropped on the
+    // floor. Permanently: nothing rewrote it.
+    //
+    // The envelope says which of the two it is, so no reader has to guess.
+
+    private static let tagEncrypted: UInt8 = 0x01
+    private static let tagPlaintext: UInt8 = 0x02
+
+    /// Wraps `plaintext` in an envelope that records how it was protected.
+    static func protect(_ plaintext: Data) -> Data {
+        var envelope = Data()
+        if let sealed = seal(plaintext) {
+            envelope.append(tagEncrypted)
+            envelope.append(sealed)
+        } else {
+            envelope.append(tagPlaintext)
+            envelope.append(plaintext)
+        }
+        return envelope
+    }
+
+    /// Unwraps an envelope written by `protect`. nil only when the envelope is not one of
+    /// ours, or when it really is ciphertext this installation cannot open.
+    static func open(_ envelope: Data) -> Data? {
+        guard let tag = envelope.first else { return nil }
+        let body = Data(envelope.dropFirst())
+        switch tag {
+        case tagEncrypted:
+            return unbind(body)
+        case tagPlaintext:
+            return body
+        default:
+            return nil
+        }
+    }
+
+    /// The encrypting half of `bind`, separated so `protect` can tell "there is no key" from
+    /// "here is your ciphertext" instead of both arriving as a `Data`.
+    private static func seal(_ plaintext: Data) -> Data? {
+        guard let privKey = seKey() ?? createSeKey(),
+              let pubKey = SecKeyCopyPublicKey(privKey) else { return nil }
+        let algo = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+        guard SecKeyIsAlgorithmSupported(pubKey, .encrypt, algo),
+              let ct = SecKeyCreateEncryptedData(pubKey, algo, plaintext as CFData, nil) else {
+            return nil
+        }
+        return ct as Data
+    }
+
     // MARK: - Public API
 
     /// Encrypts `plaintext` with the SE public key.

@@ -129,7 +129,13 @@ public final class AorusUserVPNStore {
     /// does not survive reinstall is the whole migration story.
     private static let stateKey = "aorusgram_uservpn_state_v1"
     private static let latencyKey = "aorusgram_uservpn_latency_v1"
-    private static let stateEnvelopePrefix = Data([0x41, 0x55, 0x56, 0x50, 0x4E, 0x01])
+    /// "AUVPN" and a format version.
+    ///
+    /// v1 wrapped the state with `AorusSeKeyBinder.bind`, whose plaintext fallback is
+    /// indistinguishable from ciphertext — see `openState` for what that cost. v2 wraps it
+    /// with the self-describing envelope instead. Both are still read.
+    private static let stateEnvelopePrefixV1 = Data([0x41, 0x55, 0x56, 0x50, 0x4E, 0x01])
+    private static let stateEnvelopePrefixV2 = Data([0x41, 0x55, 0x56, 0x50, 0x4E, 0x02])
 
     private struct Stored: Codable, Equatable {
         var enabled: Bool
@@ -164,7 +170,10 @@ public final class AorusUserVPNStore {
            let data = Self.openState(persisted),
            let decoded = try? JSONDecoder().decode(Stored.self, from: data) {
             loaded = decoded
-            needsMigration = !persisted.starts(with: Self.stateEnvelopePrefix)
+            // Anything that is not already v2 is rewritten as v2 at once — which is how a
+            // repaired v1 blob stops being fragile instead of being repaired again every
+            // launch.
+            needsMigration = !persisted.starts(with: Self.stateEnvelopePrefixV2)
         }
         self.cached = loaded
         self.latencies = (store?.dictionary(forKey: Self.latencyKey) as? [String: Double]) ?? [:]
@@ -603,24 +612,48 @@ public final class AorusUserVPNStore {
 
     private static func persistState(_ stored: Stored, store: UserDefaults?) {
         guard let clear = try? JSONEncoder().encode(stored) else { return }
-        let protected = AorusSeKeyBinder.bind(clear)
-        var envelope = Self.stateEnvelopePrefix
-        envelope.append(protected)
+        var envelope = Self.stateEnvelopePrefixV2
+        envelope.append(AorusSeKeyBinder.protect(clear))
         store?.set(envelope, forKey: Self.stateKey)
     }
 
+    /// Reads whichever of the three formats is on disk, and never throws the user's
+    /// servers away because a wrapper could not be opened.
+    ///
+    /// v1 is the one that broke people. It wrapped with `bind`, which silently returns
+    /// PLAINTEXT when no Secure Enclave key can be had — a background launch before the
+    /// device's first unlock is enough, because the key is
+    /// `AfterFirstUnlockThisDeviceOnly` and can then be neither read nor created. That
+    /// plaintext was stored under a tag claiming it was ciphertext; the next launch had a
+    /// key, failed to decrypt it, concluded corruption and dropped every imported server.
+    /// Nothing ever rewrote it, so the loss was permanent.
+    ///
+    /// So a v1 payload that will not decrypt is tried as plaintext JSON before it is given
+    /// up on — which is what repairs those installations on the next launch — and only a
+    /// payload that is neither is refused.
     private static func openState(_ persisted: Data) -> Data? {
-        guard persisted.starts(with: Self.stateEnvelopePrefix) else {
-            // Legacy v1 was raw JSON. It is accepted once and immediately rewritten.
+        if persisted.starts(with: Self.stateEnvelopePrefixV2) {
+            return AorusSeKeyBinder.open(Data(persisted.dropFirst(Self.stateEnvelopePrefixV2.count)))
+        }
+        guard persisted.starts(with: Self.stateEnvelopePrefixV1) else {
+            // Older still: raw JSON, accepted once and rewritten.
             return persisted
         }
-        let payload = Data(persisted.dropFirst(Self.stateEnvelopePrefix.count))
+        let payload = Data(persisted.dropFirst(Self.stateEnvelopePrefixV1.count))
         if let clear = AorusSeKeyBinder.unbind(payload) {
             return clear
         }
-        // Simulator/old hardware fallback: `bind` deliberately returns plaintext
-        // when no device key can exist. With a key present, failure is corruption.
-        return AorusSeKeyBinder.hasDeviceKey ? nil : payload
+        // The repair: a v1 blob that does not decrypt is very likely the plaintext `bind`
+        // handed back. `looksLikeState` keeps this from accepting arbitrary bytes.
+        return Self.looksLikeState(payload) ? payload : nil
+    }
+
+    /// Whether a blob is this store's own JSON. Cheap, and enough to tell a plaintext
+    /// fallback from ciphertext that genuinely failed to open: ECIES output begins with an
+    /// EC point, never with `{`.
+    private static func looksLikeState(_ data: Data) -> Bool {
+        guard data.first == 0x7B else { return false }
+        return (try? JSONDecoder().decode(Stored.self, from: data)) != nil
     }
 
     private static func server(id: String?, in configs: [AorusVlessConfig]) -> AorusVlessServer? {

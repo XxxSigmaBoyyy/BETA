@@ -215,7 +215,11 @@ final class LicenseStore {
         s.sig = nil
         s.sig = sign(s)            // sign over the canonical fields (incl. deviceHash)
         guard let data = try? JSONEncoder().encode(s) else { return }
-        let protectedData = AorusSeKeyBinder.bind(data)
+        // The self-describing envelope, for the same reason the VPN store uses it: `bind`
+        // returns plaintext when no Secure Enclave key can be had and the reader cannot
+        // tell, so a cache written before the device's first unlock became unreadable for
+        // good — and an unreadable licence cache is a user losing their offline grace.
+        let protectedData = AorusSeKeyBinder.protect(data)
         let base: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: kcService,
@@ -240,16 +244,23 @@ final class LicenseStore {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { return nil }
 
-        if let unbound = AorusSeKeyBinder.unbind(data),
-           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: unbound) {
+        // The current format says how it was protected, so no guessing is involved.
+        if let opened = AorusSeKeyBinder.open(data),
+           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: opened) {
             return (snapshot, false)
         }
 
-        // One-time migration for caches written before Secure Enclave wrapping.
-        // If this installation already has a device key, failed decryption means
-        // tampering/corruption, not a legacy blob, and must fail closed.
-        if !AorusSeKeyBinder.hasDeviceKey,
-           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
+        // Written by a build that wrapped with `bind`: ciphertext, or the plaintext its
+        // fallback produced. Both are read here and rewritten in the current format.
+        if let unbound = AorusSeKeyBinder.unbind(data),
+           let snapshot = try? JSONDecoder().decode(Snapshot.self, from: unbound) {
+            return (snapshot, true)
+        }
+
+        // Older still: no wrapping at all. Accepting it is safe because the snapshot
+        // carries its own signature over the device hash — a blob that was tampered with
+        // fails that check whatever wrapper it arrived in.
+        if let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) {
             return (snapshot, true)
         }
         return nil

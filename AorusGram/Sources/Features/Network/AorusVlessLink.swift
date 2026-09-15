@@ -755,6 +755,12 @@ public enum AorusVlessLink {
         if network == "h2" {
             network = "http"
         }
+        // Xray renamed this transport from `splithttp` to `xhttp`, and a great many panels
+        // still publish the old spelling. It is the same wire — the same settings block,
+        // the same outbound — so a key that uses it was being refused over a name.
+        if network == "splithttp" {
+            network = "xhttp"
+        }
         guard supportedNetworks.contains(network) else { return nil }
 
         var security = (query["security"] ?? "none").lowercased()
@@ -1012,6 +1018,12 @@ public enum AorusVlessLink {
     private static func xrayStreamQuery(_ stream: [String: Any]) -> [String: String] {
         var query: [String: String] = [:]
         var network = (jsonString(stream["network"]) ?? "tcp").lowercased()
+        // Same rename as in the link parser: a raw Xray config exported before Xray
+        // renamed the transport still says `splithttp`, and its settings block is read
+        // under the name below.
+        if network == "splithttp" {
+            network = "xhttp"
+        }
         if network == "h2" {
             network = "http"
         }
@@ -1043,7 +1055,11 @@ public enum AorusVlessLink {
         switch network {
         case "ws", "httpupgrade", "xhttp":
             let key = network == "ws" ? "wsSettings" : (network == "httpupgrade" ? "httpupgradeSettings" : "xhttpSettings")
-            guard let settings = stream[key] as? [String: Any] else { return query }
+            // The network name was normalised to `xhttp`, but a config written before the
+            // rename stores its block under the old key — so both are looked for.
+            guard let settings = (stream[key] as? [String: Any]) ?? (stream["splithttpSettings"] as? [String: Any]) else {
+                return query
+            }
             if let value = jsonString(settings["path"]) { query["path"] = value }
             if let value = jsonString(settings["host"]) { query["host"] = value }
             if let value = jsonString(settings["mode"]) { query["mode"] = value }
