@@ -330,7 +330,9 @@ private func buildsTheHysteria2ConfigurationTheCoreReads() {
     }
     require(tls["alpn"] as? [String] == ["h3"], "ALPN is h3 — an empty one is filled with h2/http1.1, which this server will not negotiate")
     require(tls["serverName"] as? String == "gate.example.com", "the SNI is passed on")
-    require((tls["allowInsecure"] as? Bool) == true, "insecure is passed on")
+    // `insecure=1` was read off the key and is on the row, but the core removed the flag and
+    // fails the whole configuration over it, so it is not here. See the test above.
+    require(tls["allowInsecure"] == nil, "the flag the core removed is not passed on")
     require(tls["pinnedPeerCertSha256"] as? String == String(repeating: "ab", count: 32), "the pinned digest is passed on")
 
     guard let finalMask = stream["finalmask"] as? [String: Any],
