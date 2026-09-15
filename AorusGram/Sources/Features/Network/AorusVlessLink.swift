@@ -352,12 +352,21 @@ public enum AorusVlessLink {
     ]
     /// Shadowsocks methods Xray implements, in the spelling its configuration expects. The
     /// aliases every other client emits are folded onto these at parse time.
+    ///
+    /// `aes-192-gcm`, `none` and `plain` are not among them: the core answers "unknown cipher
+    /// method" for all three, which fails the whole configuration rather than the one outbound.
     private static let supportedShadowsocksMethods: Set<String> = [
-        "aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
+        "aes-128-gcm", "aes-256-gcm",
         "chacha20-poly1305", "xchacha20-poly1305",
-        "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305",
-        "none", "plain"
+        "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305"
     ]
+    /// The only transports REALITY runs over in this core: it answers "REALITY only supports RAW,
+    /// XHTTP and gRPC for now" for anything else, and that failure takes the whole configuration
+    /// with it. A `reality` key over WebSocket is therefore refused at import.
+    private static let realityNetworks: Set<String> = ["tcp", "xhttp", "grpc"]
+    /// XHTTP's modes. The core refuses a name outside this set, so an unknown one is dropped and
+    /// the transport left to negotiate — which is what "auto", its default, is for.
+    private static let xhttpModes: Set<String> = ["auto", "packet-up", "stream-up", "stream-one"]
     /// Every scheme this parser will look at. `tuic`, `wireguard` and the rest are deliberately
     /// absent and named below so the refusal can say why: they are separate protocols that this
     /// core has no outbound for, so accepting one would produce a card that cannot connect.
@@ -885,6 +894,41 @@ public enum AorusVlessLink {
         )
     }
 
+    /// REALITY's public key in the notation the core reads, or nil when the value is not one.
+    ///
+    /// The core decodes it with unpadded base64**url** and insists on exactly 32 bytes, so a key
+    /// written in the standard alphabet — which some panels do — is rewritten rather than refused,
+    /// and anything that is not a 32-byte key is refused rather than passed on to fail the whole
+    /// configuration with `invalid "password"`.
+    private static func realityPublicKey(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let text = value.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        // 32 bytes is 43 characters of base64 without its padding.
+        guard text.count == 43 else { return nil }
+        guard text.allSatisfy({ character in
+            guard character.isASCII else { return false }
+            return character.isLetter || character.isNumber || character == "-" || character == "_"
+        }) else {
+            return nil
+        }
+        return text
+    }
+
+    /// REALITY's short id as the core reads it: hex, an even number of digits, at most sixteen of
+    /// them. Nil for anything else — including a longer one, which the core refuses outright.
+    private static func realityShortId(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let text = value.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !text.isEmpty, text.count <= 16, text.count % 2 == 0,
+              text.allSatisfy({ $0.isASCII && $0.isHexDigit }) else {
+            return nil
+        }
+        return text
+    }
+
     /// A certificate digest in the notation this core reads — colons removed, lower case — or nil
     /// when the value is not one.
     ///
@@ -1060,14 +1104,27 @@ public enum AorusVlessLink {
         let sni = query["sni"] ?? query["peer"]
         let hostHeader = query["host"]
         let serverName = normalizedHostname(sni) ?? normalizedHostname(hostHeader)
-        let publicKey = query["pbk"]
+        var publicKey = query["pbk"]
+        var shortId = query["sid"]
         if security == "reality" {
             // REALITY without the server's public key cannot complete its handshake, and
             // without a name to present it has nothing to imitate.
-            guard let publicKey, !publicKey.isEmpty, publicKey.count <= 128,
-                  serverName != nil else {
+            //
+            // The key and the short id are put through the core's own rules rather than length
+            // checks: it decodes the key as unpadded base64url and insists on 32 bytes, and the
+            // short id as at most sixteen hex digits. A value outside either fails the WHOLE
+            // configuration, so a key carrying one is refused here where it costs one row.
+            guard let normalizedKey = realityPublicKey(publicKey), serverName != nil else {
                 return nil
             }
+            publicKey = normalizedKey
+            if let raw = shortId, !raw.isEmpty {
+                guard let normalizedShortId = realityShortId(raw) else { return nil }
+                shortId = normalizedShortId
+            } else {
+                shortId = nil
+            }
+            guard realityNetworks.contains(network) else { return nil }
         }
 
         var path = query["path"]
@@ -1083,6 +1140,14 @@ public enum AorusVlessLink {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && $0.count <= 16 }
         let allowInsecure = ["1", "true", "yes"].contains((query["allowinsecure"] ?? "").lowercased())
+
+        // XHTTP refuses a mode it does not know, and that refusal fails the whole configuration.
+        // An unknown one is dropped rather than refused: the transport's own default negotiates.
+        // On gRPC the same query key means something else — "multi" — so it is left alone there.
+        var mode = query["mode"]?.lowercased()
+        if network == "xhttp", let value = mode, !xhttpModes.contains(value) {
+            mode = nil
+        }
 
         // Every value that changes the wire handshake belongs to the identity. REALITY
         // subscriptions often publish several credentials on the same host and UUID; omitting
@@ -1104,14 +1169,14 @@ public enum AorusVlessLink {
         canonicalFields.append(serverName ?? "")
         canonicalFields.append(fingerprint)
         canonicalFields.append(publicKey ?? "")
-        canonicalFields.append(query["sid"] ?? "")
+        canonicalFields.append(shortId ?? "")
         canonicalFields.append(query["spx"] ?? "")
         canonicalFields.append(alpn.joined(separator: ","))
         canonicalFields.append(path ?? "")
         canonicalFields.append(normalizedHostname(hostHeader) ?? "")
         canonicalFields.append(query["servicename"] ?? "")
         canonicalFields.append((query["headertype"] ?? "").lowercased())
-        canonicalFields.append((query["mode"] ?? "").lowercased())
+        canonicalFields.append(mode ?? "")
         canonicalFields.append(allowInsecure ? "1" : "0")
 
         return AorusVlessServer(
@@ -1128,14 +1193,14 @@ public enum AorusVlessLink {
             serverName: serverName,
             fingerprint: fingerprint.isEmpty ? nil : fingerprint,
             publicKey: publicKey,
-            shortId: query["sid"],
+            shortId: shortId,
             spiderX: query["spx"],
             alpn: alpn,
             path: path,
             host: normalizedHostname(hostHeader),
             serviceName: query["servicename"],
             headerType: (query["headertype"] ?? "").lowercased() == "http" ? "http" : nil,
-            mode: query["mode"]?.lowercased(),
+            mode: mode,
             allowInsecure: allowInsecure,
             link: link
         )
@@ -1967,28 +2032,46 @@ public enum AorusVlessLink {
         ]
         switch server.security {
         case "reality":
+            // Checked again here, not only at import: a row written by an older build can carry a
+            // transport REALITY does not run over, or a key or short id the core refuses — and any
+            // of those fails the WHOLE configuration, so the core would not start at all and every
+            // other server in the list would go down with this one.
+            guard realityNetworks.contains(server.network),
+                  let publicKey = realityPublicKey(server.publicKey) else {
+                return nil
+            }
             var reality: [String: Any] = [
                 "serverName": server.serverName ?? "",
-                "publicKey": server.publicKey ?? "",
+                "publicKey": publicKey,
                 "fingerprint": server.fingerprint ?? "chrome"
             ]
-            if let shortId = server.shortId {
-                reality["shortId"] = shortId
+            if let shortId = server.shortId, !shortId.isEmpty {
+                guard let checked = realityShortId(shortId) else { return nil }
+                reality["shortId"] = checked
             }
             if let spiderX = server.spiderX {
                 reality["spiderX"] = spiderX
             }
             streamSettings["realitySettings"] = reality
         case "tls":
+            // `allowInsecure` is NOT written, whatever the key said. The core removed it —
+            // `TLSConfig.Build` answers "the feature has been removed" and fails the whole
+            // configuration, so a single key carrying the flag stopped the core from starting and
+            // took every other server with it. There is no "skip verification" in this core at
+            // all: with neither a pinned digest nor a name to verify against, Go's own chain
+            // check runs. So the flag is kept on the row, for the row's identity and for the link
+            // the user copies back out, and simply never reaches the core.
             var tls: [String: Any] = [
-                "serverName": server.serverName ?? server.address,
-                "allowInsecure": server.allowInsecure
+                "serverName": server.serverName ?? server.address
             ]
             if let fingerprint = server.fingerprint {
                 tls["fingerprint"] = fingerprint
             }
             if !server.alpn.isEmpty {
                 tls["alpn"] = server.alpn
+            }
+            if let pinned = server.pinnedCertSha256, !pinned.isEmpty {
+                tls["pinnedPeerCertSha256"] = pinned
             }
             streamSettings["tlsSettings"] = tls
         default:
@@ -2013,7 +2096,9 @@ public enum AorusVlessLink {
             if let host = server.host {
                 xhttp["host"] = host
             }
-            if let mode = server.mode {
+            // Only a mode the core knows: it refuses any other name, and that refusal is the
+            // whole configuration again rather than this one outbound.
+            if let mode = server.mode, xhttpModes.contains(mode) {
                 xhttp["mode"] = mode
             }
             streamSettings["xhttpSettings"] = xhttp
@@ -2062,9 +2147,11 @@ public enum AorusVlessLink {
         localPort: Int,
         udpEnabled: Bool
     ) -> String? {
+        // No `allowInsecure` here either, and for the same reason: the core removed it and fails
+        // the whole configuration over it. A Hysteria 2 server whose certificate is self-signed
+        // is reached by pinning its digest, which is what `pinSHA256` in the key is for.
         var tls: [String: Any] = [
             "serverName": server.serverName ?? server.address,
-            "allowInsecure": server.allowInsecure,
             // The transport speaks HTTP/3. An empty ALPN is filled in by the core with
             // "h2, http/1.1", which this server will not negotiate.
             "alpn": server.alpn.isEmpty ? ["h3"] : server.alpn

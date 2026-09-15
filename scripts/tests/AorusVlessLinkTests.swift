@@ -83,6 +83,150 @@ private func refusesTransportsTheCoreRemoved() {
     }
 }
 
+// MARK: - What the core refuses wholesale
+
+private let realityPublicKey = "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0"
+
+private func realityKey(
+    network: String = "tcp",
+    publicKey: String = realityPublicKey,
+    shortId: String = "0123456789abcdef"
+) -> String {
+    return "vless://00000000-0000-4000-8000-000000000001@edge.example.com:443"
+        + "?encryption=none&security=reality&sni=edge.example.com&type=\(network)"
+        + "&pbk=\(publicKey)&sid=\(shortId)#R"
+}
+
+private func streamSettings(of server: AorusVlessServer) -> [String: Any]? {
+    guard let json = AorusVlessLink.xrayConfiguration(server: server, localPort: 10_900, udpEnabled: true, muxEnabled: true),
+          let data = json.data(using: .utf8),
+          let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let outbound = (root["outbounds"] as? [[String: Any]])?.first else {
+        return nil
+    }
+    return outbound["streamSettings"] as? [String: Any]
+}
+
+/// Each of these was refused by the real Xray configuration loader, run against the exact core
+/// this build links. A refusal there is not one outbound failing — the configuration is built as
+/// a whole, so one bad key stops the core from starting and takes every other server in the
+/// user's list down with it. That is why they are caught at import, where they cost one row.
+private func refusesWhatWouldFailTheWholeConfiguration() {
+    // "REALITY only supports RAW, XHTTP and gRPC for now."
+    for network in ["ws", "httpupgrade"] {
+        require(AorusVlessLink.parseKey(realityKey(network: network)) == nil,
+                "REALITY over \(network) is not imported")
+    }
+    for network in ["tcp", "xhttp", "grpc"] {
+        require(AorusVlessLink.parseKey(realityKey(network: network)) != nil,
+                "REALITY over \(network) still imports")
+    }
+
+    // The short id is decoded as hex into eight bytes: at most sixteen digits, an even number of
+    // them, and nothing outside the alphabet.
+    for shortId in ["zznothex", "0123456789abcdef01", "abc"] {
+        require(AorusVlessLink.parseKey(realityKey(shortId: shortId)) == nil,
+                "a short id the core would refuse (\(shortId)) is not imported")
+    }
+    for shortId in ["ab", "0123456789abcdef"] {
+        require(AorusVlessLink.parseKey(realityKey(shortId: shortId)) != nil,
+                "a valid short id (\(shortId)) still imports")
+    }
+    require(AorusVlessLink.parseKey(realityKey(shortId: "AB"))?.shortId == "ab",
+            "and an upper-case one is folded rather than refused")
+
+    // The public key is unpadded base64url decoding to exactly 32 bytes.
+    for key in ["", "not-a-key", String(repeating: "a", count: 43) + "a"] {
+        require(AorusVlessLink.parseKey(realityKey(publicKey: key)) == nil,
+                "a public key the core would refuse is not imported")
+    }
+    // A panel that writes the same key in the standard alphabet is rewritten, not refused: the
+    // core decodes it with base64url only.
+    guard let standard = AorusVlessLink.parseKey(
+        realityKey(publicKey: "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI%2BT4E7RoLJS0%3D")
+    ) else {
+        require(false, "a standard-alphabet public key is accepted")
+        return
+    }
+    require(standard.publicKey == realityPublicKey, "and rewritten into the one the core reads")
+
+    // XHTTP refuses a mode it does not know. An unknown one is dropped, not refused — the
+    // transport's own default negotiates — but it must never reach the core.
+    let unknownMode = "vless://00000000-0000-4000-8000-000000000001@edge.example.com:443"
+        + "?encryption=none&security=tls&sni=edge.example.com&type=xhttp&path=%2Fx&mode=bogus#X"
+    guard let dropped = AorusVlessLink.parseKey(unknownMode) else {
+        require(false, "the key itself still imports")
+        return
+    }
+    require(dropped.mode == nil, "an unknown XHTTP mode is dropped at import")
+    for mode in ["auto", "packet-up", "stream-up", "stream-one"] {
+        let uri = unknownMode.replacingOccurrences(of: "mode=bogus", with: "mode=\(mode)")
+        require(AorusVlessLink.parseKey(uri)?.mode == mode, "\(mode) survives")
+    }
+    // A row written by an older build can still carry one, and it must not reach the core either.
+    let staleMode = AorusVlessServer(
+        id: "x", name: "x", proto: "vless", address: "edge.example.com", port: 443,
+        credential: "00000000-0000-4000-8000-000000000001", encryption: "", flow: "",
+        network: "xhttp", security: "none", serverName: nil, fingerprint: nil, publicKey: nil,
+        shortId: nil, spiderX: nil, alpn: [], path: "/x", host: nil, serviceName: nil,
+        headerType: nil, mode: "bogus", allowInsecure: false, link: ""
+    )
+    let xhttp = (streamSettings(of: staleMode)?["xhttpSettings"] as? [String: Any])
+    require(xhttp != nil && xhttp?["mode"] == nil, "and is dropped on the way out as well")
+
+    // Ciphers this core does not have. It answers "unknown cipher method" and fails the whole
+    // configuration rather than the one outbound.
+    for method in ["aes-192-gcm", "none", "plain"] {
+        let userInfo = Data("\(method):ss-password".utf8).base64EncodedString()
+        require(AorusVlessLink.parseKey("ss://\(userInfo)@edge.example.com:443#S") == nil,
+                "\(method) is not imported")
+    }
+    for method in ["aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "2022-blake3-aes-256-gcm"] {
+        let userInfo = Data("\(method):ss-password".utf8).base64EncodedString()
+        require(AorusVlessLink.parseKey("ss://\(userInfo)@edge.example.com:443#S") != nil,
+                "\(method) still imports")
+    }
+}
+
+/// `allowInsecure` was removed from this core. It answers "the feature has been removed" and
+/// fails the whole configuration, so one key carrying the flag stopped the core from starting.
+/// The row keeps it — it is part of the row's identity and of the link the user copies back out —
+/// and it simply never reaches the core.
+private func neverHandsTheCoreTheFlagItRemoved() {
+    let insecure = "vless://00000000-0000-4000-8000-000000000001@edge.example.com:443"
+        + "?encryption=none&security=tls&sni=edge.example.com&allowInsecure=1#I"
+    guard let server = AorusVlessLink.parseKey(insecure) else {
+        require(false, "such a key still imports — refusing it would cost the user the server")
+        return
+    }
+    require(server.allowInsecure, "the flag is read and kept on the row")
+    require(server.link.contains("allowInsecure"), "and survives in the link")
+
+    guard let tls = streamSettings(of: server)?["tlsSettings"] as? [String: Any] else {
+        require(false, "the TLS block is built")
+        return
+    }
+    require(tls["allowInsecure"] == nil, "and is not written into the configuration")
+
+    // Hysteria 2 goes through a different builder and had the same flaw.
+    guard let hysteria = AorusVlessLink.parseKey("hy2://pass@gate.example.com:443?insecure=1"),
+          let hysteriaTls = streamSettings(of: hysteria)?["tlsSettings"] as? [String: Any] else {
+        require(false, "the Hysteria 2 key imports and builds")
+        return
+    }
+    require(hysteria.allowInsecure, "its flag is read too")
+    require(hysteriaTls["allowInsecure"] == nil, "and is not written either")
+
+    // A pinned digest, which is what this core offers instead, does reach it.
+    guard let pinned = AorusVlessLink.parseKey("hy2://pass@gate.example.com:443?pinSHA256=" + String(repeating: "ab", count: 32)),
+          let pinnedTls = streamSettings(of: pinned)?["tlsSettings"] as? [String: Any] else {
+        require(false, "a pinned key imports and builds")
+        return
+    }
+    require(pinnedTls["pinnedPeerCertSha256"] as? String == String(repeating: "ab", count: 32),
+            "the pinned digest is what the core is given instead")
+}
+
 // MARK: - Hysteria 2
 
 private let hysteriaKey = "hysteria2://s3cret-pass@gate.example.com:8443/"
@@ -454,6 +598,8 @@ private enum AorusVlessLinkTests {
         boundsUntrustedFanOut()
         rejectsInsecureAndMalformedInput()
         refusesTransportsTheCoreRemoved()
+        refusesWhatWouldFailTheWholeConfiguration()
+        neverHandsTheCoreTheFlagItRemoved()
         parsesAHysteria2Key()
         refusesAHysteria2KeyItCannotHonour()
         buildsTheHysteria2ConfigurationTheCoreReads()
