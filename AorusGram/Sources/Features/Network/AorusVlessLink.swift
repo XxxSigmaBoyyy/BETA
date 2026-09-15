@@ -2082,7 +2082,13 @@ public enum AorusVlessLink {
         case "ws":
             var ws: [String: Any] = ["path": server.path ?? "/"]
             if let host = server.host {
-                ws["headers"] = ["Host": host]
+                // The independent `host`, not `headers: {Host: …}`. The core still reads the
+                // header form, and says of it: "deprecated, will be removed soon". Every feature
+                // it has said that about and then removed cost this client a transport that
+                // stopped connecting, so it is written the way the core asks for now. HTTPUpgrade
+                // is stricter about the same thing — a `Host` inside its headers is a hard error —
+                // and is already written this way below.
+                ws["host"] = host
             }
             streamSettings["wsSettings"] = ws
         case "httpupgrade":

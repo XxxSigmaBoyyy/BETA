@@ -143,7 +143,8 @@ def xray_configuration(s, local_port=10800, udp=True, mux=True):
     if net == "ws":
         ws = {"path": s["path"] or "/"}
         if s["host"] is not None:
-            ws["headers"] = {"Host": s["host"]}
+            # The independent host: the header form is "deprecated, will be removed soon".
+            ws["host"] = s["host"]
         stream["wsSettings"] = ws
     elif net == "httpupgrade":
         up = {"path": s["path"] or "/"}

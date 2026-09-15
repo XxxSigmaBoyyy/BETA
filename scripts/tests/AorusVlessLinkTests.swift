@@ -25,6 +25,33 @@ private func parsesOneProductionShape() {
     require(servers[0].path == "/aorus", "path is decoded")
 }
 
+/// The core reads a WebSocket host from two places and says of one of them: "deprecated, will be
+/// removed soon". Every feature it has said that about and then removed cost this client a
+/// transport that quietly stopped connecting, so the host is written the way it asks for.
+private func writesTheWebSocketHostTheWayTheCoreAsksFor() {
+    let uri = "vless://00000000-0000-4000-8000-000000000001@edge.example.com:443"
+        + "?encryption=none&security=tls&sni=edge.example.com&type=ws&path=%2Faorus&host=cdn.example.com#W"
+    guard let server = AorusVlessLink.parseKey(uri),
+          let ws = streamSettings(of: server)?["wsSettings"] as? [String: Any] else {
+        require(false, "a WebSocket key with a Host imports and builds")
+        return
+    }
+    require(ws["host"] as? String == "cdn.example.com", "the host is the independent field")
+    require(ws["headers"] == nil, "and not the header form the core is retiring")
+    require(ws["path"] as? String == "/aorus", "the path is unchanged")
+
+    // HTTPUpgrade is stricter about the same thing: a Host inside its headers is a hard error,
+    // which would fail the whole configuration rather than this one outbound.
+    let upgrade = uri.replacingOccurrences(of: "type=ws", with: "type=httpupgrade")
+    guard let upgraded = AorusVlessLink.parseKey(upgrade),
+          let block = streamSettings(of: upgraded)?["httpupgradeSettings"] as? [String: Any] else {
+        require(false, "an HTTPUpgrade key imports and builds")
+        return
+    }
+    require(block["host"] as? String == "cdn.example.com" && block["headers"] == nil,
+            "HTTPUpgrade carries its host the only way it is allowed to")
+}
+
 private func boundsUntrustedFanOut() {
     let input = (0 ..< 400).map { key($0 + 1) }.joined(separator: "\n")
     guard case let .success(.servers(servers)) = AorusVlessLink.parse(input) else {
@@ -597,6 +624,7 @@ private func roundTripsAHysteria2Link() {
 private enum AorusVlessLinkTests {
     static func main() {
         parsesOneProductionShape()
+        writesTheWebSocketHostTheWayTheCoreAsksFor()
         boundsUntrustedFanOut()
         rejectsInsecureAndMalformedInput()
         refusesTransportsTheCoreRemoved()
