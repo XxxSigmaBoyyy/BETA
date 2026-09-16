@@ -45,6 +45,11 @@ jobs:
       - name: UIKit initializer preflight
         run: python3 aorusgram/scripts/uikit_required_init_check.py aorusgram
 
+      # The other half of the same problem: a signature changes and one caller is missed.
+      # Parsing cannot see it either, so the labels are compared directly.
+      - name: Call argument label preflight
+        run: python3 aorusgram/scripts/swift_call_label_check.py aorusgram
+
       - name: AorusAI transport and store preflight
         run: |
           mkdir -p /tmp/aorus-ai-preflight/module-cache

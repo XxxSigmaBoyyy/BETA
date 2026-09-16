@@ -40,7 +40,7 @@ private func aorusBindText(_ statement: OpaquePointer?, _ index: Int32, _ value:
 //         seen in the chat before the feature was enabled).
 //   2. BGAppRefreshTask runs every ~15 min to flush a pending queue and mark
 //      messages confirmed-deleted when the interceptor fired.
-//   3. deletedMessages(peerId:) returns only entries that were confirmed deleted
+//   3. deletedMessages(accountKey:peerId:) returns only entries confirmed deleted
 //      (status = 1), so the user only sees actually-gone content.
 final class DeletedMessagesCache {
     static let shared = DeletedMessagesCache()

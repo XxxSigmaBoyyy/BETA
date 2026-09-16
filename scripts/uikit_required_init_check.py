@@ -51,8 +51,13 @@ UIKIT_ROOTS = ("UIView", "UIControl", "UILabel", "UITextView", "UITextField", "U
                "UITableViewController", "UICollectionViewController", "UIVisualEffectView")
 
 
-def strip(source):
-    """Comments and string literals removed, so a brace inside prose is not counted."""
+def strip(source, string_token=" "):
+    """Comments and string literals removed, so a brace inside prose is not counted.
+
+    `string_token` is what a literal collapses to. A single space is right for counting
+    braces; a caller that needs to see that an argument was there at all — the call-label
+    check does — passes a non-blank token instead.
+    """
     out = []
     index = 0
     length = len(source)
@@ -79,7 +84,7 @@ def strip(source):
         if source.startswith('"""', index):
             closing = source.find('"""', index + 3)
             index = length if closing < 0 else closing + 3
-            out.append(" ")
+            out.append(string_token)
             continue
         if source[index] == '"':
             index += 1
@@ -91,7 +96,7 @@ def strip(source):
                     index += 1
                     break
                 index += 1
-            out.append(" ")
+            out.append(string_token)
             continue
         out.append(source[index])
         index += 1

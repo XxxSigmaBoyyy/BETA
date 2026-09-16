@@ -166,8 +166,8 @@ public final class DeletedMessagesInjector {
 
     // Проверяет — нужно ли показать удалённое сообщение вместо обычного
     // index — позиция в списке, deletedAt — время удаления соседнего сообщения
-    public func shouldShowDeletedBubble(afterMessageDate date: Date, peerId: Int64) -> DeletedChatMessage? {
-        let deleted = deletedMessages(for: peerId)
+    public func shouldShowDeletedBubble(accountStoragePath: String, afterMessageDate date: Date, peerId: Int64) -> DeletedChatMessage? {
+        let deleted = deletedMessages(accountStoragePath: accountStoragePath, for: peerId)
         return deleted.first { abs($0.sentAt.timeIntervalSince(date)) < 300 }
     }
 }
