@@ -104,6 +104,13 @@ jobs:
             aorusgram/scripts/tests/AorusBackupArchiveTests.swift \
             -o /tmp/aorus-ai-preflight/backup-archive-tests
           /tmp/aorus-ai-preflight/backup-archive-tests
+          # The backup manager imports nothing but Foundation, CryptoKit and Security — it is
+          # deliberately reachable from neither module's translation table — so it can be
+          # type-checked here in seconds instead of an hour into the Bazel build.
+          swiftc -typecheck \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/Accounts/AccountBackupArchive.swift \
+            aorusgram/AorusGram/Sources/Features/Accounts/AccountBackupManager.swift
           swiftc \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/Subscription/SubscriptionL10nTable.swift \
