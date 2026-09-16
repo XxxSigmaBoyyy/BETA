@@ -3276,6 +3276,23 @@ def patch_incoming_message_hook(tg: Path) -> None:
         # would file it under whatever account was on screen and the auto-reply would answer
         # from that account. `mediaBox` here is the postbox the state manager is replaying
         # into, so its basePath names the account the message actually arrived on.
+        # Anchored on a line that survives its own insertion, so it has to be guarded or it
+        # would re-declare aorusPeerKind on the next pass.
+        if "userInfo[\"peerKind\"]" not in upgraded:
+            upgraded = upgraded.replace(
+                "                    userInfo[\"spamEligible\"] = NSNumber(value: aorusSpamEligible)\n",
+                "                    var aorusPeerKind: Int32 = 0\n"
+                "                    if mid.peerId.namespace == Namespaces.Peer.CloudGroup {\n"
+                "                        aorusPeerKind = 1\n"
+                "                    } else if mid.peerId.namespace == Namespaces.Peer.CloudChannel {\n"
+                "                        aorusPeerKind = 1\n"
+                "                        if let aorusChannel = transaction.getPeer(mid.peerId) as? TelegramChannel, case .broadcast = aorusChannel.info {\n"
+                "                            aorusPeerKind = 2\n"
+                "                        }\n"
+                "                    }\n"
+                "                    userInfo[\"peerKind\"] = NSNumber(value: aorusPeerKind)\n"
+                "                    userInfo[\"spamEligible\"] = NSNumber(value: aorusSpamEligible)\n",
+            )
         upgraded = upgraded.replace(
             "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
             "                        \"text\":   storeMsg.text,\n",
@@ -3424,6 +3441,23 @@ def patch_incoming_message_hook(tg: Path) -> None:
         "                        userInfo[\"senderId\"] = NSNumber(value: authorId.toInt64())\n"
         "                    }\n"
         "                    let aorusSpamEligible = (mid.peerId.namespace == Namespaces.Peer.CloudUser) && !transaction.isPeerContact(peerId: mid.peerId) && ((transaction.getPeer(mid.peerId) as? TelegramUser)?.botInfo == nil)\n"
+        "                    // What kind of chat this is. `PeerId.toInt64()` is POSITIVE for\n"
+        "                    // every namespace — user, group, channel and secret chat alike —\n"
+        "                    // so a client cannot read the type off the sign the way the Bot\n"
+        "                    // API can. Only the namespace says it, and for a channel only its\n"
+        "                    // info flavour separates a broadcast from a supergroup.\n"
+        "                    // 0 = private (user or secret chat), 1 = group or supergroup,\n"
+        "                    // 2 = broadcast channel.\n"
+        "                    var aorusPeerKind: Int32 = 0\n"
+        "                    if mid.peerId.namespace == Namespaces.Peer.CloudGroup {\n"
+        "                        aorusPeerKind = 1\n"
+        "                    } else if mid.peerId.namespace == Namespaces.Peer.CloudChannel {\n"
+        "                        aorusPeerKind = 1\n"
+        "                        if let aorusChannel = transaction.getPeer(mid.peerId) as? TelegramChannel, case .broadcast = aorusChannel.info {\n"
+        "                            aorusPeerKind = 2\n"
+        "                        }\n"
+        "                    }\n"
+        "                    userInfo[\"peerKind\"] = NSNumber(value: aorusPeerKind)\n"
         "                    userInfo[\"spamEligible\"] = NSNumber(value: aorusSpamEligible)\n"
         "                    NotificationCenter.default.post(\n"
         "                        name: NSNotification.Name(\"aorusgram.didReceiveMessage\"),\n"

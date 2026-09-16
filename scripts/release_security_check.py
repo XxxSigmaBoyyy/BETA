@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from uikit_required_init_check import strip as strip_swift
+
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
@@ -326,6 +328,20 @@ def main() -> int:
     # the reading side. Plus the same in-place upgrade.
     if len(re.findall(r'\\"msgNs\\":\s+NSNumber\(value: \w+\.namespace\)', branding)) != 4:
         fail(errors, "every interception hook holding a MessageId must post its namespace")
+    # The incoming hook is the only place that can tell a private chat from a group from a
+    # broadcast channel: PeerId.toInt64() is positive for every namespace, so the Bot API's
+    # "groups are negative" rule does not hold in the client, and the auto-reply's group and
+    # channel switches skipped nothing while it tried to. Fresh injection plus the upgrade.
+    if branding.count('userInfo[\\"peerKind\\"] = NSNumber(value: aorusPeerKind)') != 2:
+        fail(errors, "the incoming hook must post the peer kind it read off the namespace")
+    for name in ("AorusGram/Sources", "patches/submodules/AorusGramUI/Sources"):
+        reply = (root / name / "Features/Messaging/AutoReplyManager.swift").read_text(encoding="utf-8")
+        # Comments off: the doc comment explains the threshold it replaced, and naming it
+        # there is the point.
+        if "-1_000_000_000" in strip_swift(reply):
+            fail(errors, f"{name} auto-reply must not infer the chat type from a negative peer id")
+        if "PeerKind" not in reply:
+            fail(errors, f"{name} auto-reply must take the chat type from the interception hook")
     if '\\"accountPath\\"] as? String, !accountPath.isEmpty' not in branding:
         fail(errors, "the auto-reply sender must resolve the account the message arrived on")
     if "app.context.account,\\n" in branding:

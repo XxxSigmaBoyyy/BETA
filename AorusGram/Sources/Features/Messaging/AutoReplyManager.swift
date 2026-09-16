@@ -79,19 +79,33 @@ final class AutoReplyManager: ObservableObject {
         case skip(String)
     }
 
+    /// What kind of chat a message arrived in, as the interception hook read it off the peer.
+    ///
+    /// It has to come from there. `PeerId.toInt64()` is positive for every namespace — user,
+    /// group, channel, secret chat — so the Bot API's convention of negative ids for groups
+    /// does not hold inside the client. This used to test `peerId < -1_000_000_000`, which is
+    /// never true, so "skip groups" and "skip channels" — both on by default — skipped nothing
+    /// and the auto-reply answered in every group and channel the user was in.
+    enum PeerKind: Int32 {
+        case privateChat = 0
+        case group = 1        // legacy group or supergroup
+        case broadcast = 2    // broadcast channel
+    }
+
     /// Called by the aorus_branding.py hook when a new incoming message arrives.
     ///
     /// `accountPath` is the receiving account's `postbox.mediaBox.basePath`, which the incoming
     /// hook reads off the very `MediaBox` the state manager is replaying into. It identifies
     /// the account the message actually arrived on, which is not necessarily the one on screen.
-    /// Parameters: peerId (negative for groups/channels), isGroup, isChannel
-    func decide(accountPath: String, peerId: Int64, isGroup: Bool, isChannel: Bool) -> AutoReplyDecision {
+    /// `kind` likewise comes from the hook, which is the only place that can tell a group from
+    /// a channel from a private chat — see PeerKind.
+    func decide(accountPath: String, peerId: Int64, kind: PeerKind) -> AutoReplyDecision {
         guard AorusGramConfig.isEnabled(.autoReply), isEnabled else {
             return .skip("feature disabled")
         }
         if accountPath.isEmpty { return .skip("no account origin") }
-        if skipGroups, isGroup   { return .skip("group skipped") }
-        if skipChannels, isChannel { return .skip("channel skipped") }
+        if skipGroups, kind == .group { return .skip("group skipped") }
+        if skipChannels, kind == .broadcast { return .skip("channel skipped") }
 
         let cooldown = TimeInterval(cooldownMinutes * 60)
         let now = Date()
@@ -117,12 +131,8 @@ final class AutoReplyManager: ObservableObject {
 
     // MARK: - Called from AorusGramBootstrap when incoming message arrives
 
-    func handleIncoming(accountPath: String, peerId: Int64, text: String) {
-        // Negative peerId = group/channel in Telegram's internal representation
-        let isGroup   = peerId < -1_000_000_000
-        let isChannel = peerId < -1_000_000_000_000
-
-        let decision = decide(accountPath: accountPath, peerId: peerId, isGroup: isGroup, isChannel: isChannel)
+    func handleIncoming(accountPath: String, peerId: Int64, kind: PeerKind, text: String) {
+        let decision = decide(accountPath: accountPath, peerId: peerId, kind: kind)
         if case .send(let msg) = decision {
             // Post NotificationCenter event — branding.py-injected code in TelegramUI
             // observes this and sends from the account named by `accountPath`. Without that

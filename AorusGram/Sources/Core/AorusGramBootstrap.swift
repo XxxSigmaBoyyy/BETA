@@ -219,12 +219,16 @@ public final class AorusGramBootstrap {
         // proof they were online at that moment.
         AntiSpoofManager.shared.recordActivity(peerId: senderId, kind: .message)
 
-        // Auto-reply. The reply has to leave the account the message arrived on, so an event
-        // that cannot name its account is not answered at all rather than answered from
-        // whichever account happens to be on screen.
+        // Auto-reply. The reply has to leave the account the message arrived on and honour the
+        // group and channel switches, and only the interception hook can say either — so an
+        // event that names neither is not answered at all, rather than answered from whichever
+        // account happens to be on screen, in a chat the user asked to be left alone.
         if AorusGramConfig.isEnabled(.autoReply),
-           let accountPath = info[AorusDMCNotifKey.accountPath] as? String, !accountPath.isEmpty {
-            AutoReplyManager.shared.handleIncoming(accountPath: accountPath, peerId: peerId, text: text)
+           let accountPath = info[AorusDMCNotifKey.accountPath] as? String, !accountPath.isEmpty,
+           let rawKind = (info["peerKind"] as? NSNumber)?.int32Value,
+           let kind = AutoReplyManager.PeerKind(rawValue: rawKind) {
+            AutoReplyManager.shared.handleIncoming(accountPath: accountPath, peerId: peerId,
+                                                   kind: kind, text: text)
         }
     }
 
