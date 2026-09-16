@@ -321,6 +321,11 @@ def main() -> int:
     # an older build. Spacing varies because some of these sit in aligned dictionary literals.
     if len(re.findall(r'\\"accountPath\\":\s+mediaBox\.basePath', branding)) != 5:
         fail(errors, "every message interception hook must post the originating accountPath")
+    # Three of those four carry a MessageId and must name its namespace too; the fourth is the
+    # global-id delete, which has no MessageId at all and is pinned to the cloud namespace on
+    # the reading side. Plus the same in-place upgrade.
+    if len(re.findall(r'\\"msgNs\\":\s+NSNumber\(value: \w+\.namespace\)', branding)) != 4:
+        fail(errors, "every interception hook holding a MessageId must post its namespace")
     if '\\"accountPath\\"] as? String, !accountPath.isEmpty' not in branding:
         fail(errors, "the auto-reply sender must resolve the account the message arrived on")
     if "app.context.account,\\n" in branding:

@@ -1047,6 +1047,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "        let userInfo: [String: Any] = [\n"
                 "            \"msgId\":  NSNumber(value: id.id),\n"
                 "            \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
+                # A message id is only unique within one namespace of one peer: scheduled and
+                # quick-reply messages are numbered from 1 alongside cloud messages.
+                "            \"msgNs\":  NSNumber(value: id.namespace),\n"
                 # Which account this delete belongs to. The cache keys every row by it;
                 # without it one account's row was marked deleted by another's event.
                 "            \"accountPath\": mediaBox.basePath,\n"
@@ -1204,6 +1207,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        userInfo: [\n"
                 "                            \"msgId\":        NSNumber(value: id.id),\n"
                 "                            \"peerId\":       NSNumber(value: id.peerId.toInt64()),\n"
+                "                            \"msgNs\":        NSNumber(value: id.namespace),\n"
                 "                            \"accountPath\":  mediaBox.basePath,\n"
                 "                            \"originalText\": prev.text,\n"
                 "                            \"newText\":      message.text,\n"
@@ -3276,6 +3280,7 @@ def patch_incoming_message_hook(tg: Path) -> None:
             "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
             "                        \"text\":   storeMsg.text,\n",
             "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+            "                        \"msgNs\":  NSNumber(value: mid.namespace),\n"
             "                        \"accountPath\": mediaBox.basePath,\n"
             "                        \"text\":   storeMsg.text,\n",
         )
@@ -3410,6 +3415,7 @@ def patch_incoming_message_hook(tg: Path) -> None:
         "                    var userInfo: [String: Any] = [\n"
         "                        \"msgId\":  NSNumber(value: mid.id),\n"
         "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+        "                        \"msgNs\":  NSNumber(value: mid.namespace),\n"
         "                        \"accountPath\": mediaBox.basePath,\n"
         "                        \"text\":   storeMsg.text,\n"
         "                        \"date\":   NSNumber(value: storeMsg.timestamp),\n"
