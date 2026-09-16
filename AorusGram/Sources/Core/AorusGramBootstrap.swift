@@ -219,9 +219,12 @@ public final class AorusGramBootstrap {
         // proof they were online at that moment.
         AntiSpoofManager.shared.recordActivity(peerId: senderId, kind: .message)
 
-        // Auto-reply
-        if AorusGramConfig.isEnabled(.autoReply) {
-            AutoReplyManager.shared.handleIncoming(peerId: peerId, text: text)
+        // Auto-reply. The reply has to leave the account the message arrived on, so an event
+        // that cannot name its account is not answered at all rather than answered from
+        // whichever account happens to be on screen.
+        if AorusGramConfig.isEnabled(.autoReply),
+           let accountPath = info[AorusDMCNotifKey.accountPath] as? String, !accountPath.isEmpty {
+            AutoReplyManager.shared.handleIncoming(accountPath: accountPath, peerId: peerId, text: text)
         }
     }
 

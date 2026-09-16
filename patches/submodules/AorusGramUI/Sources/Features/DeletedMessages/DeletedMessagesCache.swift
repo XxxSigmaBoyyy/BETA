@@ -71,7 +71,38 @@ final class DeletedMessagesCache {
         sqlite3_exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;", nil, nil, nil)
     }
 
+    /// A stable per-account number derived from that account's own storage path.
+    ///
+    /// Every row belongs to ONE account. Before this there was no such column: the table
+    /// was keyed by `(id, peer_id)` alone, one file was shared by every account signed in,
+    /// and a message id is only unique WITHIN an account. Two accounts that both talk to
+    /// the same person — or are both in the same channel — overwrote each other's rows, so
+    /// a deleted message from a work account could be read in a personal one and a delete
+    /// in one marked the other's row as gone.
+    ///
+    /// The key is the account's media storage path, hashed. That path is what every
+    /// interception site has in hand (`mediaBox.basePath`), it is distinct per account and
+    /// stable for as long as the account exists on the device — and it changes exactly when
+    /// the account is removed and added again, which is when a fresh key is wanted.
+    ///
+    /// FNV-1a rather than `hashValue`: Swift seeds its hasher per process, so the same path
+    /// would key different rows on the next launch.
+    static func accountKey(forStoragePath path: String) -> Int64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in path.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01B3
+        }
+        // Folded into the non-negative range so the column never carries a sign no reader
+        // expects, and never zero, which is reserved for "unattributed".
+        let folded = Int64(bitPattern: hash & 0x7fff_ffff_ffff_ffff)
+        return folded == 0 ? 1 : folded
+    }
+
     private func createTable() {
+        // Rows written before the account column existed cannot be attributed to anyone.
+        // Keeping them would mean showing one account's history inside another's, which is
+        // the whole defect; they are dropped once, and the cache refills from live traffic.
         sqlite3_exec(db, """
         CREATE TABLE IF NOT EXISTS messages (
             id            INTEGER,
@@ -88,11 +119,13 @@ final class DeletedMessagesCache {
             media_path    TEXT,
             is_outgoing   INTEGER DEFAULT 0,
             status        INTEGER DEFAULT 0,     -- 0=cached, 1=deleted
-            PRIMARY KEY (id, peer_id)
+            account_key   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (account_key, peer_id, id)
         );
-        CREATE INDEX IF NOT EXISTS idx_peer_date ON messages(peer_id, date DESC);
-        CREATE INDEX IF NOT EXISTS idx_status    ON messages(peer_id, status, edited_at, date DESC);
+        CREATE INDEX IF NOT EXISTS idx_peer_date ON messages(account_key, peer_id, date DESC);
+        CREATE INDEX IF NOT EXISTS idx_status    ON messages(account_key, peer_id, status, edited_at, date DESC);
         """, nil, nil, nil)
+        migrateToAccountScopedSchema()
 
         // Idempotent migration for users upgrading from earlier schema (no-op
         // if column already exists — sqlite returns SQLITE_ERROR which we ignore).
@@ -100,10 +133,58 @@ final class DeletedMessagesCache {
         sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN edited_at INTEGER;", nil, nil, nil)
     }
 
+    /// Bring a table written by an earlier build up to the account-scoped schema.
+    ///
+    /// SQLite cannot change a primary key in place, so the table is rebuilt. Nothing is
+    /// carried over: every existing row predates the account column and there is no way to
+    /// say whose it was. Attributing them to whoever happens to be signed in would be the
+    /// same leak under a new name.
+    private func migrateToAccountScopedSchema() {
+        guard let db else { return }
+        var stmt: OpaquePointer?
+        var hasAccountKey = false
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(messages);", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let name = sqlite3_column_text(stmt, 1).map({ String(cString: $0) }),
+                   name == "account_key" {
+                    hasAccountKey = true
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard !hasAccountKey else { return }
+        sqlite3_exec(db, """
+        BEGIN IMMEDIATE;
+        DROP TABLE IF EXISTS messages;
+        CREATE TABLE messages (
+            id            INTEGER,
+            peer_id       INTEGER NOT NULL,
+            sender_id     INTEGER,
+            sender_name   TEXT,
+            text          TEXT,
+            original_text TEXT,
+            edited_at     INTEGER,
+            date          INTEGER NOT NULL,
+            cached_at     INTEGER NOT NULL,
+            deleted_at    INTEGER,
+            media_type    TEXT,
+            media_path    TEXT,
+            is_outgoing   INTEGER DEFAULT 0,
+            status        INTEGER DEFAULT 0,
+            account_key   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (account_key, peer_id, id)
+        );
+        CREATE INDEX idx_peer_date ON messages(account_key, peer_id, date DESC);
+        CREATE INDEX idx_status    ON messages(account_key, peer_id, status, edited_at, date DESC);
+        COMMIT;
+        """, nil, nil, nil)
+    }
+
     // MARK: - Cache API (called from two hooks)
 
     /// Cache a message that just arrived. Call before any deletion.
     func cacheMessage(
+        accountKey: Int64,
         id: Int32,
         peerId: Int64,
         senderId: Int64?,
@@ -120,8 +201,8 @@ final class DeletedMessagesCache {
             guard let self, let db = self.db else { return }
             let sql = """
             INSERT OR REPLACE INTO messages
-            (id, peer_id, sender_id, sender_name, text, date, cached_at, deleted_at, media_type, media_path, is_outgoing, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            (id, peer_id, sender_id, sender_name, text, date, cached_at, deleted_at, media_type, media_path, is_outgoing, status, account_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -143,22 +224,24 @@ final class DeletedMessagesCache {
             aorusBindText(stmt, 10, mediaPath ?? "")
             sqlite3_bind_int(stmt,  11, isOutgoing ? 1 : 0)
             sqlite3_bind_int(stmt,  12, markDeleted ? 1 : 0)
+            sqlite3_bind_int64(stmt, 13, accountKey)
             sqlite3_step(stmt)
         }
     }
 
     /// Mark an already-cached message as deleted (called when server sends delete update).
-    func markDeleted(id: Int32, peerId: Int64) {
+    func markDeleted(accountKey: Int64, id: Int32, peerId: Int64) {
         guard AorusGramConfig.isEnabled(.deletedMessages) else { return }
         queue.async { [weak self] in
             guard let self, let db = self.db else { return }
-            let sql = "UPDATE messages SET status=1, deleted_at=? WHERE id=? AND peer_id=?;"
+            let sql = "UPDATE messages SET status=1, deleted_at=? WHERE account_key=? AND id=? AND peer_id=?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int64(stmt, 1, Int64(Date().timeIntervalSince1970))
-            sqlite3_bind_int(stmt,  2, id)
-            sqlite3_bind_int64(stmt, 3, peerId)
+            sqlite3_bind_int64(stmt, 2, accountKey)
+            sqlite3_bind_int(stmt,  3, id)
+            sqlite3_bind_int64(stmt, 4, peerId)
             sqlite3_step(stmt)
         }
     }
@@ -167,7 +250,7 @@ final class DeletedMessagesCache {
     /// edit (subsequent edits update `text` but keep the first-known original) so
     /// the user always sees the very first version, not the most-recent-but-one.
     /// Inserts a stub row if the message was never pre-cached.
-    func markEdited(id: Int32, peerId: Int64, originalText: String, newText: String, date: Int32) {
+    func markEdited(accountKey: Int64, id: Int32, peerId: Int64, originalText: String, newText: String, date: Int32) {
         guard AorusGramConfig.isEnabled(.deletedMessages) else { return }
         queue.async { [weak self] in
             guard let self, let db = self.db else { return }
@@ -179,15 +262,16 @@ final class DeletedMessagesCache {
             SET text = ?,
                 original_text = COALESCE(original_text, ?),
                 edited_at = ?
-            WHERE id = ? AND peer_id = ?;
+            WHERE account_key = ? AND id = ? AND peer_id = ?;
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK else { return }
             aorusBindText(stmt, 1, newText)
             aorusBindText(stmt, 2, originalText)
             sqlite3_bind_int64(stmt, 3, now)
-            sqlite3_bind_int(stmt,   4, id)
-            sqlite3_bind_int64(stmt, 5, peerId)
+            sqlite3_bind_int64(stmt, 4, accountKey)
+            sqlite3_bind_int(stmt,   5, id)
+            sqlite3_bind_int64(stmt, 6, peerId)
             sqlite3_step(stmt)
             let changed = sqlite3_changes(db)
             sqlite3_finalize(stmt)
@@ -197,8 +281,8 @@ final class DeletedMessagesCache {
             let insertSQL = """
             INSERT OR REPLACE INTO messages
             (id, peer_id, sender_id, sender_name, text, original_text, edited_at,
-             date, cached_at, deleted_at, media_type, media_path, is_outgoing, status)
-            VALUES (?, ?, 0, '', ?, ?, ?, ?, ?, NULL, '', '', 0, 0);
+             date, cached_at, deleted_at, media_type, media_path, is_outgoing, status, account_key)
+            VALUES (?, ?, 0, '', ?, ?, ?, ?, ?, NULL, '', '', 0, 0, ?);
             """
             var ins: OpaquePointer?
             guard sqlite3_prepare_v2(db, insertSQL, -1, &ins, nil) == SQLITE_OK else { return }
@@ -210,6 +294,7 @@ final class DeletedMessagesCache {
             sqlite3_bind_int64(ins, 5, now)
             sqlite3_bind_int(ins,  6, date)
             sqlite3_bind_int64(ins, 7, now)
+            sqlite3_bind_int64(ins, 8, accountKey)
             sqlite3_step(ins)
         }
     }
@@ -218,7 +303,7 @@ final class DeletedMessagesCache {
 
     /// Returns rows that are either deleted (status=1) OR edited (original_text NOT NULL).
     /// The UI surfaces both — for edits we show current text + 'Оригинал:' line.
-    func deletedMessages(peerId: Int64, limit: Int = 200) -> [DeletedMessage] {
+    func deletedMessages(accountKey: Int64, peerId: Int64, limit: Int = 200) -> [DeletedMessage] {
         var results: [DeletedMessage] = []
         queue.sync { [weak self] in
             guard let self, let db = self.db else { return }
@@ -228,23 +313,24 @@ final class DeletedMessagesCache {
                 SELECT id, peer_id, sender_id, sender_name, text, original_text, edited_at,
                        date, deleted_at, media_type, media_path, is_outgoing, status
                 FROM messages
-                WHERE status=1 OR original_text IS NOT NULL
+                WHERE account_key=? AND (status=1 OR original_text IS NOT NULL)
                 ORDER BY COALESCE(edited_at, deleted_at, date) DESC LIMIT ?;
             """ : """
                 SELECT id, peer_id, sender_id, sender_name, text, original_text, edited_at,
                        date, deleted_at, media_type, media_path, is_outgoing, status
                 FROM messages
-                WHERE peer_id=? AND (status=1 OR original_text IS NOT NULL)
+                WHERE account_key=? AND peer_id=? AND (status=1 OR original_text IS NOT NULL)
                 ORDER BY COALESCE(edited_at, deleted_at, date) DESC LIMIT ?;
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, accountKey)
             if allChats {
-                sqlite3_bind_int(stmt, 1, Int32(limit))
+                sqlite3_bind_int(stmt, 2, Int32(limit))
             } else {
-                sqlite3_bind_int64(stmt, 1, peerId)
-                sqlite3_bind_int(stmt,   2, Int32(limit))
+                sqlite3_bind_int64(stmt, 2, peerId)
+                sqlite3_bind_int(stmt,   3, Int32(limit))
             }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let idVal     = sqlite3_column_int(stmt, 0)
@@ -275,13 +361,14 @@ final class DeletedMessagesCache {
     }
 
     /// Total number of items shown in the "Deleted" view: deletions + edits.
-    func allDeletedCount() -> Int {
+    func allDeletedCount(accountKey: Int64) -> Int {
         var count = 0
         queue.sync { [weak self] in
             guard let self, let db = self.db else { return }
             var stmt: OpaquePointer?
-            let sql = "SELECT COUNT(*) FROM messages WHERE status=1 OR original_text IS NOT NULL;"
+            let sql = "SELECT COUNT(*) FROM messages WHERE account_key=? AND (status=1 OR original_text IS NOT NULL);"
             if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(stmt, 1, accountKey)
                 if sqlite3_step(stmt) == SQLITE_ROW { count = Int(sqlite3_column_int(stmt, 0)) }
                 sqlite3_finalize(stmt)
             }
@@ -389,6 +476,24 @@ enum AorusDMCNotifKey {
     static let text       = "text"       // String
     static let date       = "date"       // NSNumber Int32
     static let isOutgoing = "isOutgoing" // NSNumber Bool
+    /// The media storage path of the account the event belongs to. Every interception
+    /// site has it in hand, and it is what keeps one account's rows out of another's.
+    static let accountPath = "accountPath" // String
+}
+
+extension DeletedMessagesCache {
+    /// The account an event came from, or nil when the event carries no origin.
+    ///
+    /// An event with no account is not written anywhere. A row that cannot be attributed
+    /// is a row that will be read by whoever is signed in, which is the defect itself —
+    /// and an event from a build whose hook was not updated is better dropped than filed
+    /// under the wrong person.
+    static func accountKey(from info: [AnyHashable: Any]?) -> Int64? {
+        guard let path = info?[AorusDMCNotifKey.accountPath] as? String, !path.isEmpty else {
+            return nil
+        }
+        return accountKey(forStoragePath: path)
+    }
 }
 
 extension DeletedMessagesCache {
@@ -400,6 +505,7 @@ extension DeletedMessagesCache {
     func handleIncomingNotification(_ note: Notification) {
         guard AorusGramConfig.isEnabled(.deletedMessages),
               let info   = note.userInfo,
+              let accountKey = Self.accountKey(from: info),
               let msgId  = (info["msgId"]  as? NSNumber)?.int32Value,
               let peerId = (info["peerId"] as? NSNumber)?.int64Value
         else { return }
@@ -409,6 +515,7 @@ extension DeletedMessagesCache {
         let date       = (info["date"]      as? NSNumber)?.int32Value ?? 0
 
         cacheMessage(
+            accountKey: accountKey,
             id: msgId, peerId: peerId,
             senderId: senderId, senderName: senderName,
             text: text, date: date,
@@ -422,16 +529,21 @@ extension DeletedMessagesCache {
     func handleWillDeleteByGlobalIdNotification(_ note: Notification) {
         guard AorusGramConfig.isEnabled(.deletedMessages),
               let info  = note.userInfo,
+              let accountKey = Self.accountKey(from: info),
               let msgId = (info["msgId"] as? NSNumber)?.int32Value
         else { return }
         queue.async { [weak self] in
             guard let self, let db = self.db else { return }
-            let sql = "UPDATE messages SET status=1, deleted_at=? WHERE id=? AND status=0;"
+            // Scoped to the account the event came from. Without that clause this marked
+            // every account's row carrying the same number as deleted, and a message id is
+            // only unique within one account.
+            let sql = "UPDATE messages SET status=1, deleted_at=? WHERE account_key=? AND id=? AND status=0;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int64(stmt, 1, Int64(Date().timeIntervalSince1970))
-            sqlite3_bind_int(stmt,  2, msgId)
+            sqlite3_bind_int64(stmt, 2, accountKey)
+            sqlite3_bind_int(stmt,  3, msgId)
             sqlite3_step(stmt)
         }
     }
@@ -442,10 +554,11 @@ extension DeletedMessagesCache {
     func handleWillDeleteNotification(_ note: Notification) {
         guard AorusGramConfig.isEnabled(.deletedMessages),
               let info   = note.userInfo,
+              let accountKey = Self.accountKey(from: info),
               let msgId  = (info[AorusDMCNotifKey.msgId]  as? NSNumber)?.int32Value,
               let peerId = (info[AorusDMCNotifKey.peerId] as? NSNumber)?.int64Value
         else { return }
-        markDeleted(id: msgId, peerId: peerId)
+        markDeleted(accountKey: accountKey, id: msgId, peerId: peerId)
     }
 
     /// Handle the NotificationCenter event posted by the TelegramCore edit patch.
@@ -454,12 +567,14 @@ extension DeletedMessagesCache {
     func handleWillEditNotification(_ note: Notification) {
         guard AorusGramConfig.isEnabled(.deletedMessages),
               let info     = note.userInfo,
+              let accountKey = Self.accountKey(from: info),
               let msgId    = (info["msgId"]        as? NSNumber)?.int32Value,
               let peerId   = (info["peerId"]       as? NSNumber)?.int64Value,
               let original = info["originalText"]  as? String,
               let newText  = info["newText"]       as? String
         else { return }
         let date = (info["date"] as? NSNumber)?.int32Value ?? 0
-        markEdited(id: msgId, peerId: peerId, originalText: original, newText: newText, date: date)
+        markEdited(accountKey: accountKey, id: msgId, peerId: peerId,
+                   originalText: original, newText: newText, date: date)
     }
 }

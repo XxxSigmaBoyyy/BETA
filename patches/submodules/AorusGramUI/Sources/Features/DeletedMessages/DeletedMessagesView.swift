@@ -4,6 +4,9 @@ import SwiftUI
 // Open from the chat context menu: "Удалённые сообщения".
 struct DeletedMessagesView: View {
     let peerId: Int64
+    /// `account.postbox.mediaBox.basePath` of the account being shown. The cache keeps one
+    /// account's rows out of another's and needs to be told which one is asking.
+    let accountStoragePath: String
     let peerName: String
 
     @State private var messages: [DeletedMessage] = []
@@ -85,7 +88,8 @@ struct DeletedMessagesView: View {
     private func reload() {
         isLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = DeletedMessagesCache.shared.deletedMessages(peerId: peerId)
+            let accountKey = DeletedMessagesCache.accountKey(forStoragePath: accountStoragePath)
+            let result = DeletedMessagesCache.shared.deletedMessages(accountKey: accountKey, peerId: peerId)
             DispatchQueue.main.async {
                 self.messages = result
                 self.isLoading = false

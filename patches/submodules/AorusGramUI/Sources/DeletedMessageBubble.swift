@@ -143,8 +143,13 @@ public final class DeletedMessagesInjector {
 
     // Возвращает список удалённых сообщений для вставки в чат
     // Вызывается из ChatHistoryListNode при построении списка сообщений
-    public func deletedMessages(for peerId: Int64) -> [DeletedChatMessage] {
-        return DeletedMessagesCache.shared.deletedMessages(peerId: peerId)
+    //
+    /// `accountStoragePath` is `account.postbox.mediaBox.basePath` — the account whose
+    /// history is being drawn. The cache stores one account's rows apart from another's,
+    /// and a reader that does not say which account it is would be asking for all of them.
+    public func deletedMessages(accountStoragePath: String, for peerId: Int64) -> [DeletedChatMessage] {
+        let accountKey = DeletedMessagesCache.accountKey(forStoragePath: accountStoragePath)
+        return DeletedMessagesCache.shared.deletedMessages(accountKey: accountKey, peerId: peerId)
             .map { dm in
                 DeletedChatMessage(
                     id:          dm.id,

@@ -90,6 +90,15 @@ public final class AccountBackupManager {
         var accountCount: Int
         var accountIds: [String]
         var accounts: [AccountRecordMeta]?
+        /// Which set of chunk items this metadata describes.
+        ///
+        /// Chunks used to be written under one fixed set of names, which meant a new backup
+        /// had to delete the old chunks before it could write its own: an error or a kill in
+        /// the middle left the durable copy half-erased and unusable. A new backup now writes
+        /// a new generation alongside the old one, and this field — written last, in a single
+        /// Keychain item — is the commit. Absent in metadata written before generations
+        /// existed, which is generation 0 and the unsuffixed chunk names.
+        var generation: Int?
     }
 
     private static let archiveName  = "aorus-account-backup.enc"
@@ -99,10 +108,19 @@ public final class AccountBackupManager {
     private static let pendingMergeFlagKey = "aorusgram_pending_restore_merge_v1"
     private static let pendingSelectedAccountKey = "aorusgram_pending_restore_account_id_v1"
 
-    // "AORSBK" + format version 1
-    private let magic: [UInt8] = [0x41, 0x4F, 0x52, 0x53, 0x42, 0x4B, 0x01]
+    // The archive format itself — framing, per-entry associated data and the sealed manifest —
+    // lives in AorusBackupArchive so it can be compiled and exercised on its own.
+    private let maxSealedManifestSize: UInt64 = 32 * 1024 * 1024
 
-    private enum BackupError: Error { case truncated, corrupt }
+    private var archiveLimits: AorusBackupArchive.Limits {
+        return AorusBackupArchive.Limits(
+            maxEntryCount: maxArchiveEntryCount,
+            maxSealedPathSize: maxEncryptedPathSize,
+            maxSealedEntrySize: maxEncryptedEntrySize,
+            maxSealedArchiveSize: maxEncryptedArchiveSize,
+            maxSealedManifestSize: maxSealedManifestSize
+        )
+    }
 
     // The AorusGram core module and AorusGramUI both compile this file and it has to stay
     // byte-identical between them (release_security_check enforces that), so it can reach
@@ -239,55 +257,46 @@ public final class AccountBackupManager {
 
         let key = loadKey() ?? SymmetricKey(size: .bits256)
 
+        // The key is committed BEFORE the archive, and never by deleting the live one. The old
+        // order wrote the archive over the previous one first and, if the key then failed to
+        // save, deleted the archive it had just written — so a failed backup destroyed the
+        // working backup and, because saveKey deleted before it added, could destroy the key
+        // that made the Keychain copy readable as well.
+        guard saveKey(key) else {
+            return .failure(localized("Не удалось сохранить ключ в Keychain", "Failed to save key in Keychain"))
+        }
+
         let tmpURL = URL(fileURLWithPath: rootPath)
             .appendingPathComponent(Self.archiveName + ".tmp")
-        try? fm.removeItem(at: tmpURL)
-        guard fm.createFile(atPath: tmpURL.path, contents: nil),
-              let handle = try? FileHandle(forWritingTo: tmpURL) else {
-            return .failure(localized("Не удалось создать файл бэкапа", "Failed to create backup file"))
-        }
-
-        handle.write(Data(magic))
-        var encryptedBytes = UInt64(magic.count)
-        for file in files {
-            guard let content = fm.contents(atPath: file.abs),
-                  let encPath = (try? AES.GCM.seal(Data(file.rel.utf8), using: key))?.combined,
-                  let encBody = (try? AES.GCM.seal(content, using: key))?.combined else {
-                handle.closeFile()
-                try? fm.removeItem(at: tmpURL)
-                return .failure(localized("Ошибка шифрования данных", "Data encryption failed"))
-            }
-            let (nextEncryptedBytes, overflow) = encryptedBytes.addingReportingOverflow(
-                UInt64(4 + 8) + UInt64(encPath.count) + UInt64(encBody.count)
-            )
-            guard encPath.count <= Int(maxEncryptedPathSize),
-                  encBody.count <= Int(maxEncryptedEntrySize),
-                  !overflow,
-                  nextEncryptedBytes <= maxEncryptedArchiveSize - UInt64(MemoryLayout<UInt32>.size) else {
-                handle.closeFile()
-                try? fm.removeItem(at: tmpURL)
-                return .failure(localized("Бэкап слишком большой", "Backup is too large"))
-            }
-            encryptedBytes = nextEncryptedBytes
-            handle.write(uint32LE(UInt32(encPath.count)))
-            handle.write(encPath)
-            handle.write(uint64LE(UInt64(encBody.count)))
-            handle.write(encBody)
-        }
-        handle.write(uint32LE(0)) // end marker
-        handle.closeFile()
-
-        try? fm.removeItem(at: archiveURL)
+        var cursor = 0
         do {
-            try fm.moveItem(at: tmpURL, to: archiveURL)
+            try AorusBackupArchive.write(to: tmpURL, key: key, limits: archiveLimits) {
+                guard cursor < files.count else { return nil }
+                let file = files[cursor]
+                cursor += 1
+                guard let content = fm.contents(atPath: file.abs) else {
+                    throw AorusBackupArchive.Failure.encryption
+                }
+                return AorusBackupArchive.Entry(path: file.rel, body: content)
+            }
+        } catch AorusBackupArchive.Failure.tooLarge {
+            try? fm.removeItem(at: tmpURL)
+            return .failure(localized("Бэкап слишком большой", "Backup is too large"))
+        } catch AorusBackupArchive.Failure.io {
+            try? fm.removeItem(at: tmpURL)
+            return .failure(localized("Не удалось создать файл бэкапа", "Failed to create backup file"))
+        } catch {
+            try? fm.removeItem(at: tmpURL)
+            return .failure(localized("Ошибка шифрования данных", "Data encryption failed"))
+        }
+
+        // Atomic replace. The previous archive is only unlinked once the new one is in place,
+        // so an interrupted commit leaves the old backup whole instead of leaving nothing.
+        do {
+            try commitArchive(from: tmpURL)
         } catch {
             try? fm.removeItem(at: tmpURL)
             return .failure(localized("Не удалось сохранить бэкап", "Failed to save backup"))
-        }
-
-        guard saveKey(key) else {
-            try? fm.removeItem(at: archiveURL)
-            return .failure(localized("Не удалось сохранить ключ в Keychain", "Failed to save key in Keychain"))
         }
 
         let attrs = try? fm.attributesOfItem(atPath: archiveURL.path)
@@ -313,6 +322,20 @@ public final class AccountBackupManager {
         ud.set(Int(info.sizeBytes), forKey: metaSizeKey)
         ud.set(ids, forKey: metaIdsKey)
         return .success(info)
+    }
+
+    /// Moves a freshly written archive into place without a window where neither exists.
+    ///
+    /// `replaceItemAt` swaps the inode and only then discards the old file; the previous code
+    /// removed the destination first and moved afterwards, so a failure or a kill between the
+    /// two left the user with no archive at all.
+    private func commitArchive(from tmpURL: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: archiveURL.path) {
+            _ = try fm.replaceItemAt(archiveURL, withItemAt: tmpURL)
+        } else {
+            try fm.moveItem(at: tmpURL, to: archiveURL)
+        }
     }
 
     private func collectBackupFiles(into files: inout [(abs: String, rel: String)]) {
@@ -422,6 +445,18 @@ public final class AccountBackupManager {
         guard hasBackup(), let key = loadKey() else { return .failure(localized("Бэкап не найден", "Backup not found")) }
         let fm = FileManager.default
 
+        guard fm.fileExists(atPath: archiveURL.path) else {
+            return .failure(localized("Не удалось открыть бэкап", "Failed to open backup"))
+        }
+
+        // A pre-v2 archive is upgraded in place before anything reads it. v1 authenticated
+        // each box on its own and nothing about the archive's shape, so entries could be
+        // reordered, dropped or spliced in from another archive with every remaining tag
+        // still verifying. The reader below accepts v2 only.
+        if migrateLegacyArchive(key: key) == .failed {
+            return .failure(localized("Файл бэкапа повреждён", "Backup file is corrupted"))
+        }
+
         try? fm.removeItem(at: stagingURL)
         do {
             try fm.createDirectory(at: stagingURL, withIntermediateDirectories: true)
@@ -429,80 +464,31 @@ public final class AccountBackupManager {
             return .failure(localized("Не удалось создать папку восстановления", "Failed to create restore folder"))
         }
 
-        guard let handle = try? FileHandle(forReadingFrom: archiveURL) else {
-            try? fm.removeItem(at: stagingURL)
-            return .failure(localized("Не удалось открыть бэкап", "Failed to open backup"))
-        }
-
-        let head = handle.readData(ofLength: magic.count)
-        guard Array(head) == magic else {
-            handle.closeFile()
-            try? fm.removeItem(at: stagingURL)
-            return .failure(localized("Файл бэкапа повреждён", "Backup file is corrupted"))
-        }
-
         do {
-            var reachedEndMarker = false
-            var entryCount = 0
-            var encryptedBytes: UInt64 = UInt64(magic.count)
-            while true {
-                let pathLenData = handle.readData(ofLength: 4)
-                guard pathLenData.count == 4 else { throw BackupError.truncated }
-                let encPathLen = readUInt32LE(pathLenData)
-                if encPathLen == 0 {
-                    reachedEndMarker = true
-                    break
-                }
-                guard encPathLen <= maxEncryptedPathSize else { throw BackupError.corrupt }
-                entryCount += 1
-                guard entryCount <= maxArchiveEntryCount else { throw BackupError.corrupt }
-
-                let encPath = handle.readData(ofLength: Int(encPathLen))
-                guard encPath.count == Int(encPathLen) else { throw BackupError.truncated }
-                let bodyLenData = handle.readData(ofLength: 8)
-                guard bodyLenData.count == 8 else { throw BackupError.truncated }
-                let encBodyLen = readUInt64LE(bodyLenData)
-                guard encBodyLen <= maxEncryptedEntrySize,
-                      encBodyLen <= UInt64(Int.max) else { throw BackupError.corrupt }
-                let (nextEncryptedBytes, overflow) = encryptedBytes.addingReportingOverflow(
-                    UInt64(4 + 8) + UInt64(encPathLen) + encBodyLen
-                )
-                guard !overflow, nextEncryptedBytes <= maxEncryptedArchiveSize else {
-                    throw BackupError.corrupt
-                }
-                encryptedBytes = nextEncryptedBytes
-                let encBody = handle.readData(ofLength: Int(encBodyLen))
-                guard encBody.count == Int(encBodyLen) else { throw BackupError.truncated }
-
-                let relData = try AES.GCM.open(AES.GCM.SealedBox(combined: encPath), using: key)
-                guard let rel = String(data: relData, encoding: .utf8),
-                      isSafeRelativePath(rel) else { throw BackupError.corrupt }
-
+            try AorusBackupArchive.read(url: archiveURL, key: key, limits: archiveLimits) { entry in
+                guard isSafeRelativePath(entry.path) else { throw AorusBackupArchive.Failure.corrupt }
                 if mergeIntoExisting, let selectedAccountId {
                     let accountRoot = "account-" + selectedAccountId
-                    let belongsToSelection = rel == "accounts-metadata/atomic-state"
-                        || rel == accountRoot
-                        || rel.hasPrefix(accountRoot + "/")
-                    if !belongsToSelection {
-                        continue
-                    }
+                    let belongsToSelection = entry.path == "accounts-metadata/atomic-state"
+                        || entry.path == accountRoot
+                        || entry.path.hasPrefix(accountRoot + "/")
+                    // Entries outside the selection are still decrypted and verified — the
+                    // manifest covers the whole archive, so skipping them here would leave a
+                    // dropped or transplanted entry undetected. They are only not written out.
+                    if !belongsToSelection { return }
                 }
-
-                let body = try AES.GCM.open(AES.GCM.SealedBox(combined: encBody), using: key)
-                let dest = stagingURL.appendingPathComponent(rel)
+                let dest = stagingURL.appendingPathComponent(entry.path)
                 try fm.createDirectory(at: dest.deletingLastPathComponent(),
                                        withIntermediateDirectories: true)
-                try body.write(to: dest)
-            }
-            guard reachedEndMarker, handle.readData(ofLength: 1).isEmpty else {
-                throw BackupError.corrupt
+                try entry.body.write(to: dest)
             }
         } catch {
-            handle.closeFile()
+            // Staging is scratch space precisely so this can happen: the archive is verified
+            // whole, manifest included, before the pending flag is raised below, and nothing
+            // that failed verification ever reaches the live account directories.
             try? fm.removeItem(at: stagingURL)
             return .failure(localized("Ошибка расшифровки бэкапа", "Backup decryption failed"))
         }
-        handle.closeFile()
 
         if let selectedAccountId {
             guard Self.selectCurrentAccount(in: stagingURL, accountId: selectedAccountId) else {
@@ -535,6 +521,59 @@ public final class AccountBackupManager {
         UserDefaults.standard.set(false, forKey: Self.pendingMergeFlagKey)
         UserDefaults.standard.removeObject(forKey: Self.pendingSelectedAccountKey)
         try? FileManager.default.removeItem(at: stagingURL)
+    }
+
+    // MARK: - Legacy archive migration
+
+    private enum LegacyMigration: Equatable {
+        case notNeeded
+        case migrated
+        case failed
+    }
+
+    /// Rewrites a v1 archive as v2, atomically, in one streaming pass.
+    ///
+    /// This is the controlled migration the format change needs: the restore path refuses v1,
+    /// and a user whose only backup is v1 must not lose it. It needs no account data — only
+    /// the key — and never holds more than one entry at a time, in memory, in plaintext.
+    ///
+    /// It cannot retroactively authenticate what v1 never authenticated: a v1 archive that was
+    /// already tampered with migrates faithfully, tampering included. What it fixes is every
+    /// archive from here on, and it fixes it without asking the user to make a new backup.
+    private func migrateLegacyArchive(key: SymmetricKey) -> LegacyMigration {
+        let fm = FileManager.default
+        guard let probe = try? FileHandle(forReadingFrom: archiveURL) else { return .failed }
+        let head = probe.readData(ofLength: AorusBackupArchive.magicV2.count)
+        probe.closeFile()
+        if Array(head) == AorusBackupArchive.magicV2 { return .notNeeded }
+        guard Array(head) == AorusBackupArchive.magicV1 else { return .failed }
+
+        let tmpURL = URL(fileURLWithPath: rootPath)
+            .appendingPathComponent(Self.archiveName + ".migrate")
+        do {
+            let reader = try AorusBackupArchive.LegacyReader(url: archiveURL, key: key, limits: archiveLimits)
+            try AorusBackupArchive.write(to: tmpURL, key: key, limits: archiveLimits) { try reader.next() }
+            try reader.finish()
+            try commitArchive(from: tmpURL)
+        } catch {
+            try? fm.removeItem(at: tmpURL)
+            return .failed
+        }
+
+        // The durable copy has to follow, or a reinstall would restore the v1 bytes from the
+        // Keychain and the restore path would refuse them. A failure here is not fatal: the
+        // migrated archive is on disk, and the Keychain still holds a coherent older copy.
+        let meta = keychainMeta()
+        let ids = meta?.accountIds
+            ?? UserDefaults.standard.stringArray(forKey: metaIdsKey)
+            ?? localAccountIds()
+        _ = storeArchiveInKeychain(
+            accountIds: ids,
+            date: meta.map { Date(timeIntervalSince1970: $0.date) } ?? Date(),
+            accountCount: meta?.accountCount ?? ids.count,
+            accounts: meta?.accounts ?? []
+        )
+        return .migrated
     }
 
     // Reject path traversal — only `accounts-metadata` and `account-*` roots allowed.
@@ -761,14 +800,23 @@ public final class AccountBackupManager {
     // MARK: - Durable Keychain archive (survives reinstall)
 
     // Generic Keychain data slot under our service, keyed by an account name.
+    //
+    // Updates in place. Deleting first and adding afterwards means that between the two calls
+    // the slot holds nothing, and an add that fails leaves it that way permanently.
     private func keychainSet(_ account: String, _ data: Data) -> Bool {
-        let base: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
-        var add = base
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
+        var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
@@ -815,9 +863,29 @@ public final class AccountBackupManager {
         return try? JSONDecoder().decode(KeychainBackupMeta.self, from: data)
     }
 
+    // Chunk item name for a generation. Generation 0 is the unsuffixed naming used before
+    // generations existed, so an install that predates this still finds its chunks.
+    private func keychainChunkName(generation: Int, index: Int) -> String {
+        if generation <= 0 {
+            return keychainChunkPrefix + String(index)
+        }
+        return keychainChunkPrefix + "g" + String(generation) + "_" + String(index)
+    }
+
+    private var maxKeychainChunks: Int {
+        return Int(maxEncryptedArchiveSize) / keychainChunkSize + 1
+    }
+
     // Stream the on-disk archive into chunked Keychain items + a metadata slot.
+    //
+    // The new chunks go to a new generation, next to the ones already there, and the metadata
+    // item — a single Keychain write, and the only thing that names a generation — is the
+    // commit. Only then is the previous generation removed. The old code erased every chunk
+    // and the metadata *first*, so an error partway through, or the process going away, left
+    // the user with no durable backup at all and no way back to the one they had.
     private func storeArchiveInKeychain(accountIds: [String], date: Date, accountCount: Int, accounts: [AccountRecordMeta]) -> Bool {
-        deleteKeychainArchive()
+        let previous = keychainMeta()
+        let generation = max(previous?.generation ?? 0, 0) + 1
         guard let handle = try? FileHandle(forReadingFrom: archiveURL) else { return false }
         defer { try? handle.close() }
         var index = 0
@@ -827,20 +895,28 @@ public final class AccountBackupManager {
             if chunk.isEmpty { break }
             total += Int64(chunk.count)
             guard total <= Int64(maxEncryptedArchiveSize),
-                  index <= Int(maxEncryptedArchiveSize) / keychainChunkSize else {
-                deleteKeychainArchive()
+                  index <= maxKeychainChunks else {
+                deleteKeychainChunks(generation: generation, count: index)
                 return false
             }
-            guard keychainSet(keychainChunkPrefix + String(index), chunk) else {
-                deleteKeychainArchive()
+            guard keychainSet(keychainChunkName(generation: generation, index: index), chunk) else {
+                deleteKeychainChunks(generation: generation, count: index)
                 return false
             }
             index += 1
         }
-        let meta = KeychainBackupMeta(chunkCount: index, sizeBytes: total, date: date.timeIntervalSince1970, accountCount: accountCount, accountIds: accountIds, accounts: accounts.isEmpty ? nil : accounts)
+        let meta = KeychainBackupMeta(chunkCount: index, sizeBytes: total, date: date.timeIntervalSince1970, accountCount: accountCount, accountIds: accountIds, accounts: accounts.isEmpty ? nil : accounts, generation: generation)
         guard let metaData = try? JSONEncoder().encode(meta), keychainSet(keychainMetaName, metaData) else {
-            deleteKeychainArchive()
+            deleteKeychainChunks(generation: generation, count: index)
             return false
+        }
+        // Past the commit point: the metadata names the new generation, so the old one is
+        // dead weight. One generation further back covers a kill between commit and cleanup.
+        if let previous {
+            deleteKeychainChunks(generation: previous.generation ?? 0, count: previous.chunkCount)
+        }
+        if generation >= 3 {
+            deleteKeychainChunks(generation: generation - 2, count: 0)
         }
         return true
     }
@@ -859,7 +935,7 @@ public final class AccountBackupManager {
         var ok = true
         var written: Int64 = 0
         for i in 0 ..< meta.chunkCount {
-            guard let chunk = keychainGet(keychainChunkPrefix + String(i)),
+            guard let chunk = keychainGet(keychainChunkName(generation: meta.generation ?? 0, index: i)),
                   !chunk.isEmpty,
                   chunk.count <= keychainChunkSize else { ok = false; break }
             written += Int64(chunk.count)
@@ -873,34 +949,58 @@ public final class AccountBackupManager {
         }
     }
 
-    private func deleteKeychainArchive() {
-        let maxChunks = Int(maxEncryptedArchiveSize) / keychainChunkSize + 1
-        let count = min(max(keychainMeta()?.chunkCount ?? 0, 0), maxChunks)
-        // Remove the recorded chunks, plus a generous overscan in case a previous
-        // (larger) backup left extra items behind.
-        for i in 0 ..< max(count, 0) {
-            keychainDelete(keychainChunkPrefix + String(i))
+    // Remove one generation's chunk items: the `count` the metadata recorded, then an
+    // overscan that stops at the first name that is not there, so a previous, larger backup
+    // cannot leave items behind and the scan stays bounded.
+    private func deleteKeychainChunks(generation: Int, count: Int) {
+        let maxChunks = maxKeychainChunks
+        let recorded = min(max(count, 0), maxChunks)
+        for i in 0 ..< recorded {
+            keychainDelete(keychainChunkName(generation: generation, index: i))
         }
-        var extra = count
+        var extra = recorded
         while extra < maxChunks,
-              keychainGet(keychainChunkPrefix + String(extra)) != nil {
-            keychainDelete(keychainChunkPrefix + String(extra))
+              keychainGet(keychainChunkName(generation: generation, index: extra)) != nil {
+            keychainDelete(keychainChunkName(generation: generation, index: extra))
             extra += 1
+        }
+    }
+
+    // Used by deleteBackup(), where destroying everything is the point. Clears the current
+    // generation, the one before it, and the unsuffixed pre-generation naming.
+    private func deleteKeychainArchive() {
+        let meta = keychainMeta()
+        let generation = max(meta?.generation ?? 0, 0)
+        deleteKeychainChunks(generation: generation, count: meta?.chunkCount ?? 0)
+        if generation > 0 {
+            deleteKeychainChunks(generation: generation - 1, count: 0)
+            deleteKeychainChunks(generation: 0, count: 0)
         }
         keychainDelete(keychainMetaName)
     }
 
     // MARK: - Keychain (AES key)
 
+    // The AES key is the one thing that makes every stored copy of the backup readable, so it
+    // is never deleted to be rewritten: an unchanged key is left alone, and a changed one is
+    // updated in place. The old delete-then-add lost the key outright whenever the add failed,
+    // taking the archive on disk and every Keychain chunk of the previous backup with it.
     private func saveKey(_ key: SymmetricKey) -> Bool {
+        if let existing = loadKey(), existing == key { return true }
         let data = key.withUnsafeBytes { Data($0) }
-        let base: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainKeyName,
         ]
-        SecItemDelete(base as CFDictionary)
-        var add = base
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
+        var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
@@ -930,36 +1030,6 @@ public final class AccountBackupManager {
         SecItemDelete(query as CFDictionary)
     }
 
-    // MARK: - Byte helpers (little-endian, version-safe)
-
-    private func uint32LE(_ v: UInt32) -> Data {
-        return Data([
-            UInt8(v & 0xFF),
-            UInt8((v >> 8) & 0xFF),
-            UInt8((v >> 16) & 0xFF),
-            UInt8((v >> 24) & 0xFF),
-        ])
-    }
-
-    private func uint64LE(_ v: UInt64) -> Data {
-        var bytes = [UInt8]()
-        for i in 0..<8 { bytes.append(UInt8((v >> (UInt64(i) * 8)) & 0xFF)) }
-        return Data(bytes)
-    }
-
-    private func readUInt32LE(_ d: Data) -> UInt32 {
-        guard d.count >= 4 else { return 0 }
-        let b = [UInt8](d)
-        return UInt32(b[0]) | (UInt32(b[1]) << 8) | (UInt32(b[2]) << 16) | (UInt32(b[3]) << 24)
-    }
-
-    private func readUInt64LE(_ d: Data) -> UInt64 {
-        guard d.count >= 8 else { return 0 }
-        let b = [UInt8](d)
-        var v: UInt64 = 0
-        for i in 0..<8 { v |= UInt64(b[i]) << (UInt64(i) * 8) }
-        return v
-    }
 }
 
 // Backup-failure messages in the languages AorusGram speaks beyond Russian and English.

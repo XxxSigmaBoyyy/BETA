@@ -312,6 +312,19 @@ def main() -> int:
         fail(errors, "legacy reflector TCP SOCKS5 patch is enabled")
     if branding.count("refusing a previously injected source tree") < 2:
         fail(errors, "build injection must reject stale source trees")
+    # Every event that crosses into AorusGram has to name the account it came from. Four
+    # interception sites post one — three deletion/edit hooks and the incoming-message hook —
+    # and each one reads it off the MediaBox the transaction is running against. A site that
+    # loses this line does not fail to build: it silently files one account's messages under
+    # whoever is on screen, and lets the auto-reply answer from the wrong identity.
+    # Five: the four sites, plus the in-place upgrade that adds the line to a tree patched by
+    # an older build. Spacing varies because some of these sit in aligned dictionary literals.
+    if len(re.findall(r'\\"accountPath\\":\s+mediaBox\.basePath', branding)) != 5:
+        fail(errors, "every message interception hook must post the originating accountPath")
+    if '\\"accountPath\\"] as? String, !accountPath.isEmpty' not in branding:
+        fail(errors, "the auto-reply sender must resolve the account the message arrived on")
+    if "app.context.account,\\n" in branding:
+        fail(errors, "the auto-reply sender must not send from whichever account is on screen")
     for marker in (
         'dictionary(forKey: \\"71d447f8-9128-4d18-b63c-ec11ef43ba26\\")',
         'dictionary(forKey: \\"b4f013e2-54e9-4e4d-b2e1-30edc1e5b7ca\\")',
@@ -786,14 +799,41 @@ def main() -> int:
             "maxEncryptedEntrySize",
             "maxEncryptedArchiveSize",
             "maxArchiveEntryCount",
-            "reachedEndMarker",
             "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
+            # A new backup must never destroy the working one on its way in: the archive is
+            # swapped into place atomically, Keychain items are updated rather than deleted
+            # and re-added, and the chunks of a new backup go to a new generation that the
+            # metadata write commits.
+            "replaceItemAt",
+            "SecItemUpdate",
+            "keychainChunkName(generation:",
         )
         for marker in required:
             if marker not in text:
                 fail(errors, f"backup hardening marker {marker} missing in {path.relative_to(root)}")
     if backup_paths[0].read_bytes() != backup_paths[1].read_bytes():
         fail(errors, "core and UI backup managers must remain byte-identical")
+
+    archive_paths = [
+        root / "AorusGram/Sources/Features/Accounts/AccountBackupArchive.swift",
+        root / "patches/submodules/AorusGramUI/Sources/Features/Accounts/AccountBackupArchive.swift",
+    ]
+    for path in archive_paths:
+        text = path.read_text(encoding="utf-8")
+        # The archive's structure has to stay authenticated, not just its contents: every box
+        # sealed against its position and its archive id, and a sealed manifest closing it.
+        required = (
+            "reachedEndMarker",
+            "associatedData",
+            "authenticating:",
+            "magicV2",
+            "struct Manifest",
+        )
+        for marker in required:
+            if marker not in text:
+                fail(errors, f"backup archive marker {marker} missing in {path.relative_to(root)}")
+    if archive_paths[0].read_bytes() != archive_paths[1].read_bytes():
+        fail(errors, "core and UI backup archive formats must remain byte-identical")
 
     forbidden_suffixes = {".p12", ".pfx", ".mobileprovision"}
     ignored = git_ignored(root)

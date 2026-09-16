@@ -1047,6 +1047,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "        let userInfo: [String: Any] = [\n"
                 "            \"msgId\":  NSNumber(value: id.id),\n"
                 "            \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
+                # Which account this delete belongs to. The cache keys every row by it;
+                # without it one account's row was marked deleted by another's event.
+                "            \"accountPath\": mediaBox.basePath,\n"
                 "        ]\n"
                 "        NotificationCenter.default.post(\n"
                 "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
@@ -1201,6 +1204,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        userInfo: [\n"
                 "                            \"msgId\":        NSNumber(value: id.id),\n"
                 "                            \"peerId\":       NSNumber(value: id.peerId.toInt64()),\n"
+                "                            \"accountPath\":  mediaBox.basePath,\n"
                 "                            \"originalText\": prev.text,\n"
                 "                            \"newText\":      message.text,\n"
                 "                            \"date\":         NSNumber(value: prev.timestamp),\n"
@@ -1353,7 +1357,10 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        NotificationCenter.default.post(\n"
                 "                            name: NSNotification.Name(\"aorusgram.willDeleteMessageGlobalId\"),\n"
                 "                            object: nil,\n"
-                "                            userInfo: [\"msgId\": NSNumber(value: gid)])\n"
+                "                            userInfo: [\n"
+                "                                \"msgId\": NSNumber(value: gid),\n"
+                "                                \"accountPath\": mediaBox.basePath,\n"
+                "                            ])\n"
                 "                        let resolved = transaction.messageIdsForGlobalIds([gid])\n"
                 "                        guard let mid = resolved.first, let msg = transaction.getMessage(mid), ((transaction.getPeer(mid.peerId) as? TelegramUser)?.botInfo == nil) else {\n"
                 "                            __aorusFilteredGlobalIds.append(gid)\n"
@@ -3261,6 +3268,17 @@ def patch_incoming_message_hook(tg: Path) -> None:
 
     if "aorusgram.didReceiveMessage" in t:
         upgraded = t
+        # An event with no account origin cannot be attributed: the deleted-message store
+        # would file it under whatever account was on screen and the auto-reply would answer
+        # from that account. `mediaBox` here is the postbox the state manager is replaying
+        # into, so its basePath names the account the message actually arrived on.
+        upgraded = upgraded.replace(
+            "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+            "                        \"text\":   storeMsg.text,\n",
+            "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+            "                        \"accountPath\": mediaBox.basePath,\n"
+            "                        \"text\":   storeMsg.text,\n",
+        )
         upgraded = upgraded.replace(
             "                let aorusSpamProtectionOn = (UserDefaults.standard.object(forKey: \"aorusgram_antispam_spam_protection\") as? Bool) ?? true\n"
             "                let aorusStopWordsOn = (UserDefaults.standard.object(forKey: \"aorusgram_antispam_stopwords_protection\") as? Bool) ?? true\n"
@@ -3392,6 +3410,7 @@ def patch_incoming_message_hook(tg: Path) -> None:
         "                    var userInfo: [String: Any] = [\n"
         "                        \"msgId\":  NSNumber(value: mid.id),\n"
         "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+        "                        \"accountPath\": mediaBox.basePath,\n"
         "                        \"text\":   storeMsg.text,\n"
         "                        \"date\":   NSNumber(value: storeMsg.timestamp),\n"
         "                    ]\n"
@@ -3425,62 +3444,65 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         return
     t = path.read_text(encoding="utf-8")
 
-    # --- Repair previously injected broken hooks (CI cache / older branding) ---
-    repaired = False
-    if "aorusgram.sendAutoReply" in t:
-        if "let context = self?.context else { return }" in t:
-            t = t.replace(
-                "let context = self?.context else { return }",
-                "let app = self?.contextValue else { return }",
-                1,
-            )
-            repaired = True
-        # Telegram iOS uses top-level enqueueMessages(account:peerId:messages:), not *.engine.messages.enqueueMessages
-        for wrong_lead, fixed_lead in (
-            (
-                "let _ = context.engine.messages.enqueueMessages(\n                peerId: peerId,",
-                "let _ = enqueueMessages(\n                account: app.context.account,\n                peerId: peerId,",
-            ),
-            (
-                "let _ = app.context.engine.messages.enqueueMessages(\n                peerId: peerId,",
-                "let _ = enqueueMessages(\n                account: app.context.account,\n                peerId: peerId,",
-            ),
-        ):
-            if wrong_lead in t:
-                t = t.replace(wrong_lead, fixed_lead, 1)
-                repaired = True
-        if repaired:
-            path.write_text(t, encoding="utf-8")
-            print("AutoReplySend: repaired legacy auto-reply injection")
-            return
-
-    if "aorusgram.sendAutoReply" in t:
-        print("AutoReplySend: already injected")
-        return
-
     sentinel = "// AorusGram: auto-reply observer"
     hook = (
         "\n        " + sentinel + "\n"
         "        NotificationCenter.default.addObserver(forName: NSNotification.Name(\"aorusgram.sendAutoReply\"),\n"
         "            object: nil, queue: .main) { [weak self] note in\n"
+        "            // The reply has to leave the account the message arrived on. `contextValue`\n"
+        "            // is only the account currently on screen, so sending through it answered\n"
+        "            // one account's chat from another one whenever more than one was signed in —\n"
+        "            // visibly to the peer, and from an identity the user never chose.\n"
         "            guard AorusGramConfig.isEnabled(.autoReply),\n"
         "                  let info = note.userInfo,\n"
         "                  let peerIdNum = info[\"peerId\"] as? NSNumber,\n"
         "                  let text = info[\"text\"] as? String,\n"
+        "                  let accountPath = info[\"accountPath\"] as? String, !accountPath.isEmpty,\n"
         "                  let app = self?.contextValue else { return }\n"
         "            let peerId = PeerId(peerIdNum.int64Value)\n"
-        "            let _ = enqueueMessages(\n"
-        "                account: app.context.account,\n"
-        "                peerId: peerId,\n"
-        "                messages: [EnqueueMessage.message(\n"
-        "                    text: text, attributes: [], inlineStickers: [:],\n"
-        "                    mediaReference: nil, threadId: nil,\n"
-        "                    replyToMessageId: nil, replyToStoryId: nil,\n"
-        "                    localGroupingKey: nil, correlationId: nil,\n"
-        "                    bubbleUpEmojiOrStickersets: [])]\n"
-        "            ).start()\n"
+        "            let _ = (app.context.sharedContext.activeAccountContexts\n"
+        "            |> take(1)\n"
+        "            |> deliverOnMainQueue).start(next: { activeAccounts in\n"
+        "                // `accountPath` is the postbox media path the incoming hook read off the\n"
+        "                // very MediaBox the state manager was replaying into, so it matches\n"
+        "                // exactly one signed-in account. If that account is gone, so is the reply.\n"
+        "                for (_, accountContext, _) in activeAccounts.accounts where accountContext.account.postbox.mediaBox.basePath == accountPath {\n"
+        "                    let _ = enqueueMessages(\n"
+        "                        account: accountContext.account,\n"
+        "                        peerId: peerId,\n"
+        "                        messages: [EnqueueMessage.message(\n"
+        "                            text: text, attributes: [], inlineStickers: [:],\n"
+        "                            mediaReference: nil, threadId: nil,\n"
+        "                            replyToMessageId: nil, replyToStoryId: nil,\n"
+        "                            localGroupingKey: nil, correlationId: nil,\n"
+        "                            bubbleUpEmojiOrStickersets: [])]\n"
+        "                    ).start()\n"
+        "                    break\n"
+        "                }\n"
+        "            })\n"
         "        }\n"
     )
+
+    # --- Replace any previously injected observer (CI cache / older branding) ---
+    # Earlier versions of this hook sent through `app.context.account`, and two older ones
+    # did not compile at all. Patching them line by line is how they accumulated; the whole
+    # block is rewritten instead, which makes the injection idempotent by construction.
+    if sentinel in t or "aorusgram.sendAutoReply" in t:
+        span = _auto_reply_hook_span(t, sentinel)
+        if span is None:
+            raise RuntimeError(
+                "AutoReplySend: an auto-reply observer is present but its block could not be "
+                "delimited — refusing to inject a second one"
+            )
+        start, end = span
+        current = t[start:end]
+        if current == hook:
+            print("AutoReplySend: already injected")
+            return
+        t = t[:start] + hook + t[end:]
+        path.write_text(t, encoding="utf-8")
+        print("AutoReplySend: replaced previous observer with the account-scoped one")
+        return
 
     # Inject right after the AorusGramBootstrap call
     anchor = "AorusGramBootstrap.shared.setup(accountPath: rootPath)"
@@ -3490,6 +3512,38 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         print("AutoReplySend: observer injected into AppDelegate after bootstrap call")
     else:
         print("AutoReplySend: bootstrap anchor not found — skipped gracefully")
+
+
+def _auto_reply_hook_span(text: str, sentinel: str):
+    """(start, end) of the injected auto-reply observer, including its leading newline.
+
+    The block is `\\n        <sentinel>\\n ... addObserver(...) { ... }\\n`, so its end is found
+    by matching braces from the `{` that opens the trailing closure. Returns None when the
+    sentinel is missing or the braces do not close, so the caller can refuse rather than
+    write a file it no longer understands.
+    """
+    marker = text.find(sentinel)
+    if marker < 0:
+        return None
+    start = text.rfind("\n", 0, marker)
+    if start < 0:
+        return None
+    opener = text.find("queue: .main)", marker)
+    if opener < 0:
+        return None
+    brace = text.find("{", opener)
+    if brace < 0:
+        return None
+    depth = 0
+    for index in range(brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                newline = text.find("\n", index)
+                return (start, len(text) if newline < 0 else newline + 1)
+    return None
 
 
 def patch_app_delegate_anti_spam_toast(tg: Path) -> None:

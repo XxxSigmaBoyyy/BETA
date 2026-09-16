@@ -24,8 +24,20 @@ final class AutoReplyManager: ObservableObject {
         didSet { persist() }
     }
 
-    // peerId → Date of last auto-reply
-    private var lastReplied: [Int64: Date] = [:]
+    /// A cooldown belongs to one (account, peer) pair, not to a peer.
+    ///
+    /// Telegram keeps every signed-in account live in the same process, and a peer id is only
+    /// unique within an account — the same id is a different conversation on each of them.
+    /// Keyed on the peer alone, one auto-reply sent from account A silenced that same
+    /// conversation on accounts B and C for the whole window, and the peer never got the
+    /// reply the other accounts owed them.
+    private struct ReplyKey: Hashable {
+        let accountPath: String
+        let peerId: Int64
+    }
+
+    // (account, peer) → Date of last auto-reply
+    private var lastReplied: [ReplyKey: Date] = [:]
     private let queue = DispatchQueue(label: "aorusgram.autoreply")
 
     // MARK: - Persistence
@@ -68,23 +80,29 @@ final class AutoReplyManager: ObservableObject {
     }
 
     /// Called by the aorus_branding.py hook when a new incoming message arrives.
+    ///
+    /// `accountPath` is the receiving account's `postbox.mediaBox.basePath`, which the incoming
+    /// hook reads off the very `MediaBox` the state manager is replaying into. It identifies
+    /// the account the message actually arrived on, which is not necessarily the one on screen.
     /// Parameters: peerId (negative for groups/channels), isGroup, isChannel
-    func decide(peerId: Int64, isGroup: Bool, isChannel: Bool) -> AutoReplyDecision {
+    func decide(accountPath: String, peerId: Int64, isGroup: Bool, isChannel: Bool) -> AutoReplyDecision {
         guard AorusGramConfig.isEnabled(.autoReply), isEnabled else {
             return .skip("feature disabled")
         }
+        if accountPath.isEmpty { return .skip("no account origin") }
         if skipGroups, isGroup   { return .skip("group skipped") }
         if skipChannels, isChannel { return .skip("channel skipped") }
 
         let cooldown = TimeInterval(cooldownMinutes * 60)
         let now = Date()
+        let key = ReplyKey(accountPath: accountPath, peerId: peerId)
 
         var shouldSend = false
         queue.sync {
-            if let last = lastReplied[peerId], now.timeIntervalSince(last) < cooldown {
+            if let last = lastReplied[key], now.timeIntervalSince(last) < cooldown {
                 // still in cooldown
             } else {
-                lastReplied[peerId] = now
+                lastReplied[key] = now
                 shouldSend = true
             }
         }
@@ -92,25 +110,32 @@ final class AutoReplyManager: ObservableObject {
     }
 
     // Manual reset of a specific peer's cooldown (e.g., when user opens the chat)
-    func resetCooldown(for peerId: Int64) {
-        queue.async { self.lastReplied.removeValue(forKey: peerId) }
+    func resetCooldown(accountPath: String, for peerId: Int64) {
+        let key = ReplyKey(accountPath: accountPath, peerId: peerId)
+        queue.async { self.lastReplied.removeValue(forKey: key) }
     }
 
     // MARK: - Called from AorusGramBootstrap when incoming message arrives
 
-    func handleIncoming(peerId: Int64, text: String) {
+    func handleIncoming(accountPath: String, peerId: Int64, text: String) {
         // Negative peerId = group/channel in Telegram's internal representation
         let isGroup   = peerId < -1_000_000_000
         let isChannel = peerId < -1_000_000_000_000
 
-        let decision = decide(peerId: peerId, isGroup: isGroup, isChannel: isChannel)
+        let decision = decide(accountPath: accountPath, peerId: peerId, isGroup: isGroup, isChannel: isChannel)
         if case .send(let msg) = decision {
             // Post NotificationCenter event — branding.py-injected code in TelegramUI
-            // observes this and calls account.sendMessage(...)
+            // observes this and sends from the account named by `accountPath`. Without that
+            // name the observer fell back to whichever context was on screen, so a reply to
+            // one account's chat was sent — visibly, to the peer — from another account.
             NotificationCenter.default.post(
                 name: NSNotification.Name("aorusgram.sendAutoReply"),
                 object: nil,
-                userInfo: ["peerId": NSNumber(value: peerId), "text": msg]
+                userInfo: [
+                    "peerId": NSNumber(value: peerId),
+                    "accountPath": accountPath,
+                    "text": msg,
+                ]
             )
         }
     }
