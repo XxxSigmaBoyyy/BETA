@@ -2,6 +2,33 @@ import Foundation
 import SQLite3
 import BackgroundTasks
 
+/// Binds a Swift string to a statement parameter so SQLite owns the bytes.
+///
+/// `sqlite3_bind_text` with a `nil` destructor means SQLITE_STATIC: "this pointer stays
+/// valid, do not copy it". A Swift `String` handed to a C `const char *` parameter is a
+/// TEMPORARY buffer that is gone the moment the call returns, and SQLite reads the value
+/// later — at `sqlite3_step`. Every text column written that way read back whatever was in
+/// that memory by then, which in practice was the last string bound, repeated across all
+/// of them.
+///
+/// The length is the real byte count rather than -1, so a string containing a NUL is
+/// stored whole instead of being cut at it.
+private func aorusBindText(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+    // SQLITE_TRANSIENT is (sqlite3_destructor_type)-1 and has no Swift symbol of its own.
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    let bytes = Array(value.utf8)
+    if bytes.isEmpty {
+        sqlite3_bind_text(statement, index, "", 0, transient)
+        return
+    }
+    bytes.withUnsafeBufferPointer { buffer in
+        buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { pointer in
+            sqlite3_bind_text(statement, index, pointer, Int32(buffer.count), transient)
+        }
+    }
+}
+
+
 // Persists all incoming messages so content survives deletion.
 //
 // Architecture:
@@ -103,8 +130,8 @@ final class DeletedMessagesCache {
             sqlite3_bind_int(stmt,  1, id)
             sqlite3_bind_int64(stmt, 2, peerId)
             sqlite3_bind_int64(stmt, 3, senderId ?? 0)
-            sqlite3_bind_text(stmt, 4, senderName ?? "", -1, nil)
-            sqlite3_bind_text(stmt, 5, text ?? "", -1, nil)
+            aorusBindText(stmt, 4, senderName ?? "")
+            aorusBindText(stmt, 5, text ?? "")
             sqlite3_bind_int(stmt,  6, date)
             sqlite3_bind_int64(stmt, 7, now)
             if markDeleted {
@@ -112,8 +139,8 @@ final class DeletedMessagesCache {
             } else {
                 sqlite3_bind_null(stmt, 8)
             }
-            sqlite3_bind_text(stmt, 9,  mediaType ?? "", -1, nil)
-            sqlite3_bind_text(stmt, 10, mediaPath ?? "", -1, nil)
+            aorusBindText(stmt, 9, mediaType ?? "")
+            aorusBindText(stmt, 10, mediaPath ?? "")
             sqlite3_bind_int(stmt,  11, isOutgoing ? 1 : 0)
             sqlite3_bind_int(stmt,  12, markDeleted ? 1 : 0)
             sqlite3_step(stmt)
@@ -156,8 +183,8 @@ final class DeletedMessagesCache {
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK else { return }
-            sqlite3_bind_text(stmt, 1, newText,      -1, nil)
-            sqlite3_bind_text(stmt, 2, originalText, -1, nil)
+            aorusBindText(stmt, 1, newText)
+            aorusBindText(stmt, 2, originalText)
             sqlite3_bind_int64(stmt, 3, now)
             sqlite3_bind_int(stmt,   4, id)
             sqlite3_bind_int64(stmt, 5, peerId)
@@ -178,8 +205,8 @@ final class DeletedMessagesCache {
             defer { sqlite3_finalize(ins) }
             sqlite3_bind_int(ins,  1, id)
             sqlite3_bind_int64(ins, 2, peerId)
-            sqlite3_bind_text(ins, 3, newText,      -1, nil)
-            sqlite3_bind_text(ins, 4, originalText, -1, nil)
+            aorusBindText(ins, 3, newText)
+            aorusBindText(ins, 4, originalText)
             sqlite3_bind_int64(ins, 5, now)
             sqlite3_bind_int(ins,  6, date)
             sqlite3_bind_int64(ins, 7, now)

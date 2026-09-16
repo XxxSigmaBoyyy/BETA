@@ -41,12 +41,26 @@ enum DeviceFingerprint {
     }
 
     // Get-or-create the persistent install id, self-healing across all slots.
+    /// Resolved once per launch. Two calls in one run must never disagree about who this
+    /// device is, whatever the keychain does in between.
+    private static var resolvedInstallId: String?
+    private static let installIdLock = NSLock()
+
     static func keychainInstallId() -> String {
+        installIdLock.lock()
+        defer { installIdLock.unlock() }
+        if let resolved = resolvedInstallId { return resolved }
+        let resolved = resolveInstallIdLocked()
+        resolvedInstallId = resolved
+        return resolved
+    }
+
+    private static func resolveInstallIdLocked() -> String {
         // Reject malformed slot contents before voting. One damaged or edited slot
         // must not become the identity merely because it happens to be first.
-        let values = slots.map { slot -> String? in
-            guard let raw = readInstallId(service: slot.service, account: slot.account),
-                  let uuid = UUID(uuidString: raw) else { return nil }
+        let reads = slots.map { readInstallId(service: $0.service, account: $0.account) }
+        let values: [String?] = reads.map { read in
+            guard case let .value(raw) = read, let uuid = UUID(uuidString: raw) else { return nil }
             return uuid.uuidString
         }
         let valid = values.compactMap { $0 }
@@ -65,14 +79,36 @@ enum DeviceFingerprint {
             value = nil
         }
         if let value {
-            for (i, slot) in slots.enumerated() where values[i] != value {
+            for (index, slot) in slots.enumerated() where values[index] != value {
+                // Only heal a slot that is genuinely empty or genuinely wrong. A slot the
+                // keychain could not read is not either of those, and writing over it
+                // would destroy a copy on the strength of a failure to look.
+                if case .unreadable = reads[index] { continue }
                 writeInstallId(value, service: slot.service, account: slot.account)
             }
             return value
         }
 
+        // Nothing usable was read. Whether this device is NEW or merely LOCKED is the
+        // whole question, and the old code did not ask it: any failure to read — including
+        // the ordinary one on a device that has not been unlocked since it booted, where
+        // an `AfterFirstUnlockThisDeviceOnly` item cannot be fetched — looked exactly like
+        // a first run. It minted a fresh identity and wrote it over all three slots, so
+        // the real one was gone and with it the binding of a paid licence to this device.
+        let anythingUnreadable = reads.contains { if case .unreadable = $0 { return true } else { return false } }
         let generated = UUID().uuidString
-        for slot in slots { writeInstallId(generated, service: slot.service, account: slot.account) }
+        guard !anythingUnreadable else {
+            // Leave the stored identity exactly where it is and answer consistently for
+            // the rest of this launch. The licence check will fail against a device hash
+            // that is not this device's, which is recoverable on the next launch — unlike
+            // overwriting the slots, which is not.
+            return generated
+        }
+        var stored = false
+        for slot in slots {
+            stored = writeInstallId(generated, service: slot.service, account: slot.account) || stored
+        }
+        _ = stored
         return generated
     }
 
@@ -94,7 +130,19 @@ enum DeviceFingerprint {
 
     // MARK: - Keychain
 
-    private static func readInstallId(service: String, account: String) -> String? {
+    /// What one slot had to say, which is not the same question as "what is in it".
+    enum SlotRead {
+        /// A value is stored here.
+        case value(String)
+        /// Nothing is stored here, and the keychain is sure of it.
+        case absent
+        /// The keychain could not answer. Usually a device that has not been unlocked
+        /// since it booted — these items are `AfterFirstUnlockThisDeviceOnly` — but any
+        /// system failure lands here too.
+        case unreadable
+    }
+
+    private static func readInstallId(service: String, account: String) -> SlotRead {
         let query: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -103,22 +151,38 @@ enum DeviceFingerprint {
             kSecMatchLimit as String:  kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let value = String(data: data, encoding: .utf8) else { return nil }
-        return value
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .absent }
+        guard status == errSecSuccess else { return .unreadable }
+        guard let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            // Present but not a string this code wrote. Damaged, not missing.
+            return .unreadable
+        }
+        return .value(value)
     }
 
-    private static func writeInstallId(_ value: String, service: String, account: String) {
+    /// Writes a slot, reporting whether it actually landed.
+    @discardableResult
+    private static func writeInstallId(_ value: String, service: String, account: String) -> Bool {
         let base: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        // Update in place rather than delete-then-add. The old order destroyed the stored
+        // identity first and ignored whether the replacement arrived, so one failed add
+        // left the slot empty for good.
+        let updated = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
         var add = base
         add[kSecValueData as String] = Data(value.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        _ = SecItemAdd(add as CFDictionary, nil)
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 }

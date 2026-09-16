@@ -63,7 +63,29 @@ final class LicenseStore {
         }
     }
 
+    /// Whether a response is a verdict worth remembering.
+    ///
+    /// Two shapes used to overwrite a perfectly good snapshot and cost the user the offline
+    /// grace they had paid for:
+    ///
+    ///   * `.networkError` — which is what an unknown or missing `status` parses to. A 2xx
+    ///     body the client could not read is a protocol failure, not the server saying the
+    ///     licence has gone; it must leave the last real verdict alone.
+    ///   * an ACTIVE status carrying no usable dates. `effectiveOfflineStatus()` needs
+    ///     `active_until` and `server_now` to decide anything, so a dateless "paid_active"
+    ///     reads as expired the moment it is stored — and it had just replaced a snapshot
+    ///     that did not.
+    ///
+    /// Both are refused here, once, rather than in each of the five callers.
+    static func isStorableVerdict(_ response: LicenseResponse) -> Bool {
+        if response.status == .networkError { return false }
+        guard response.status.allowsAppAccess else { return true }
+        guard let until = response.activeUntil, let now = response.serverNow else { return false }
+        return until > now
+    }
+
     func save(response: LicenseResponse, telegramUserId: Int64?) {
+        guard Self.isStorableVerdict(response) else { return }
         lock.lock()
         let snap = Snapshot(
             statusRaw: response.status.rawValue,
@@ -162,6 +184,28 @@ final class LicenseStore {
         return estimate.overflow ? nil : estimate.partialValue
     }
 
+    /// How long the stored licence still has, in seconds, or nil when there is no active
+    /// one to count down — no snapshot, no dates, an unusable clock, or already expired.
+    ///
+    /// Used to arm a timer for the exact moment access ends. Derived from the same
+    /// server-anchored estimate `effectiveOfflineStatus()` uses, so the two can never
+    /// disagree about when that moment is.
+    func secondsUntilOfflineExpiry() -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let snap = snapshotValue else { return nil }
+        switch LicenseStatus.parse(snap.statusRaw) {
+        case .trialActive, .paidActive:
+            break
+        default:
+            return nil
+        }
+        guard let until = snap.activeUntil, let now = estimatedServerNow(snap), until > now else {
+            return nil
+        }
+        return TimeInterval(until - now)
+    }
+
     // Offline effective status: an active cache is trusted only while active_until
     // has not passed (server-anchored estimate); otherwise it is treated expired.
     func effectiveOfflineStatus() -> LicenseStatus {
@@ -225,7 +269,22 @@ final class LicenseStore {
             kSecAttrService as String: kcService,
             kSecAttrAccount as String: kcAccount,
         ]
-        SecItemDelete(base as CFDictionary)
+        // Update in place, and only fall back to adding when there is genuinely nothing
+        // there. The old order was delete-then-add with the result thrown away: when the
+        // delete succeeded and the add did not, the licence cache was simply gone — and
+        // `save` had already returned as if it had been written, so the interface reported
+        // a successful activation while the next offline launch had nothing to read.
+        let attributes: [String: Any] = [
+            kSecValueData as String: protectedData,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updated = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else {
+            // Something else went wrong. Whatever is stored is still the last thing that
+            // was successfully written, which is better than nothing at all.
+            return
+        }
         var add = base
         add[kSecValueData as String] = protectedData
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly

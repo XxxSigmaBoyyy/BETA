@@ -28,7 +28,27 @@ final class LicenseGate {
     private var telegramUserId: Int64?
     private var bannerShownThisLaunch = false
     private var inFlight = false
+    /// Which round of licence traffic is current.
+    ///
+    /// `inFlight` only stopped a second `refresh()`; it did nothing about the five other
+    /// places that write a verdict. A `/check` that left before an activation and arrived
+    /// after it was a correctly signed answer to its own older question — and it put the
+    /// pre-activation `expired` back, locking a user who had just paid. Every write now
+    /// carries the generation it was asked in, and anything from an older one is dropped.
+    /// Activation, bootstrap and a change of account all move the generation on.
+    private static var licenseGeneration: UInt64 = 0
+    /// Starts a new round and returns its number.
+    static func beginLicenseGeneration() -> UInt64 {
+        licenseGeneration &+= 1
+        return licenseGeneration
+    }
+    /// Whether a verdict asked for in `generation` is still the current answer.
+    static func licenseGenerationIsCurrent(_ generation: UInt64) -> Bool {
+        return generation == licenseGeneration
+    }
     private var lockSweepTimer: Timer?
+    /// Fires at the second the current licence stops being valid. See `armExpiryTimer`.
+    private var expiryTimer: Timer?
     // When the lock is temporarily hidden so the user can reach the bot to buy, this
     // forces a re-check (and re-lock if still not active) on the next foreground.
     private var pendingRelock = false
@@ -75,6 +95,7 @@ final class LicenseGate {
             guard let self,
                   let response = note.userInfo?["response"] as? LicenseResponse,
                   response.status == .clientOutdated else { return }
+            _ = Self.beginLicenseGeneration()
             LicenseStore.shared.save(response: response, telegramUserId: self.telegramUserId)
             self.showOutdated()
         }
@@ -117,6 +138,11 @@ final class LicenseGate {
 
     @objc private func didBecomeActive() {
         guard started else { return }
+        // The licence can simply have run out while the app was away, and asking the
+        // network is throttled to once every half hour. Nothing checked the date itself,
+        // so a subscription that expired twenty minutes ago left the client open with
+        // every paid feature on until something else happened to move the gate.
+        enforceLocalExpiry()
         // pendingRelock: the lock was lifted so the user could reach the bot — always
         // re-verify now (ignores the throttle) so access is re-locked if still expired.
         if pendingRelock || lockWindow != nil
@@ -125,18 +151,78 @@ final class LicenseGate {
         }
     }
 
+    /// Close the client the moment the stored licence stops being valid, without waiting
+    /// for the network.
+    ///
+    /// `effectiveOfflineStatus()` is the same authority `hideLock` consults, so this can
+    /// only ever agree with it. What it adds is a MOMENT at which the question is asked:
+    /// on returning to the app, and on a timer armed for the exact second the current
+    /// licence runs out. Before this the only periodic timer ran after the lock was
+    /// already up, so an expiry that happened with the app open was not noticed at all.
+    private func enforceLocalExpiry() {
+        guard started else { return }
+        let cached = LicenseStore.shared.effectiveOfflineStatus()
+        guard !cached.allowsAppAccess else {
+            armExpiryTimer()
+            return
+        }
+        setFeatureAccess(active: false)
+        switch cached {
+        case .clientOutdated:
+            showOutdated()
+        case .banned:
+            showExpired(banned: true)
+        case .notStarted:
+            // Never had a verdict: the first one is on its way, so do not accuse the user
+            // of an expiry that has not been established.
+            break
+        default:
+            showExpired(banned: false)
+        }
+        refresh()
+    }
+
+    /// Fire once at the second the current licence stops being valid.
+    private func armExpiryTimer() {
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        guard let deadline = LicenseStore.shared.secondsUntilOfflineExpiry() else { return }
+        // A second past it, so the check runs on the far side of the boundary rather than
+        // on it, and never sooner than a second so a stale clock cannot spin the timer.
+        // Built and added to the common modes rather than `scheduledTimer`, so it still
+        // fires while a list is being dragged — the licence does not pause because the
+        // user is scrolling.
+        let timer = Timer(timeInterval: max(1.0, deadline + 1.0), repeats: false) { [weak self] _ in
+            self?.enforceLocalExpiry()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        expiryTimer = timer
+    }
+
     // MARK: - Resolution
 
     private func refresh() {
         guard started, !inFlight else { return }
         inFlight = true
         let uid = telegramUserId
+        let generation = Self.beginLicenseGeneration()
         LicenseAPIClient.shared.check(telegramUserId: uid) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.inFlight = false
+                // An answer to a question that has since been superseded — by an
+                // activation, a bootstrap or a change of account — is not the current
+                // verdict, however correctly it is signed.
+                guard Self.licenseGenerationIsCurrent(generation) else { return }
                 switch result {
                 case .success(let response):
+                    // A verdict the store refuses to remember is one this screen must not
+                    // act on either: an unreadable 2xx and an "active" with no usable dates
+                    // are protocol failures, not the server revoking anything.
+                    guard LicenseStore.isStorableVerdict(response) else {
+                        self.applyNetworkFailure()
+                        return
+                    }
                     LicenseStore.shared.save(response: response, telegramUserId: uid)
                     self.apply(status: response.status, response: response)
                 case .failure:
@@ -216,6 +302,7 @@ final class LicenseGate {
                     vc?.setLoading(false)
                     switch result {
                     case .success(let response):
+                        _ = Self.beginLicenseGeneration()
                         LicenseStore.shared.save(response: response, telegramUserId: uid)
                         if response.status.allowsAppAccess {
                             self.bannerShownThisLaunch = true
@@ -350,6 +437,8 @@ final class LicenseGate {
         }
         lockKind = .none
         setFeatureAccess(active: true)   // access granted → re-enable AorusGram features
+        // The grant has an end. Arm the timer for it now, while the deadline is known.
+        armExpiryTimer()
         guard let window = lockWindow else { return }
         window.isHidden = true
         window.rootViewController = nil

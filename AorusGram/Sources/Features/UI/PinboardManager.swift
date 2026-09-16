@@ -60,12 +60,12 @@ final class PinboardManager {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt,  1, messageId)
             sqlite3_bind_int64(stmt, 2, peerId)
-            sqlite3_bind_text(stmt, 3, peerName, -1, nil)
-            sqlite3_bind_text(stmt, 4, senderName, -1, nil)
-            sqlite3_bind_text(stmt, 5, text, -1, nil)
+            aorusBindText(stmt, 3, peerName)
+            aorusBindText(stmt, 4, senderName)
+            aorusBindText(stmt, 5, text)
             sqlite3_bind_int(stmt,  6, date)
             sqlite3_bind_int64(stmt, 7, Int64(Date().timeIntervalSince1970))
-            sqlite3_bind_text(stmt, 8, note, -1, nil)
+            aorusBindText(stmt, 8, note)
             sqlite3_step(stmt)
             DispatchQueue.main.async { PinboardStore.shared.reload() }
         }
@@ -89,7 +89,7 @@ final class PinboardManager {
             guard let db = self?.db else { return }
             var stmt: OpaquePointer?
             if sqlite3_prepare_v2(db, "UPDATE pinned SET note=? WHERE id=?;", -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(stmt, 1, note, -1, nil)
+                aorusBindText(stmt, 1, note)
                 sqlite3_bind_int(stmt,  2, Int32(id))
                 sqlite3_step(stmt)
                 sqlite3_finalize(stmt)
@@ -164,6 +164,33 @@ struct PinnedMessage: Identifiable {
 // MARK: - Observable store for SwiftUI
 
 import Combine
+
+/// Binds a Swift string to a statement parameter so SQLite owns the bytes.
+///
+/// `sqlite3_bind_text` with a `nil` destructor means SQLITE_STATIC: "this pointer stays
+/// valid, do not copy it". A Swift `String` handed to a C `const char *` parameter is a
+/// TEMPORARY buffer that is gone the moment the call returns, and SQLite reads the value
+/// later — at `sqlite3_step`. Every text column written that way read back whatever was in
+/// that memory by then, which in practice was the last string bound, repeated across all
+/// of them.
+///
+/// The length is the real byte count rather than -1, so a string containing a NUL is
+/// stored whole instead of being cut at it.
+private func aorusBindText(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
+    // SQLITE_TRANSIENT is (sqlite3_destructor_type)-1 and has no Swift symbol of its own.
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    let bytes = Array(value.utf8)
+    if bytes.isEmpty {
+        sqlite3_bind_text(statement, index, "", 0, transient)
+        return
+    }
+    bytes.withUnsafeBufferPointer { buffer in
+        buffer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buffer.count) { pointer in
+            sqlite3_bind_text(statement, index, pointer, Int32(buffer.count), transient)
+        }
+    }
+}
+
 
 final class PinboardStore: ObservableObject {
     static let shared = PinboardStore()

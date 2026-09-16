@@ -194,6 +194,9 @@ final class ActivateKeyController: SubscriptionBaseController {
                 switch result {
                 case .success(let response):
                     if response.status.allowsAppAccess {
+                        // A new verdict supersedes any check still in the air; see
+                        // `beginLicenseGeneration`.
+                        _ = LicenseGate.beginLicenseGeneration()
                         LicenseStore.shared.save(response: response, telegramUserId: uid)
                         UINotificationFeedbackGenerator().notificationOccurred(.success)
                         self.onActivated?(response)

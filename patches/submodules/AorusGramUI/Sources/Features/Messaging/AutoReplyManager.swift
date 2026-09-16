@@ -30,7 +30,18 @@ final class AutoReplyManager: ObservableObject {
 
     // MARK: - Persistence
 
+    /// True while `load()` is assigning, so the `didSet` observers do not write back.
+    ///
+    /// Every property persists ALL of them on change. The first assignment in `load()` —
+    /// `isEnabled` — therefore wrote the four properties that had not been read yet, at
+    /// their defaults, straight over the user's stored settings. Their own reads a line
+    /// later then returned those defaults, so a custom reply text, cooldown and the two
+    /// skip switches were lost on the first launch that called this.
+    private var isLoading = false
+
     func load() {
+        isLoading = true
+        defer { isLoading = false }
         let d = UserDefaults.standard
         isEnabled       = d.bool(forKey: "aorus_ar_enabled")
         replyText       = d.string(forKey: "aorus_ar_text") ?? replyText
@@ -40,6 +51,7 @@ final class AutoReplyManager: ObservableObject {
     }
 
     private func persist() {
+        guard !isLoading else { return }
         let d = UserDefaults.standard
         d.set(isEnabled,       forKey: "aorus_ar_enabled")
         d.set(replyText,       forKey: "aorus_ar_text")

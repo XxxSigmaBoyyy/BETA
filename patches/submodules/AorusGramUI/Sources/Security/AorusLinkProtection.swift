@@ -110,14 +110,56 @@ public enum AorusLinkProtection {
         topController()?.present(alert, animated: true)
     }
 
+    /// The scheme this text declares, by the rule the URI syntax actually uses: letters,
+    /// digits, `+`, `-` and `.` after a leading letter, then a colon. No authority
+    /// required — that is what distinguishes `javascript:…` from `https://…`, and it is
+    /// the distinction that matters here.
+    ///
+    /// nil when the text names no scheme at all, which is when a default may be assumed.
+    static func declaredScheme(_ value: String) -> String? {
+        guard let colon = value.firstIndex(of: ":") else { return nil }
+        let candidate = value[value.startIndex ..< colon]
+        guard let first = candidate.first, first.isLetter, first.isASCII else { return nil }
+        guard candidate.allSatisfy({ character in
+            guard character.isASCII else { return false }
+            return character.isLetter || character.isNumber
+                || character == "+" || character == "-" || character == "."
+        }) else {
+            return nil
+        }
+        // A bare "example.com:8080/path" is a host and a port, not a scheme and a body.
+        // Both halves of the test are needed: the digits alone would also reject `tel:123`,
+        // which IS a scheme, and a dot alone would reject nothing useful — a real scheme
+        // may contain one but a numeric body after a dotted name is a port every time.
+        let rest = value[value.index(after: colon)...]
+        let upToDelimiter = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        if candidate.contains("."), !upToDelimiter.isEmpty,
+           upToDelimiter.allSatisfy({ $0.isNumber && $0.isASCII }) {
+            return nil
+        }
+        return String(candidate).lowercased()
+    }
+
     private static func analyze(_ raw: String) -> Report {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parseSource = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        // Whether a scheme is present is a question of URI syntax, not of whether the text
+        // happens to contain "://". `javascript:alert(1)`, `data:text/plain,x` and `tel:123`
+        // are all schemes with an OPAQUE body and no authority — so the old test said "no
+        // scheme", prefixed `https://`, and every one of them was then analysed as an
+        // ordinary https link whose scheme was `https`. The three schemes this analyser
+        // exists to catch were exactly the three it could not see.
+        let declared = declaredScheme(trimmed)
+        let parseSource = declared == nil ? "https://\(trimmed)" : trimmed
         let url = URL(string: parseSource)
         let components = URLComponents(string: parseSource)
-        let scheme = (components?.scheme ?? url?.scheme ?? "").lowercased()
+        let scheme = (declared ?? components?.scheme ?? url?.scheme ?? "").lowercased()
         let host = (components?.host ?? url?.host ?? "").lowercased()
-        let path = components?.percentEncodedPath ?? url?.path ?? ""
+        // Decoded, so that `.%6dobileconfig` is examined as `.mobileconfig`. Percent
+        // encoding is the sender's choice and iOS decodes it before acting on it; reading
+        // the encoded form meant the extension list could be stepped around by spelling
+        // one letter differently.
+        let encodedPath = components?.percentEncodedPath ?? url?.path ?? ""
+        let path = encodedPath.removingPercentEncoding ?? encodedPath
         var risks: [Risk] = []
 
         if !scheme.isEmpty && riskySchemes.contains(scheme) {
