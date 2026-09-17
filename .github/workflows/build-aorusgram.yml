@@ -110,6 +110,12 @@ jobs:
             aorusgram/scripts/tests/AorusAIMathTests.swift \
             -o /tmp/aorus-ai-preflight/math-tests
           /tmp/aorus-ai-preflight/math-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIReveal.swift \
+            aorusgram/scripts/tests/AorusAIRevealTests.swift \
+            -o /tmp/aorus-ai-preflight/reveal-tests
+          /tmp/aorus-ai-preflight/reveal-tests
           # The fraction typesetter draws with UIKit, so it is type-checked against the iOS
           # SDK the app actually deploys to rather than run. Availability is enforced here —
           # the module itself is built with checking disabled, so this is the only place a

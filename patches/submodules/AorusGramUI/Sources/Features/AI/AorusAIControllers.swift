@@ -2018,6 +2018,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // Born with no status. The turn starts as the typing indicator alone, and the first
         // thing written on that line is the agent's own first phase.
         let assistant = AorusAIMessage(role: .assistant, rawText: "", state: .streaming)
+        // From the first character: this turn is typed out, however it arrives.
+        beginReveal(messageId: assistant.id)
         conversation.messages.append(userMessage)
         conversation.messages.append(assistant)
         if conversation.title.isEmpty { conversation.title = AorusAIFormat.title(from: text) }
@@ -2328,6 +2330,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             break
         }
         conversation.updatedAt = Date()
+        startRevealIfNeeded()
         scheduleRender(messageId: id)
     }
 
@@ -2349,6 +2352,8 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         conversation.messages[index].artifacts = []
         conversation.messages[index].workPhases = []
         conversation.messages[index].workFinishedAt = nil
+        // The answer is about to be replayed from the start, so the reveal starts there too.
+        revealedCharacters[id] = 0
         // The server's own clock, so "Работал N" reports the real span rather than
         // restarting from the moment the reader came back.
         if info.startedAtMs > 0 {
@@ -3556,6 +3561,92 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         AorusAIStore.shared.upsert(conversation, accountId: accountId)
     }
 
+    // MARK: - Reveal
+    //
+    // What is on screen is paced rather than taken straight from what has arrived.
+    //
+    // A turn is supposed to read as it is written, and it did not: a reader sent a question,
+    // waited, and the finished answer appeared all at once. The rendering was not the reason —
+    // deltas are drawn as they arrive, throttled to about eighteen frames a second — the
+    // reason is that not every turn is streamed. A turn that produced files answers with one
+    // chat completion, and a turn the server chose to buffer arrives as a single `completion`
+    // event. Either way the whole answer lands in one piece, and a wall of text appearing is
+    // not reading.
+    //
+    // So an answer is typed out. Text that really does stream is barely touched — it is
+    // already arriving at reading speed — and text that lands whole is revealed at a pace
+    // that never falls more than `AorusAIReveal.maximumLag` behind it.
+    private var revealedCharacters: [UUID: Int] = [:]
+    private var revealTimer: Timer?
+    private var lastRevealTick: Date?
+
+    /// The message as it should appear now: as much of it as has been revealed, and still
+    /// streaming as far as the reader is concerned until the reveal has caught up — so the
+    /// caret keeps blinking and the copy button does not offer half an answer.
+    private func paced(_ message: AorusAIMessage) -> AorusAIMessage {
+        guard message.role == .assistant else { return message }
+        guard let revealed = revealedCharacters[message.id], revealed < message.rawText.count else {
+            return message
+        }
+        var copy = message
+        copy.rawText = AorusAIReveal.visibleText(of: message.rawText, revealed: revealed)
+        if message.state == .complete { copy.state = .streaming }
+        return copy
+    }
+
+    private func beginReveal(messageId: UUID) {
+        if revealedCharacters[messageId] == nil { revealedCharacters[messageId] = 0 }
+    }
+
+    private func startRevealIfNeeded() {
+        guard revealTimer == nil else { return }
+        lastRevealTick = Date()
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+            // The run loop holds the timer, not the controller: without this it would go on
+            // firing thirty times a second for the rest of the process once the screen closed.
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            self.tickReveal()
+        }
+        // `.common` so the answer keeps being typed while the reader is scrolling: on the
+        // default mode a drag stops the timer dead and the text freezes under the finger.
+        RunLoop.main.add(timer, forMode: .common)
+        revealTimer = timer
+    }
+
+    private func stopReveal() {
+        revealTimer?.invalidate()
+        revealTimer = nil
+        lastRevealTick = nil
+    }
+
+    private func tickReveal() {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastRevealTick ?? now)
+        lastRevealTick = now
+        guard let index = conversation.messages.lastIndex(where: { $0.role == .assistant }),
+              let revealed = revealedCharacters[conversation.messages[index].id] else {
+            stopReveal()
+            return
+        }
+        let message = conversation.messages[index]
+        let available = message.rawText.count
+        guard revealed < available else {
+            // Caught up. The entry goes, so the message renders as itself from here on, and
+            // one more render settles the caret and the action row.
+            revealedCharacters.removeValue(forKey: message.id)
+            stopReveal()
+            reloadMessage(id: message.id)
+            return
+        }
+        revealedCharacters[message.id] = AorusAIReveal.charactersToShow(
+            revealed: revealed, available: available, elapsed: elapsed
+        )
+        scheduleRender(messageId: message.id)
+    }
+
     private func scheduleRender(messageId: UUID) {
         guard pendingRenderWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
@@ -3578,7 +3669,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         // row reloads the table straight afterwards.
         guard tableView.numberOfSections > 0, row < tableView.numberOfRows(inSection: 0) else { return }
         let indexPath = IndexPath(row: row, section: 0)
-        let message = conversation.messages[row]
+        let message = paced(conversation.messages[row])
         let canRetry = message.role == .assistant
             && row == conversation.messages.count - 1
             && (message.state == .failed || message.state == .complete)
@@ -3676,7 +3767,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             assertionFailure("Unexpected AorusAI message cell type")
             return UITableViewCell(style: .default, reuseIdentifier: nil)
         }
-        let message = conversation.messages[indexPath.row]
+        let message = paced(conversation.messages[indexPath.row])
         cell.configure(
             message: message,
             context: context,
