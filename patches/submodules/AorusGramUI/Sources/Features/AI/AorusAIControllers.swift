@@ -3577,7 +3577,7 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     // already arriving at reading speed — and text that lands whole is revealed at a pace
     // that never falls more than `AorusAIReveal.maximumLag` behind it.
     private var revealedCharacters: [UUID: Int] = [:]
-    private var revealTimer: Timer?
+    private var revealTimer: Foundation.Timer?
     private var lastRevealTick: Date?
 
     /// The message as it should appear now: as much of it as has been revealed, and still

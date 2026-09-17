@@ -1349,8 +1349,14 @@ def check_ambiguous_timer(root: Path, errors: list[str]) -> None:
             text = path.read_text(encoding="utf-8")
             if "import SwiftSignalKit" not in text:
                 continue
-            for match in re.finditer(r"(?<![.\w])Timer\s*[.(]", strip_swift(text)):
-                line = text.count("\n", 0, match.start()) + 1
+            # `Timer(`, `Timer.` AND `: Timer?` — the declaration is what the narrower
+            # version of this rule missed, so it passed while the build failed on it.
+            stripped = strip_swift(text)
+            for match in re.finditer(r"(?<![.\w])Timer\b", stripped):
+                # Counted in the STRIPPED text, which `strip` keeps line-for-line with the
+                # original — counting in the original against a stripped offset named a line
+                # twelve hundred away from the real one.
+                line = stripped.count("\n", 0, match.start()) + 1
                 fail(errors, f"{path.relative_to(root)}:{line}: Timer is ambiguous in a file "
                              f"that imports SwiftSignalKit — write Foundation.Timer")
 

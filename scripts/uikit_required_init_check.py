@@ -71,6 +71,11 @@ def strip(source, string_token=" "):
                 block -= 1
                 index += 2
             else:
+                # Newlines are kept even inside what is removed, so an offset in the result
+                # still counts to the same line of the original. Without this every line
+                # number reported after a block comment was wrong.
+                if source[index] == "\n":
+                    out.append("\n")
                 index += 1
             continue
         if source.startswith("//", index):
@@ -83,8 +88,10 @@ def strip(source, string_token=" "):
             continue
         if source.startswith('"""', index):
             closing = source.find('"""', index + 3)
-            index = length if closing < 0 else closing + 3
+            end = length if closing < 0 else closing + 3
             out.append(string_token)
+            out.append("\n" * source.count("\n", index, end))
+            index = end
             continue
         if source[index] == '"':
             index += 1
