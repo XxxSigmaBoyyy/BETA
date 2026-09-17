@@ -174,6 +174,9 @@ enum AorusAIMentionRenderer {
             // A handle that is already part of a pill, or that the markdown renderer
             // turned into a link with its own destination, is left alone.
             if value.attribute(.aorusAIMention, at: match.range.location, effectiveRange: nil) != nil { continue }
+            // And a handle inside a code span is a piece of code, not a person: `@channel`
+            // in a sample stays four characters of monospace.
+            if value.attribute(.aorusAICodeSpan, at: match.range.location, effectiveRange: nil) != nil { continue }
             var placed = mention
             placed.sourceText = source.substring(with: match.range)
             // The paragraph style of the run being replaced is kept, otherwise a pill in a

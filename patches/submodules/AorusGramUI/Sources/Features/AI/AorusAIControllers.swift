@@ -6235,11 +6235,16 @@ private final class AorusAITableCard: UIView {
             var height: CGFloat = rowIndex == 0 ? 46.0 : 40.0
             for column in 0 ..< table.columnCount {
                 let source = column < row.count ? row[column] : ""
-                let attributed = AorusAIMarkdown.attributed(source, color: palette.label, accent: palette.accent)
+                // Set at the cell's own face, not at the answer's. The column was measured
+                // with `bodyFont` above, and a cell drawn a fifth larger than it was
+                // measured is a cell whose text does not fit it.
+                let attributed = AorusAIMarkdown.attributed(
+                    source,
+                    color: palette.label,
+                    accent: palette.accent,
+                    font: rowIndex == 0 ? headerFont : bodyFont
+                )
                 let mutable = NSMutableAttributedString(attributedString: attributed)
-                if rowIndex == 0 {
-                    mutable.addAttribute(.font, value: headerFont, range: NSRange(location: 0, length: mutable.length))
-                }
                 let available = max(1.0, naturalColumnWidths[column] - CellTextView.inset.left - CellTextView.inset.right)
                 let bounds = mutable.boundingRect(
                     with: CGSize(width: available, height: 500.0),
@@ -6614,25 +6619,42 @@ private enum AorusAIMarkdown {
     /// Bold and italic together. UIKit has no system constructor for the pair, so the two
     /// traits are asked of the semibold descriptor; a family that cannot supply them falls
     /// back to plain semibold rather than losing the emphasis altogether.
-    private static var boldItalicBodyFont: UIFont {
-        let base = UIFont.systemFont(ofSize: 16.5, weight: .semibold)
+    private static func boldItalicFont(size: CGFloat) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: .semibold)
         guard let descriptor = base.fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) else {
             return base
         }
-        return UIFont(descriptor: descriptor, size: 16.5)
+        return UIFont(descriptor: descriptor, size: size)
     }
 
-    static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
+    static func attributed(_ source: String,
+                           color: UIColor,
+                           accent: UIColor,
+                           mentions: [String: AorusAIMention] = [:],
+                           font baseFont: UIFont = bodyFont) -> NSAttributedString {
         // Everything that has to be drawn — a fraction, a root, an operator with limits, a
         // system — is lifted out here and put back at the very end, typeset. What is left in
         // its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass below
         // matches and which therefore cannot be split, emphasised or linked by mistake.
         let rendered = AorusAIMath.render(source)
         let normalized = normalizeLists(rendered.text)
+        // Every size below is a ratio of the face this run is set in, not a number. A table
+        // cell is set at 13.5 and measured at 13.5; before this the cell was measured at its
+        // own size and then drawn at the answer's 16.5, so a cell wide enough for its text
+        // was given text a fifth wider than the column it had been given.
+        let size = baseFont.pointSize
+        let scale = size / bodyFont.pointSize
         // The leading is expressed as line spacing rather than a fixed line height so a
         // heading in the same paragraph keeps its own ascent instead of being clipped into
         // a 26pt box.
-        let output = NSMutableAttributedString(string: normalized, attributes: [.font: bodyFont, .foregroundColor: color])
+        let output = NSMutableAttributedString(string: normalized, attributes: [.font: baseFont, .foregroundColor: color])
+        // Code first, and everything after it leaves code alone.
+        //
+        // `Напиши **жирным**` used to lose its asterisks: the bold pass ran first, matched
+        // inside the backticks and ate the very markers the sentence was about. Every pass
+        // below now skips a range that is inside a code span, so a code span shows what was
+        // written in it — markers, links and all.
+        applyInlineCode(in: output, backgroundColor: accent.withAlphaComponent(0.12), size: size)
         applyMarkdownLinks(in: output, accent: accent)
         // Both markers at once, and before either single pass.
         //
@@ -6640,24 +6662,23 @@ private enum AorusAIMarkdown {
         // the bold pass into *text* in semibold, and the italic pass then matched what was
         // left and overwrote the font — the bold was lost on exactly the words the model
         // had emphasised hardest.
-        apply(pattern: #"\*\*\*(.+?)\*\*\*"#, in: output, font: boldItalicBodyFont)
-        apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: 16.5, weight: .semibold))
-        apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
-        apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: 16.5))
+        apply(pattern: #"\*\*\*(.+?)\*\*\*"#, in: output, font: boldItalicFont(size: size))
+        apply(pattern: #"\*\*(.+?)\*\*"#, in: output, font: .systemFont(ofSize: size, weight: .semibold))
+        apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)"#, in: output, font: .italicSystemFont(ofSize: size))
+        apply(pattern: #"(?<!\w)_([^_\n]+)_(?!\w)"#, in: output, font: .italicSystemFont(ofSize: size))
         applyStrikethrough(in: output)
-        applyInlineCode(in: output, backgroundColor: accent.withAlphaComponent(0.12))
-        applyHeadings(in: output)
-        applyCalloutLabels(in: output)
+        applyHeadings(in: output, scale: scale)
+        applyCalloutLabels(in: output, size: size)
         applyLinks(in: output, accent: accent)
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 6.0
+        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 6.0 * scale
         output.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: output.length))
-        applyListParagraphs(in: output)
+        applyListParagraphs(in: output, scale: scale)
         // Last, on the finished text: the mention ranges are found in what will actually be
         // drawn, so nothing the markdown pass moved can put a pill on the wrong words.
         AorusAIMentionRenderer.apply(
             to: output,
             resolved: mentions,
-            font: bodyFont,
+            font: baseFont,
             accent: accent,
             // Not a link, deliberately.
             //
@@ -6672,7 +6693,7 @@ private enum AorusAIMarkdown {
         )
         // Last of all, so that no pass after it can move a range out from under an
         // attachment, and so that the placeholders are found in the finished text.
-        applyDrawnMaths(rendered.drawables, in: output, color: color)
+        applyDrawnMaths(rendered.drawables, in: output, color: color, font: baseFont)
         return output
     }
 
@@ -6683,7 +6704,8 @@ private enum AorusAIMarkdown {
     /// moves nothing, and the ranges every earlier pass produced stay where they were.
     private static func applyDrawnMaths(_ drawables: [AorusAIMath.Atom],
                                         in output: NSMutableAttributedString,
-                                        color: UIColor) {
+                                        color: UIColor,
+                                        font: UIFont) {
         guard !drawables.isEmpty else { return }
         let text = output.string as NSString
         var searchRange = NSRange(location: 0, length: text.length)
@@ -6693,7 +6715,7 @@ private enum AorusAIMarkdown {
             guard found.location != NSNotFound else { break }
             let drawable = drawables[index]
             let attachment = AorusAIMathTypesetter.attachment(
-                for: drawable, font: bodyFont, color: color
+                for: drawable, font: font, color: color
             )
             output.addAttribute(.attachment, value: attachment, range: found)
             // A drawing is one OBJECT REPLACEMENT CHARACTER, and copying that gives a reader
@@ -6750,7 +6772,8 @@ private enum AorusAIMarkdown {
     private static func applyMarkdownLinks(in value: NSMutableAttributedString, accent: UIColor) {
         guard let regex = try? NSRegularExpression(pattern: #"\[([^\]\n]+)\]\((https?://[^\s)]+)\)"#, options: [.caseInsensitive]) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
-            let title = (value.string as NSString).substring(with: match.range(at: 1))
+            if startsInCode(match.range, in: value) { continue }
+            let title = value.attributedSubstring(from: match.range(at: 1))
             let target = (value.string as NSString).substring(with: match.range(at: 2))
             guard let externalURL = URL(string: target) else { continue }
             let url: URL
@@ -6763,74 +6786,133 @@ private enum AorusAIMarkdown {
                 url = externalURL
             }
             value.replaceCharacters(in: match.range, with: title)
-            value.addAttributes([.link: url, .foregroundColor: accent], range: NSRange(location: match.range.location, length: (title as NSString).length))
+            value.addAttributes([.link: url, .foregroundColor: accent],
+                                range: NSRange(location: match.range.location, length: title.length))
+        }
+    }
+
+    /// Marks the inside of an inline code span, so the passes that run after it can tell what
+    /// the author wrote from what they meant.
+    private static let codeSpan = NSAttributedString.Key.aorusAICodeSpan
+
+    /// Whether any part of `range` is inside a code span. For a token that is either wholly
+    /// code or wholly not — a URL, a handle — this is the question to ask.
+    private static func isCode(_ range: NSRange, in value: NSAttributedString) -> Bool {
+        guard range.length > 0, NSMaxRange(range) <= value.length else { return false }
+        var found = false
+        value.enumerateAttribute(codeSpan, in: range, options: []) { marker, _, stop in
+            if marker != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    /// Whether the marker that OPENS `range` is inside a code span.
+    ///
+    /// The right question for anything with delimiters. A pair of asterisks written round a
+    /// code span is emphasis and must stay emphasis; a pair written INSIDE one is two
+    /// asterisks a reader is meant to see. Asking about the whole range cannot tell the two
+    /// apart, because in both cases part of the range is code.
+    private static func startsInCode(_ range: NSRange, in value: NSAttributedString) -> Bool {
+        return isCode(NSRange(location: range.location, length: min(1, range.length)), in: value)
+    }
+
+    /// Sets a face over `range` without touching the code inside it — code is monospaced
+    /// wherever it stands, including in the middle of a bold sentence or a heading.
+    private static func setFont(_ font: UIFont, in range: NSRange, of value: NSMutableAttributedString) {
+        guard range.length > 0, NSMaxRange(range) <= value.length else { return }
+        // The ranges are collected before any of them is written to: changing attributes
+        // from inside `enumerateAttribute` is not something the enumeration promises to
+        // survive.
+        var plain: [NSRange] = []
+        value.enumerateAttribute(codeSpan, in: range, options: []) { marker, subrange, _ in
+            if marker == nil {
+                plain.append(subrange)
+            }
+        }
+        for subrange in plain {
+            value.addAttribute(.font, value: font, range: subrange)
         }
     }
 
     private static func apply(pattern: String, in value: NSMutableAttributedString, font: UIFont) {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
-            let inner = match.range(at: 1)
-            let text = (value.string as NSString).substring(with: inner)
+            if startsInCode(match.range, in: value) { continue }
+            // The inner text is taken WITH its attributes. Handing `replaceCharacters` a
+            // plain String gives every replaced character the attributes of the first one,
+            // which silently un-formats a code span that a pair of asterisks happens to
+            // enclose.
+            let text = value.attributedSubstring(from: match.range(at: 1))
             value.replaceCharacters(in: match.range, with: text)
-            value.addAttribute(.font, value: font, range: NSRange(location: match.range.location, length: (text as NSString).length))
+            setFont(font, in: NSRange(location: match.range.location, length: text.length), of: value)
         }
     }
 
     private static func applyStrikethrough(in value: NSMutableAttributedString) {
         guard let regex = try? NSRegularExpression(pattern: #"~~([^~\n]+)~~"#) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
-            let text = (value.string as NSString).substring(with: match.range(at: 1))
+            if startsInCode(match.range, in: value) { continue }
+            let text = value.attributedSubstring(from: match.range(at: 1))
             value.replaceCharacters(in: match.range, with: text)
-            value.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: match.range.location, length: (text as NSString).length))
+            value.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: match.range.location, length: text.length))
         }
     }
 
     /// Short labels introducing an example or result should read as structure, not as the
     /// first words of the following sentence. Explicit Markdown remains authoritative;
     /// this is only the compact convention models commonly emit without Markdown.
-    private static func applyCalloutLabels(in value: NSMutableAttributedString) {
+    private static func applyCalloutLabels(in value: NSMutableAttributedString, size: CGFloat) {
         let pattern = #"(?im)^(пример(?:\s+\d+)?|решение|ответ|итог|важно|example(?:\s+\d+)?|solution|answer|result|important):"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
-            value.addAttribute(.font, value: UIFont.systemFont(ofSize: 16.5, weight: .semibold), range: match.range)
+            if isCode(match.range, in: value) { continue }
+            value.addAttribute(.font, value: UIFont.systemFont(ofSize: size, weight: .semibold), range: match.range)
         }
     }
 
-    private static func applyListParagraphs(in value: NSMutableAttributedString) {
+    private static func applyListParagraphs(in value: NSMutableAttributedString, scale: CGFloat) {
         let pattern = #"(?m)^\s*(?:•|☐|☑︎|\d+[.)])\s+.*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
             let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 6.0
+            paragraph.lineSpacing = 6.0 * scale
             paragraph.firstLineHeadIndent = 0.0
-            paragraph.headIndent = 20.0
+            paragraph.headIndent = 20.0 * scale
             value.addAttribute(.paragraphStyle, value: paragraph, range: match.range)
         }
     }
 
-    private static func applyInlineCode(in value: NSMutableAttributedString, backgroundColor: UIColor) {
+    private static func applyInlineCode(in value: NSMutableAttributedString, backgroundColor: UIColor, size: CGFloat) {
         guard let regex = try? NSRegularExpression(pattern: #"`([^`\n]+)`"#) else { return }
+        // Code sits a touch below the running text at every size — the same 15/16.5 the
+        // answer was designed at, kept as a ratio.
+        let codeSize = size * (15.0 / 16.5)
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
             let text = (value.string as NSString).substring(with: match.range(at: 1))
             value.replaceCharacters(in: match.range, with: text)
             value.addAttributes([
-                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
-                .backgroundColor: backgroundColor
+                .font: UIFont.monospacedSystemFont(ofSize: codeSize, weight: .regular),
+                .backgroundColor: backgroundColor,
+                codeSpan: true
             ], range: NSRange(location: match.range.location, length: (text as NSString).length))
         }
     }
 
-    private static func applyHeadings(in value: NSMutableAttributedString) {
+    private static func applyHeadings(in value: NSMutableAttributedString, scale: CGFloat) {
         guard let regex = try? NSRegularExpression(pattern: #"(?m)^(#{1,3})\s+(.+)$"#) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)).reversed() {
-            let text = (value.string as NSString).substring(with: match.range(at: 2))
+            if startsInCode(match.range, in: value) { continue }
+            let text = value.attributedSubstring(from: match.range(at: 2))
             let level = match.range(at: 1).length
             value.replaceCharacters(in: match.range, with: text)
             // Headings are the design's serif voice: 22 / 19 / 17, the same scale the
             // answer titles use in the mockup.
-            let size: CGFloat = level == 1 ? 22.0 : (level == 2 ? 19.0 : 17.0)
-            value.addAttribute(.font, value: aorusAITitleFont(size: size, weight: .semibold), range: NSRange(location: match.range.location, length: (text as NSString).length))
+            let size: CGFloat = (level == 1 ? 22.0 : (level == 2 ? 19.0 : 17.0)) * scale
+            setFont(aorusAITitleFont(size: size, weight: .semibold),
+                    in: NSRange(location: match.range.location, length: text.length), of: value)
         }
     }
 
@@ -6845,6 +6927,7 @@ private enum AorusAIMarkdown {
         for item in patterns {
             guard let regex = try? NSRegularExpression(pattern: item.0, options: [.caseInsensitive]) else { continue }
             for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
+                if isCode(match.range, in: value) { continue }
                 let capture = match.numberOfRanges > 1 ? (value.string as NSString).substring(with: match.range(at: 1)) : (value.string as NSString).substring(with: match.range)
                 if let url = item.1(capture) {
                     value.addAttributes([.link: url, .foregroundColor: accent], range: match.range)

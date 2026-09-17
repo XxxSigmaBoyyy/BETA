@@ -58,6 +58,9 @@ extension NSAttributedString.Key {
     public static let aorusAIMathText = NSAttributedString.Key("AorusAIMathText")
     /// And the same formula as LaTeX, for pasting somewhere that understands it.
     public static let aorusAIMathLaTeX = NSAttributedString.Key("AorusAIMathLaTeX")
+    /// The inside of an inline code span. What is written in code is shown as written, so
+    /// every pass that would otherwise read a marker, a link or a handle there leaves it be.
+    public static let aorusAICodeSpan = NSAttributedString.Key("AorusAICodeSpan")
 }
 
 extension NSAttributedString {
