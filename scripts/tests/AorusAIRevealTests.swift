@@ -74,8 +74,9 @@ private func neverCutsAFormulaInHalf() {
     for limit in 0...fraction.count {
         let length = AorusAIReveal.safeLength(of: fraction, atMost: limit)
         let shown = String(fraction.prefix(length))
-        // Not even `\frac{x+1}`, which has a closing brace and is still half a fraction.
-        expect(!shown.contains("\\frac") || shown.hasSuffix("}") && shown.contains("}{"),
+        // The property, stated directly: if the command is on screen then all of it is —
+        // not even `\frac{x+1}`, which has a closing brace and is still half a fraction.
+        expect(!shown.contains("\\frac") || shown.contains(#"\frac{x+1}{x-1}"#),
                "no half of a fraction is shown at limit \(limit): \(shown)")
         expect(length <= limit, "and the cut never runs past what was asked at \(limit)")
     }
