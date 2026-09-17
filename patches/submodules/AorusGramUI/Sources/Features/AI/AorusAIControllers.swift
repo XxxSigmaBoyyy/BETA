@@ -6476,7 +6476,10 @@ private enum AorusAIMarkdown {
             let payload = String(afterFence[..<end.lowerBound])
             let split = payload.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             let language = split.count > 1 ? String(split[0]).trimmingCharacters(in: .whitespacesAndNewlines) : nil
-            let code = split.count > 1 ? String(split[1]) : payload
+            // The newline before the closing fence is the fence's, not the code's. Kept, it
+            // is a blank last line in every card and a stray newline on the pasteboard.
+            var code = split.count > 1 ? String(split[1]) : payload
+            while code.hasSuffix("\n") { code.removeLast() }
             result.append(.code(language, code))
             rest = afterFence[end.upperBound...]
         }
@@ -6490,8 +6493,13 @@ private enum AorusAIMarkdown {
         var quote: [String] = []
         func flushPlain() {
             guard !plain.isEmpty else { return }
-            result.append(.text(plain.joined(separator: "\n")))
+            // The blank lines around a card are the card's own spacing. Left in the text
+            // block they become an empty paragraph as well, and the gap above a code block
+            // or a table ends up twice what the layout asks for.
+            let text = plain.joined(separator: "\n").trimmingCharacters(in: .newlines)
             plain.removeAll(keepingCapacity: true)
+            guard !text.isEmpty else { return }
+            result.append(.text(text))
         }
         func flushQuote() {
             guard !quote.isEmpty else { return }
