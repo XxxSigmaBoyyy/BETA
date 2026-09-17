@@ -1,0 +1,228 @@
+import Foundation
+
+// The maths in an assistant answer. Every expectation below is either a line taken from a
+// real answer the app rendered wrongly, or a rule that failure showed was missing.
+//
+// The two failures this suite exists for, from a screenshot of a solved fraction equation:
+//
+//   * `x \ne 0` — printed with the backslash, because the table had `\neq` and not `\ne`,
+//     and `\quad` and `\boxed{...}` printed likewise. The final answer of the solution read
+//     "\boxed{x = 2}".
+//   * `\frac{0}{0}` — set as superscript zero, fraction slash, subscript zero, which at body
+//     size is a percent sign. The answer said the limit was "= %".
+
+private var failures: [String] = []
+
+private func expect(_ actual: String, _ expected: String, _ what: String) {
+    if actual != expected {
+        failures.append("\(what)\n      expected: \(expected)\n      actual:   \(actual)")
+    }
+}
+
+private func expect(_ condition: Bool, _ what: String) {
+    if !condition {
+        failures.append(what)
+    }
+}
+
+private func inline(_ source: String) -> String {
+    return AorusAIMath.inlineText(source)
+}
+
+// MARK: - The commands that printed as themselves
+
+private func setsEveryCommandTheAnswerUsed() {
+    expect(inline(#"Знаменатель: x - 6 \ne 0 \Rightarrow x \ne 6"#),
+           "Знаменатель: x - 6 ≠ 0 ⇒ x ≠ 6",
+           "`\\ne` is a command, not text")
+    expect(inline(#"x = 2 \Rightarrow x - 6 = -4 \ne 0 \quad ✓"#),
+           "x = 2 ⇒ x - 6 = -4 ≠ 0 ✓",
+           "`\\quad` is a space, not text")
+    expect(inline(#"\boxed{x = 2}"#), "x = 2", "a boxed answer is its content")
+    expect(inline(#"Только один корень: x = 2, при x \ne 0, 6"#),
+           "Только один корень: x = 2, при x ≠ 0, 6",
+           "the closing sentence of the same answer")
+
+    // Whole-name matching. A table applied by prefix would reach `\le` inside `\leftarrow`
+    // and leave `≤ftarrow`, and `\ne` inside `\neq` leaving `≠q`.
+    expect(inline(#"\le \leq \leqslant"#), "≤ ≤ ≤", "every spelling of at-most")
+    expect(inline(#"\ge \geq \neq \ne"#), "≥ ≥ ≠ ≠", "and of at-least and not-equal")
+    expect(inline(#"a \leftarrow b \Leftarrow c"#), "a ← b ⇐ c", "an arrow is not a relation")
+    expect(inline(#"\left( a + b \right)"#), "( a + b )", "sizing commands leave no trace")
+    expect(inline(#"\left. \frac{1}{2} \right|"#), " ½ |", "and neither do the invisible ones")
+
+    expect(inline(#"\alpha + \beta = \gamma, \Delta x, \Omega"#),
+           "α + β = γ, Δ x, Ω", "Greek, both cases")
+    expect(inline(#"2 \cdot 3 \times 4 \div 5 \pm 6"#), "2 · 3 × 4 ÷ 5 ± 6", "the operators")
+    expect(inline(#"x \in \mathbb{R}, y \notin \varnothing, A \cup B \cap C"#),
+           "x ∈ ℝ, y ∉ ∅, A ∪ B ∩ C", "sets")
+    expect(inline(#"\sum_{i=1}^{n} i = \frac{n(n+1)}{2}"#),
+           "∑ᵢ₌₁ⁿ i = (n(n+1))/2", "a sum with its limits")
+    expect(inline(#"\lim_{x \to 0} \frac{\sin x}{x} = 1"#),
+           "lim_(x → 0) (sin x)/x = 1", "a limit reads as one")
+    expect(inline(#"\int_0^1 x^2 dx"#), "∫₀¹ x² dx", "an integral with simple limits")
+    expect(inline(#"\infty \approx \equiv \propto \therefore"#), "∞ ≈ ≡ ∝ ∴", "the rest of the relations")
+    expect(inline(#"\vec{v} \bar{x} \hat{y}"#), "v\u{20D7} x\u{0304} y\u{0302}", "marks over one letter")
+    expect(inline(#"\overline{AB}"#), "AB", "and not over a whole expression, where they land wrong")
+}
+
+// MARK: - Fractions
+
+private func setsFractionsSoTheyReadAsValues() {
+    // The percent sign. This is the one that reached a reader.
+    expect(inline(#"\frac{0}{0}"#), "0/0", "the indeterminate form is not a percent sign")
+    expect(inline(#"(0 \cdot (0 - 2)^2) / (0 \cdot (0 - 6)) = \frac{0}{0}"#),
+           "(0 · (0 - 2)²) / (0 · (0 - 6)) = 0/0",
+           "the line the screenshot showed as `= %`")
+
+    expect(inline(#"\frac{x(x-2)^2}{x(x-6)} = 0"#), "(x(x-2)²)/(x(x-6)) = 0",
+           "the equation the answer opens with")
+    expect(inline(#"\frac{(x-2)^2}{x-6} = 0"#), "((x-2)²)/(x-6) = 0",
+           "and the one it reduces to")
+
+    // A half is bracketed unless it is one term, because `x+1/2` is a different number.
+    expect(inline(#"\frac{x+1}{2}"#), "(x+1)/2", "a compound numerator is bracketed")
+    expect(inline(#"\frac{2}{x+1}"#), "2/(x+1)", "so is a compound denominator")
+    expect(inline(#"\frac{2x}{3y}"#), "2x/3y", "a single term is not")
+    expect(inline(#"\frac{(a+b)(c+d)}{2}"#), "((a+b)(c+d))/2",
+           "two bracketed groups are still bracketed together — they are not one group")
+    expect(inline(#"\frac{(a+b)}{2}"#), "(a+b)/2", "one group is left as it is")
+
+    // An exact glyph where one exists, and never an approximation where one does not.
+    expect(inline(#"\frac{1}{2} + \frac{3}{4} + \frac{5}{8}"#), "½ + ¾ + ⅝", "the vulgar fractions")
+    expect(inline(#"\frac{1}{2}x"#), "½x", "one reads correctly against what follows")
+    expect(inline(#"\frac{7}{9}"#), "7/9", "and a pair with no glyph is not approximated by one")
+    expect(inline(#"\dfrac{a}{b} \tfrac{c}{d} \cfrac{e}{f}"#), "a/b c/d e/f", "every spelling of frac")
+    expect(inline(#"\frac{\frac{a}{b}}{c}"#), "(a/b)/c", "a fraction inside a fraction")
+
+    // U+2044 FRACTION SLASH is drawn by the system face as a steep stroke that reads as an
+    // accent. Nothing here may emit one, at any size, in any half.
+    for source in [#"\frac{0}{0}"#, #"\frac{1}{3}"#, #"\frac{x+1}{y-1}"#, #"\frac{ab}{cd}"#] {
+        expect(!inline(source).contains("\u{2044}"), "no fraction slash in \(source)")
+    }
+}
+
+// MARK: - Scripts
+
+private func setsScriptsWithoutSwallowingWhatFollows() {
+    expect(inline("x^2"), "x²", "a squared term")
+    expect(inline("x^2+1"), "x²+1", "an exponent is one term — this was x to the three")
+    expect(inline("(x^2+1)"), "(x²+1)", "and the bracket does not go up with it")
+    expect(inline("x^{10}"), "x¹⁰", "a grouped exponent")
+    expect(inline("x^{n+1}"), "xⁿ⁺¹", "a grouped one whose parts all have glyphs")
+    expect(inline("x^{2n+1}"), "x²ⁿ⁺¹", "and a longer one")
+    expect(inline("e^{i\\pi}"), "e^(iπ)", "one whose parts do not all have glyphs")
+    expect(inline("x_1 + x_2"), "x₁ + x₂", "subscripts")
+    expect(inline("a_{ij}"), "aᵢⱼ", "a two-letter subscript")
+    expect(inline("a_{max}"), "aₘₐₓ", "a three-letter one")
+    expect(inline("a_{fig}"), "a_(fig)", "and one with a letter that has no subscript form")
+
+    // This pass runs before the markdown pass, so it must not eat markdown's own underscore.
+    expect(inline("_italic_ text"), "_italic_ text", "markdown emphasis is not a subscript")
+    expect(inline("file_name.txt"), "file_name.txt", "and neither is an identifier")
+    expect(inline(#"a \_ b"#), "a _ b", "an escaped underscore is an underscore")
+}
+
+// MARK: - Prose
+
+private func leavesProseAlone() {
+    expect(inline("Обычный текст без формул."), "Обычный текст без формул.", "plain prose")
+    expect(inline("R&D spends 40% of $5 on C:\\net"), "R&D spends 40% of $5 on C:\\net",
+           "an ampersand, a percent, a dollar and a path are not maths")
+    expect(inline(#"\foo{bar}"#), #"\foo{bar}"#, "a command we do not know is left as written")
+    expect(inline(#"\frac{a}"#), #"\frac{a}"#, "and so is a call with a half missing")
+    expect(inline(#"100\% \$5 \{x\} \#1"#), "100% $5 {x} #1", "escapes are the characters")
+}
+
+private func setsEnvironments() {
+    let cases = #"\begin{cases} x, & x > 0 \\ -x, & x < 0 \end{cases}"#
+    expect(inline(cases), "x, x > 0\n-x, x < 0", "cases become lines")
+    expect(inline(#"\begin{aligned} a &= b \\ c &= d \end{aligned}"#), "a = b\nc = d",
+           "so does an alignment")
+}
+
+// MARK: - Display equations
+
+private func liftsDisplayEquationsOnlyWhenStackingHelps() {
+    let single = AorusAIMath.render("Решим:\n$$\\frac{x(x-2)^2}{x(x-6)} = 0$$\nДальше.")
+    expect(single.equations.count, 1, "one display equation was lifted")
+    expect(single.text, "Решим:\n\u{FFFC}\nДальше.", "and left a placeholder where it was")
+    expect(AorusAIMath.plainText(single.equations.first ?? []), "(x(x-2)²)/(x(x-6)) = 0",
+           "which still reads correctly as text")
+    expect(single.equations.first?.contains(where: { $0.isFraction }) == true,
+           "and carries the fraction as structure, not as text")
+
+    let bracket = AorusAIMath.render("\\[\\frac{a}{b}\\]")
+    expect(bracket.equations.count, 1, "`\\[…\\]` is display too")
+
+    let fenced = AorusAIMath.render("До\n$$\n\\frac{a+1}{b}\n$$\nПосле")
+    expect(fenced.equations.count, 1, "and so is a fenced block")
+    expect(fenced.text, "До\n\u{FFFC}\nПосле", "with the fence consumed")
+
+    // Nothing to stack: a picture of text is worse than text, which stays selectable.
+    let plain = AorusAIMath.render("$$x = 2$$")
+    expect(plain.equations.count, 0, "an equation with no fraction is not lifted")
+    expect(plain.text, "x = 2", "it is just set as text")
+
+    // Prose between two inline equations is not a display line and must not be eaten.
+    let inlinePair = AorusAIMath.render("$$a$$ и $$b$$")
+    expect(inlinePair.equations.count, 0, "two inline equations on one line are not a display line")
+    expect(inlinePair.text, "a и b", "and the prose between them survives")
+
+    let nested = AorusAIMath.render("$$\\frac{\\frac{a}{b}}{c}$$")
+    expect(nested.equations.count, 1, "a nested fraction is one equation")
+    if case let .fraction(numerator, _)? = nested.equations.first?.first {
+        expect(numerator.contains(where: { $0.isFraction }), "whose numerator is itself a fraction")
+    } else {
+        failures.append("a nested fraction parses as a fraction")
+    }
+
+    // A structure that is all text still round-trips through the atom model.
+    expect(AorusAIMath.plainText(AorusAIMath.atoms("x = 2")), "x = 2", "atoms of plain text")
+}
+
+private func survivesWhatAModelActuallySends() {
+    // The whole answer from the screenshot, start to finish.
+    let answer = """
+    Решим дробное уравнение:
+
+    $$\\frac{x(x-2)^2}{x(x-6)} = 0$$
+
+    Сократим x в числителе и знаменателе (при x \\ne 0):
+
+    $$= \\frac{(x-2)^2}{x-6}, \\quad x \\ne 0$$
+
+    - Числитель: (x-2)^2 = 0 \\Rightarrow x = 2
+    - Знаменатель: x - 6 \\ne 0 \\Rightarrow x \\ne 6
+
+    $$x = 2 \\Rightarrow x - 6 = -4 \\ne 0 \\quad ✓$$
+
+    Ответ: $\\boxed{x = 2}$
+    """
+    let rendered = AorusAIMath.render(answer)
+    expect(!rendered.text.contains("\\"), "no backslash survives into what the reader sees")
+    expect(!rendered.text.contains("\u{2044}"), "and no fraction slash either")
+    expect(rendered.text.contains("x ≠ 0"), "the condition reads as a condition")
+    expect(rendered.text.contains("Ответ: x = 2"), "the answer reads as the answer")
+    expect(rendered.equations.count, 2, "two of the four display lines needed stacking")
+}
+
+@main
+private enum AorusAIMathTests {
+    static func main() {
+        setsEveryCommandTheAnswerUsed()
+        setsFractionsSoTheyReadAsValues()
+        setsScriptsWithoutSwallowingWhatFollows()
+        leavesProseAlone()
+        setsEnvironments()
+        liftsDisplayEquationsOnlyWhenStackingHelps()
+        survivesWhatAModelActuallySends()
+        guard failures.isEmpty else {
+            for failure in failures {
+                fputs("AorusAIMath test failed: \(failure)\n", stderr)
+            }
+            exit(1)
+        }
+        print("AorusAIMath tests: OK")
+    }
+}

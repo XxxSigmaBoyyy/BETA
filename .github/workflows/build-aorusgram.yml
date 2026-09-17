@@ -104,6 +104,21 @@ jobs:
             aorusgram/scripts/tests/AorusBackupArchiveTests.swift \
             -o /tmp/aorus-ai-preflight/backup-archive-tests
           /tmp/aorus-ai-preflight/backup-archive-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIMath.swift \
+            aorusgram/scripts/tests/AorusAIMathTests.swift \
+            -o /tmp/aorus-ai-preflight/math-tests
+          /tmp/aorus-ai-preflight/math-tests
+          # The fraction typesetter draws with UIKit, so it is type-checked against the iOS
+          # SDK the app actually deploys to rather than run. Availability is enforced here —
+          # the module itself is built with checking disabled, so this is the only place a
+          # too-new API would be caught before the build.
+          swiftc -typecheck \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -target arm64-apple-ios13.0 \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIMath.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIMathTypesetter.swift
           # The backup manager imports nothing but Foundation, CryptoKit and Security — it is
           # deliberately reachable from neither module's translation table — so it can be
           # type-checked here in seconds instead of an hour into the Bazel build.

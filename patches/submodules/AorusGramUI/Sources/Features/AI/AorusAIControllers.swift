@@ -6488,7 +6488,11 @@ private enum AorusAIMarkdown {
     }
 
     static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
-        let normalized = displayTypography(source)
+        // A display equation is lifted out here and put back at the very end, typeset. What
+        // is left in its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass
+        // below matches and which therefore cannot be split, emphasised or linked by mistake.
+        let rendered = AorusAIMath.render(source)
+        let normalized = normalizeLists(rendered.text)
         // The leading is expressed as line spacing rather than a fixed line height so a
         // heading in the same paragraph keeps its own ascent instead of being clipped into
         // a 26pt box.
@@ -6530,11 +6534,70 @@ private enum AorusAIMarkdown {
             // recogniser instead — same behaviour, none of the machinery.
             link: false
         )
+        // Last of all, so that no pass after it can move a range out from under an
+        // attachment, and so that the placeholders are found in the finished text.
+        applyEquations(rendered.equations, in: output, color: color)
         return output
     }
 
+    /// Puts each display equation back where its placeholder is, typeset.
+    ///
+    /// Only the fractions become drawn attachments. Everything around them — the `= 0`, the
+    /// condition after the comma — stays real text that a reader can still select, which is
+    /// the whole reason the equation is not simply rendered as one picture.
+    private static func applyEquations(_ equations: [[AorusAIMath.Atom]],
+                                       in output: NSMutableAttributedString,
+                                       color: UIColor) {
+        guard !equations.isEmpty else { return }
+        let text = output.string as NSString
+        var ranges: [NSRange] = []
+        var searchRange = NSRange(location: 0, length: text.length)
+        while searchRange.length > 0, ranges.count < equations.count {
+            let found = text.range(of: AorusAIMath.equationPlaceholder, options: [], range: searchRange)
+            guard found.location != NSNotFound else { break }
+            ranges.append(found)
+            let next = found.location + found.length
+            searchRange = NSRange(location: next, length: text.length - next)
+        }
+        // Back to front: replacing one equation must not move the ranges of the others.
+        for (index, range) in zip(ranges.indices, ranges).reversed() {
+            output.replaceCharacters(in: range, with: typeset(equations[index], color: color))
+        }
+    }
+
+    private static func typeset(_ atoms: [AorusAIMath.Atom], color: UIColor) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for atom in atoms {
+            switch atom {
+            case let .text(value):
+                result.append(NSAttributedString(string: value, attributes: [
+                    .font: bodyFont, .foregroundColor: color,
+                ]))
+            case let .fraction(numerator, denominator):
+                let attachment = AorusAIMathTypesetter.attachment(
+                    numerator: numerator, denominator: denominator,
+                    font: bodyFont, color: color
+                )
+                result.append(NSAttributedString(attachment: attachment))
+            }
+        }
+        // A display equation is centred and given room, which is what makes it read as one
+        // rather than as a sentence that happens to contain a bar.
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.paragraphSpacing = 6.0
+        paragraph.paragraphSpacingBefore = 6.0
+        paragraph.lineSpacing = 6.0
+        result.addAttribute(.paragraphStyle, value: paragraph,
+                            range: NSRange(location: 0, length: result.length))
+        return result
+    }
+
+    /// The text form: a table cell, a quote, anywhere a run of text is all there is and a
+    /// display equation has nowhere to go. The rules themselves live in AorusAIMath, where
+    /// they can be compiled and tested on their own.
     static func displayTypography(_ source: String) -> String {
-        return normalizeLists(normalizeMathOutsideInlineCode(source))
+        return normalizeLists(AorusAIMath.typography(source))
     }
 
     private static func normalizeLists(_ source: String) -> String {
@@ -6552,144 +6615,6 @@ private enum AorusAIMarkdown {
             let nsLine = line as NSString
             return nsLine.substring(with: match.range(at: 1)) + "• " + nsLine.substring(with: match.range(at: 2))
         }.joined(separator: "\n")
-    }
-
-    private static func normalizeMathOutsideInlineCode(_ source: String) -> String {
-        var result = ""
-        var fragment = ""
-        var inCode = false
-        for character in source {
-            if character == "`" {
-                result += inCode ? fragment : normalizeMath(fragment)
-                fragment = ""
-                result.append(character)
-                inCode.toggle()
-            } else {
-                fragment.append(character)
-            }
-        }
-        result += inCode ? fragment : normalizeMath(fragment)
-        return result
-    }
-
-    private static func normalizeMath(_ source: String) -> String {
-        var value = source
-        for delimiter in ["\\(", "\\)", "\\[", "\\]"] {
-            value = value.replacingOccurrences(of: delimiter, with: "")
-        }
-        // Display math is delimited by a PAIR of dollars and has to be unwrapped before the
-        // single-dollar rule, which would otherwise take the first two and leave the rest.
-        value = replacing(pattern: #"\$\$([\s\S]+?)\$\$"#, in: value) { $0[0] }
-        value = replacing(pattern: #"(?<!\\)\$([^$\n]+)\$"#, in: value) { $0[0] }
-        value = replacing(pattern: #"\\text\{([^{}]*)\}"#, in: value) { $0[0] }
-        value = replacing(pattern: #"\\sqrt\[([^\[\]]+)\]\{([^{}]+)\}"#, in: value) { captures in
-            // An nth root: the degree sits on the radical sign.
-            return (canSuperscript(captures[0]) ? superscript(captures[0]) : captures[0]) + "√" + grouped(captures[1])
-        }
-        value = replacing(pattern: #"\\sqrt\{([^{}]+)\}"#, in: value) { "√" + grouped($0[0]) }
-        value = replacing(pattern: #"\\(?:d|t)frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
-            return fraction(numerator: captures[0], denominator: captures[1])
-        }
-        value = replacing(pattern: #"\\frac\{([^{}]+)\}\{([^{}]+)\}"#, in: value) { captures in
-            return fraction(numerator: captures[0], denominator: captures[1])
-        }
-
-        let commands: [(String, String)] = [
-            ("\\Leftrightarrow", "⇔"), ("\\Rightarrow", "⇒"), ("\\Leftarrow", "⇐"),
-            ("\\rightarrow", "→"), ("\\leftarrow", "←"), ("\\leftrightarrow", "↔"),
-            ("\\times", "×"), ("\\cdot", "·"), ("\\div", "÷"), ("\\pm", "±"), ("\\mp", "∓"),
-            ("\\leq", "≤"), ("\\le", "≤"), ("\\geq", "≥"), ("\\ge", "≥"), ("\\neq", "≠"),
-            ("\\approx", "≈"), ("\\equiv", "≡"), ("\\infty", "∞"), ("\\sqrt", "√"),
-            ("\\sum", "∑"), ("\\prod", "∏"), ("\\int", "∫"), ("\\to", "→"),
-            ("\\alpha", "α"), ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
-            ("\\theta", "θ"), ("\\lambda", "λ"), ("\\mu", "μ"), ("\\pi", "π"),
-            ("\\sigma", "σ"), ("\\phi", "φ"), ("\\omega", "ω"),
-            ("\\left", ""), ("\\right", ""), ("\\,", " "), ("\\;", " "), ("\\!", "")
-        ]
-        for (command, replacement) in commands {
-            value = value.replacingOccurrences(of: command, with: replacement)
-        }
-
-        // An exponent the author grouped, either way of grouping it.
-        value = replacing(pattern: #"\^\{([^{}]+)\}"#, in: value) { superscript($0[0]) }
-        value = replacing(pattern: #"\^\(([^()]+)\)"#, in: value) { superscript($0[0]) }
-        // And an ungrouped one, which is ONE term and nothing more.
-        //
-        // The old rule took every following `+`, `-`, `=` and bracket as well, so `x^2+1` —
-        // which is x squared plus one — came out as `x²⁺¹`, an exponent of three. Bracket a
-        // sum around it and it got worse: `(x^2+1)` ended `⁾`, the closing bracket pulled up
-        // into the exponent and left unmatched. A bare exponent is a signed number or a
-        // single letter; anything longer is grouped by whoever wrote it.
-        value = replacing(pattern: #"\^([+\-−]?[0-9]+|[A-Za-z])"#, in: value) { captures in
-            return canSuperscript(captures[0]) ? superscript(captures[0]) : "^" + captures[0]
-        }
-        value = replacing(pattern: #"_\{([^{}]+)\}"#, in: value) { subscriptText($0[0]) }
-        value = replacing(pattern: #"_\(([^()]+)\)"#, in: value) { subscriptText($0[0]) }
-        value = replacing(pattern: #"_([+\-−]?[0-9]+|[A-Za-z])"#, in: value) { captures in
-            return canSubscript(captures[0]) ? subscriptText(captures[0]) : "_" + captures[0]
-        }
-        value = value.replacingOccurrences(of: "\\{", with: "{").replacingOccurrences(of: "\\}", with: "}")
-        return value
-    }
-
-    /// One fraction, set the way it is meant to be read.
-    ///
-    /// Two things were wrong with writing the two halves either side of a slash and
-    /// stopping there. A compound half came out ambiguous — `\frac{x+1}{2}` became
-    /// `x+1⁄2`, which every reader parses as `x + ½`, the wrong value — and a simple
-    /// fraction did not look like a fraction at all, just two characters and a slash.
-    private static func fraction(numerator: String, denominator: String) -> String {
-        let top = numerator.trimmingCharacters(in: .whitespaces)
-        let bottom = denominator.trimmingCharacters(in: .whitespaces)
-        guard !top.isEmpty, !bottom.isEmpty else { return top + "⁄" + bottom }
-        // Short and simple on both sides: raised over lowered across a fraction slash, which
-        // is how a typesetter writes ³⁄₄ and reads at a glance as one value.
-        if top.count <= 2, bottom.count <= 2, canSuperscript(top), canSubscript(bottom) {
-            return superscript(top) + "⁄" + subscriptText(bottom)
-        }
-        return grouped(top) + "⁄" + grouped(bottom)
-    }
-
-    /// Brackets anything that is more than a single term, so a slash or a radical cannot
-    /// silently rebind it. `x+1` becomes `(x+1)`; `2x`, `x²` and `(a+b)` are left alone.
-    private static func grouped(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count > 1 else { return trimmed }
-        if trimmed.hasPrefix("("), trimmed.hasSuffix(")") { return trimmed }
-        let breaking = CharacterSet(charactersIn: "+-−±∓×÷·/, ")
-        guard trimmed.rangeOfCharacter(from: breaking) != nil else { return trimmed }
-        return "(" + trimmed + ")"
-    }
-
-    private static func canSuperscript(_ source: String) -> Bool {
-        return !source.isEmpty && superscript(source).first != "^"
-    }
-
-    private static func canSubscript(_ source: String) -> Bool {
-        return !source.isEmpty && subscriptText(source).first != "_"
-    }
-
-    private static func superscript(_ source: String) -> String {
-        let map: [Character: Character] = [
-            "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
-            "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
-            "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ", "h": "ʰ", "i": "ⁱ",
-            "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ", "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ",
-            "t": "ᵗ", "u": "ᵘ", "v": "ᵛ", "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ"
-        ]
-        guard source.allSatisfy({ map[$0] != nil }) else { return "^(" + source + ")" }
-        return String(source.compactMap { map[$0] })
-    }
-
-    private static func subscriptText(_ source: String) -> String {
-        let map: [Character: Character] = [
-            "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
-            "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎",
-            "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ", "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ",
-            "o": "ₒ", "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ", "x": "ₓ"
-        ]
-        guard source.allSatisfy({ map[$0] != nil }) else { return "_(" + source + ")" }
-        return String(source.compactMap { map[$0] })
     }
 
     private static func replacing(pattern: String, in source: String, transform: ([String]) -> String) -> String {
