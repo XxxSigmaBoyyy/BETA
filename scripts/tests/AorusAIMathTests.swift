@@ -201,7 +201,7 @@ private func liftsEveryFractionWhereverItStands() {
     expect(two.drawables.count, 2, "two fractions on a line are two drawings")
     expect(two.text, "\u{FFFC} = \u{FFFC}", "in the order they appear")
 
-    expect(AorusAIMath.plainText(AorusAIMath.atoms("x = 2")), "x = 2", "atoms of plain text")
+    expect(AorusAIMath.plainText(AorusAIMath.parse("x = 2")), "x = 2", "atoms of plain text")
 }
 
 private func drawsEveryConstructThatOnlyADrawingCanShow() {
