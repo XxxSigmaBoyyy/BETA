@@ -142,48 +142,65 @@ private func setsEnvironments() {
            "so does an alignment")
 }
 
-// MARK: - Display equations
+// MARK: - Which fractions are drawn
 
-private func liftsDisplayEquationsOnlyWhenStackingHelps() {
-    let single = AorusAIMath.render("Решим:\n$$\\frac{x(x-2)^2}{x(x-6)} = 0$$\nДальше.")
-    expect(single.equations.count, 1, "one display equation was lifted")
-    expect(single.text, "Решим:\n\u{FFFC}\nДальше.", "and left a placeholder where it was")
-    expect(AorusAIMath.plainText(single.equations.first ?? []), "(x(x-2)²)/(x(x-6)) = 0",
-           "which still reads correctly as text")
-    expect(single.equations.first?.contains(where: { $0.isFraction }) == true,
-           "and carries the fraction as structure, not as text")
+private func liftsEveryFractionWhereverItStands() {
+    // THE bug this section exists for. A model writes `\frac` on a line of its own far more
+    // often than it wraps it in `$$…$$`, and when it did, nothing was drawn: a whole solved
+    // equation came back as `([x(x - 6)]²)/(x(x - 2))`, which is what a fraction looks like
+    // when the renderer cannot draw one.
+    let bare = AorusAIMath.render(#"\frac{[x(x-6)]^2}{x(x-2)}"#)
+    expect(bare.fractions.count, 1, "a fraction with no delimiters around it is still a fraction")
+    expect(bare.text, "\u{FFFC}", "and leaves a placeholder for the drawing")
+    expect(AorusAIMath.plainText([.fraction(numerator: bare.fractions[0].numerator,
+                                            denominator: bare.fractions[0].denominator)]),
+           "([x(x - 6)]²)/(x(x - 2))",
+           "whose text fallback is still correct")
+
+    let inSentence = AorusAIMath.render(#"Теперь дробь: \frac{x^2(x-6)^2}{x(x-2)} и дальше"#)
+    expect(inSentence.fractions.count, 1, "one in the middle of a sentence is drawn too")
+    expect(inSentence.text, "Теперь дробь: \u{FFFC} и дальше", "with the prose either side kept")
+
+    let display = AorusAIMath.render("Решим:\n$$\\frac{x(x-2)^2}{x(x-6)} = 0$$\nДальше.")
+    expect(display.fractions.count, 1, "a display equation still works")
+    expect(display.text, "Решим:\n\u{FFFC} = 0\nДальше.", "with only the fraction lifted")
 
     let bracket = AorusAIMath.render("\\[\\frac{a}{b}\\]")
-    expect(bracket.equations.count, 1, "`\\[…\\]` is display too")
+    expect(bracket.fractions.count, 1, "`\\[…\\]` is unwrapped, not printed")
+    expect(bracket.text, "\u{FFFC}", "and leaves nothing behind")
 
     let fenced = AorusAIMath.render("До\n$$\n\\frac{a+1}{b}\n$$\nПосле")
-    expect(fenced.equations.count, 1, "and so is a fenced block")
-    expect(fenced.text, "До\n\u{FFFC}\nПосле", "with the fence consumed")
+    expect(fenced.fractions.count, 1, "a fence on its own line is a delimiter")
+    expect(fenced.text, "До\n\u{FFFC}\nПосле", "and is consumed, not shown")
 
-    // Nothing to stack: a picture of text is worse than text, which stays selectable.
-    let plain = AorusAIMath.render("$$x = 2$$")
-    expect(plain.equations.count, 0, "an equation with no fraction is not lifted")
-    expect(plain.text, "x = 2", "it is just set as text")
+    // A glyph of its own beats a drawing: ½ keeps the line's height and reads perfectly.
+    let half = AorusAIMath.render(#"Возьмём \frac{1}{2} от числа"#)
+    expect(half.fractions.count, 0, "a vulgar fraction is not drawn")
+    expect(half.text, "Возьмём ½ от числа", "it is set")
 
-    // Prose between two inline equations is not a display line and must not be eaten.
-    let inlinePair = AorusAIMath.render("$$a$$ и $$b$$")
-    expect(inlinePair.equations.count, 0, "two inline equations on one line are not a display line")
-    expect(inlinePair.text, "a и b", "and the prose between them survives")
+    let noFraction = AorusAIMath.render("$$x = 2$$")
+    expect(noFraction.fractions.count, 0, "an equation with no fraction has nothing to draw")
+    expect(noFraction.text, "x = 2", "and is just text")
 
-    let nested = AorusAIMath.render("$$\\frac{\\frac{a}{b}}{c}$$")
-    expect(nested.equations.count, 1, "a nested fraction is one equation")
-    if case let .fraction(numerator, _)? = nested.equations.first?.first {
-        expect(numerator.contains(where: { $0.isFraction }), "whose numerator is itself a fraction")
-    } else {
-        failures.append("a nested fraction parses as a fraction")
-    }
+    let nested = AorusAIMath.render(#"\frac{\frac{a}{b}}{c}"#)
+    expect(nested.fractions.count, 1, "a fraction inside a fraction is one drawing")
+    expect(nested.fractions.first?.numerator.contains(where: { $0.isFraction }) == true,
+           "whose numerator is itself a fraction")
 
-    // A structure that is all text still round-trips through the atom model.
+    // A code span is code. `\frac` in one is what the reader asked to see.
+    let code = AorusAIMath.render("Пиши `\\frac{a}{b}` в LaTeX")
+    expect(code.fractions.count, 0, "nothing is lifted out of a code span")
+    expect(code.text, "Пиши `\\frac{a}{b}` в LaTeX", "and it survives exactly")
+
+    let two = AorusAIMath.render(#"\frac{a}{b} = \frac{c}{d}"#)
+    expect(two.fractions.count, 2, "two fractions on a line are two drawings")
+    expect(two.text, "\u{FFFC} = \u{FFFC}", "in the order they appear")
+
     expect(AorusAIMath.plainText(AorusAIMath.atoms("x = 2")), "x = 2", "atoms of plain text")
 }
 
 private func survivesWhatAModelActuallySends() {
-    // The whole answer from the screenshot, start to finish.
+    // The whole answer from the first screenshot, start to finish.
     let answer = """
     Решим дробное уравнение:
 
@@ -205,7 +222,34 @@ private func survivesWhatAModelActuallySends() {
     expect(!rendered.text.contains("\u{2044}"), "and no fraction slash either")
     expect(rendered.text.contains("x ≠ 0"), "the condition reads as a condition")
     expect(rendered.text.contains("Ответ: x = 2"), "the answer reads as the answer")
-    expect(rendered.equations.count, 2, "two of the four display lines needed stacking")
+    expect(rendered.fractions.count, 2, "both fractions in it are drawn")
+
+    // And the whole answer from the second screenshot, which used no display delimiters at all.
+    let undelimited = """
+    Упростим дробь:
+
+    \\frac{[x(x-6)]^2}{x(x-2)}
+
+    Шаг 1: Раскроем числитель.
+
+    [x(x-6)]^2 = x^2(x-6)^2
+
+    Теперь дробь:
+
+    \\frac{x^2(x-6)^2}{x(x-2)}
+
+    Шаг 2: Упростим дробь, сократив x^2 и x:
+
+    \\frac{x^2}{x} = x
+
+    Получаем:
+
+    x \\cdot \\frac{(x-6)^2}{x-2}
+    """
+    let second = AorusAIMath.render(undelimited)
+    expect(second.fractions.count, 4, "every one of the four fractions is drawn")
+    expect(second.text.contains("x²(x-6)²"), "and a line that is not a fraction is still set")
+    expect(second.text.contains("x · \u{FFFC}"), "a fraction after an operator keeps the operator")
 }
 
 @main
@@ -216,7 +260,7 @@ private enum AorusAIMathTests {
         setsScriptsWithoutSwallowingWhatFollows()
         leavesProseAlone()
         setsEnvironments()
-        liftsDisplayEquationsOnlyWhenStackingHelps()
+        liftsEveryFractionWhereverItStands()
         survivesWhatAModelActuallySends()
         guard failures.isEmpty else {
             for failure in failures {

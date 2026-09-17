@@ -6488,9 +6488,9 @@ private enum AorusAIMarkdown {
     }
 
     static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
-        // A display equation is lifted out here and put back at the very end, typeset. What
-        // is left in its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass
-        // below matches and which therefore cannot be split, emphasised or linked by mistake.
+        // Every fraction is lifted out here and put back at the very end, drawn. What is left
+        // in its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass below
+        // matches and which therefore cannot be split, emphasised or linked by mistake.
         let rendered = AorusAIMath.render(source)
         let normalized = normalizeLists(rendered.text)
         // The leading is expressed as line spacing rather than a fixed line height so a
@@ -6536,85 +6536,33 @@ private enum AorusAIMarkdown {
         )
         // Last of all, so that no pass after it can move a range out from under an
         // attachment, and so that the placeholders are found in the finished text.
-        applyEquations(rendered.equations, in: output, color: color)
+        applyFractions(rendered.fractions, in: output, color: color)
         return output
     }
 
-    /// Puts each display equation back where its placeholder is, typeset.
+    /// Draws each fraction where its placeholder stands.
     ///
-    /// Only the fractions become drawn attachments. Everything around them — the `= 0`, the
-    /// condition after the comma — stays real text that a reader can still select, which is
-    /// the whole reason the equation is not simply rendered as one picture.
-    private static func applyEquations(_ equations: [[AorusAIMath.Atom]],
+    /// Everything around them is left as it is — real, selectable text. A placeholder is one
+    /// character and an attachment is one character, so putting one in place of the other
+    /// moves nothing, and the ranges every earlier pass produced stay where they were.
+    private static func applyFractions(_ fractions: [AorusAIMath.Fraction],
                                        in output: NSMutableAttributedString,
                                        color: UIColor) {
-        guard !equations.isEmpty else { return }
+        guard !fractions.isEmpty else { return }
         let text = output.string as NSString
-        var ranges: [NSRange] = []
         var searchRange = NSRange(location: 0, length: text.length)
-        while searchRange.length > 0, ranges.count < equations.count {
-            let found = text.range(of: AorusAIMath.equationPlaceholder, options: [], range: searchRange)
+        var index = 0
+        while index < fractions.count, searchRange.length > 0 {
+            let found = text.range(of: AorusAIMath.fractionPlaceholder, options: [], range: searchRange)
             guard found.location != NSNotFound else { break }
-            ranges.append(found)
+            let attachment = AorusAIMathTypesetter.attachment(
+                for: fractions[index], font: bodyFont, color: color
+            )
+            output.addAttribute(.attachment, value: attachment, range: found)
             let next = found.location + found.length
             searchRange = NSRange(location: next, length: text.length - next)
+            index += 1
         }
-        // Back to front: replacing one equation must not move the ranges of the others.
-        for (index, range) in zip(ranges.indices, ranges).reversed() {
-            output.replaceCharacters(in: range, with: typeset(equations[index], color: color))
-        }
-    }
-
-    private static func typeset(_ atoms: [AorusAIMath.Atom], color: UIColor) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        for atom in atoms {
-            switch atom {
-            case let .text(value):
-                result.append(NSAttributedString(string: value, attributes: [
-                    .font: bodyFont, .foregroundColor: color,
-                ]))
-            case let .fraction(numerator, denominator):
-                let attachment = AorusAIMathTypesetter.attachment(
-                    numerator: numerator, denominator: denominator,
-                    font: bodyFont, color: color
-                )
-                result.append(NSAttributedString(attachment: attachment))
-            }
-        }
-        // A display equation is centred and given room, which is what makes it read as one
-        // rather than as a sentence that happens to contain a bar.
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.paragraphSpacing = 6.0
-        paragraph.paragraphSpacingBefore = 6.0
-        paragraph.lineSpacing = 6.0
-        result.addAttribute(.paragraphStyle, value: paragraph,
-                            range: NSRange(location: 0, length: result.length))
-        return result
-    }
-
-    /// The text form: a table cell, a quote, anywhere a run of text is all there is and a
-    /// display equation has nowhere to go. The rules themselves live in AorusAIMath, where
-    /// they can be compiled and tested on their own.
-    static func displayTypography(_ source: String) -> String {
-        return normalizeLists(AorusAIMath.typography(source))
-    }
-
-    private static func normalizeLists(_ source: String) -> String {
-        return source.components(separatedBy: .newlines).map { line in
-            if let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+\[([ xX])\]\s+(.+)$"#),
-               let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
-                let nsLine = line as NSString
-                let mark = nsLine.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces).isEmpty ? "☐" : "☑︎"
-                return nsLine.substring(with: match.range(at: 1)) + mark + " " + nsLine.substring(with: match.range(at: 3))
-            }
-            guard let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+(.+)$"#),
-                  let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else {
-                return line
-            }
-            let nsLine = line as NSString
-            return nsLine.substring(with: match.range(at: 1)) + "• " + nsLine.substring(with: match.range(at: 2))
-        }.joined(separator: "\n")
     }
 
     private static func replacing(pattern: String, in source: String, transform: ([String]) -> String) -> String {

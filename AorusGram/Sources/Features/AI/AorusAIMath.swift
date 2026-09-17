@@ -48,52 +48,92 @@ public enum AorusAIMath {
         }
     }
 
-    public struct Rendered: Equatable {
-        /// The message text. Every display equation has been replaced by one
-        /// `equationPlaceholder`.
-        public var text: String
-        /// One entry per placeholder in `text`, in the order they appear.
-        public var equations: [[Atom]]
+    public struct Fraction: Equatable {
+        public var numerator: [Atom]
+        public var denominator: [Atom]
 
-        public init(text: String, equations: [[Atom]]) {
-            self.text = text
-            self.equations = equations
+        public init(numerator: [Atom], denominator: [Atom]) {
+            self.numerator = numerator
+            self.denominator = denominator
         }
     }
 
-    /// OBJECT REPLACEMENT CHARACTER — what a lifted display equation leaves behind, and what
-    /// UIKit itself uses for an attachment, so the caller can put one there directly.
-    public static let equationPlaceholder = "\u{FFFC}"
+    public struct Rendered: Equatable {
+        /// The message text. Every fraction that is to be drawn has been replaced by one
+        /// `fractionPlaceholder`.
+        public var text: String
+        /// One entry per placeholder in `text`, in the order they appear.
+        public var fractions: [Fraction]
+
+        public init(text: String, fractions: [Fraction]) {
+            self.text = text
+            self.fractions = fractions
+        }
+    }
+
+    /// OBJECT REPLACEMENT CHARACTER — what a lifted fraction leaves behind, and what UIKit
+    /// itself uses for an attachment, so the caller can put one there directly.
+    public static let fractionPlaceholder = "\u{FFFC}"
 
     // MARK: - Entry points
 
-    /// A whole message: display equations lifted out, everything else turned into text.
+    /// A whole message, ready to be set: every fraction lifted out as structure, everything
+    /// else turned into text.
+    ///
+    /// EVERY fraction, not only the ones an author wrapped in `$$…$$`. That condition is what
+    /// this replaces, and it was wrong: a model writes `\frac` on a line of its own far more
+    /// often than it wraps it in display delimiters, and when it does, nothing was drawn and
+    /// the whole answer came back as `(a)/(b)` — which is what a fraction looks like when the
+    /// renderer cannot draw one. A fraction is a fraction wherever it stands, so it is drawn
+    /// wherever it stands, in a paragraph as readily as on its own line.
+    ///
+    /// The one that is not lifted is the one with a single glyph of its own: ½ needs no rule
+    /// drawn round it and sits in a line of text without disturbing it.
     public static func render(_ source: String) -> Rendered {
-        var equations: [[Atom]] = []
+        var fractions: [Fraction] = []
         var lines: [String] = []
-        let sourceLines = source.components(separatedBy: .newlines)
-        var index = 0
-        while index < sourceLines.count {
-            let line = sourceLines[index]
+        for line in source.components(separatedBy: .newlines) {
+            // A display fence on a line of its own is a delimiter, not content: `stripDelimiters`
+            // only sees the pair when both are on one line, so a lone one would be left showing.
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            // `$$` alone opens a block that runs to the next `$$` alone. Models write display
-            // math both ways and the multi-line form is the one a single-line rule misses.
-            if trimmed == "$$", let close = closingFenceIndex(after: index, in: sourceLines) {
-                let body = sourceLines[(index + 1)..<close].joined(separator: " ")
-                lines.append(displayLine(for: body, equations: &equations))
-                index = close + 1
-                continue
-            }
-            if let body = displayBody(of: trimmed) {
-                lines.append(displayLine(for: body, equations: &equations))
-                index += 1
-                continue
-            }
-            lines.append(inlineTextOutsideCode(line))
-            index += 1
+            if trimmed == "$$" || trimmed == "\\[" || trimmed == "\\]" { continue }
+            lines.append(liftingFractions(from: line, into: &fractions))
         }
-        return Rendered(text: lines.joined(separator: "\n"), equations: equations)
+        return Rendered(text: lines.joined(separator: "\n"), fractions: fractions)
+    }
+
+    private static func liftingFractions(from line: String, into fractions: inout [Fraction]) -> String {
+        var collected = fractions
+        defer { fractions = collected }
+        let lift: (String, String) -> String = { rawNumerator, rawDenominator in
+            // A fraction with an exact glyph is that glyph — drawing ½ would be worse than
+            // setting it, and it keeps the line's height.
+            let top = normalize(rawNumerator, depth: 1, fraction: inlineFractionHalves(atDepth: 1))
+            let bottom = normalize(rawDenominator, depth: 1, fraction: inlineFractionHalves(atDepth: 1))
+            if let glyph = vulgar[top.trimmingCharacters(in: .whitespaces) + "/"
+                                  + bottom.trimmingCharacters(in: .whitespaces)] {
+                return glyph
+            }
+            collected.append(Fraction(numerator: atoms(rawNumerator), denominator: atoms(rawDenominator)))
+            return fractionPlaceholder
+        }
+        guard line.contains("`") else { return normalize(line, depth: 0, fraction: lift) }
+        // `\frac` inside a code span is code, not maths, and has to survive as written.
+        var result = ""
+        var fragment = ""
+        var inCode = false
+        for character in line {
+            if character == "`" {
+                result += inCode ? fragment : normalize(fragment, depth: 0, fraction: lift)
+                fragment = ""
+                result.append(character)
+                inCode.toggle()
+            } else {
+                fragment.append(character)
+            }
+        }
+        result += inCode ? fragment : normalize(fragment, depth: 0, fraction: lift)
+        return result
     }
 
     /// A whole fragment, code spans left alone, with no display equations lifted out of it.
@@ -147,53 +187,6 @@ public enum AorusAIMath {
             }
         }
         return result
-    }
-
-    /// True when an equation has something in it that only a stacked setting shows properly.
-    /// A display equation with no fraction reads perfectly well as ordinary selectable text,
-    /// so it is left as text rather than turned into a picture of itself.
-    public static func needsTypesetting(_ atoms: [Atom]) -> Bool {
-        for atom in atoms where atom.isFraction {
-            return true
-        }
-        return false
-    }
-
-    // MARK: - Display detection
-
-    private static func closingFenceIndex(after index: Int, in lines: [String]) -> Int? {
-        var cursor = index + 1
-        // A runaway opening fence must not swallow the rest of the answer.
-        let limit = min(lines.count, index + 40)
-        while cursor < limit {
-            if lines[cursor].trimmingCharacters(in: .whitespaces) == "$$" { return cursor }
-            cursor += 1
-        }
-        return nil
-    }
-
-    /// The body of a line that is nothing but a display equation, or nil.
-    private static func displayBody(of trimmed: String) -> String? {
-        for (open, close) in [("$$", "$$"), ("\\[", "\\]")] {
-            guard trimmed.hasPrefix(open), trimmed.hasSuffix(close),
-                  trimmed.count > open.count + close.count else { continue }
-            let body = String(trimmed.dropFirst(open.count).dropLast(close.count))
-            // `$$a$$ and $$b$$` on one line is two equations with prose between them; it is
-            // not a display line, and treating it as one would eat the prose.
-            guard !body.contains(open) else { continue }
-            return body
-        }
-        return nil
-    }
-
-    private static func displayLine(for body: String, equations: inout [[Atom]]) -> String {
-        let parsed = atoms(body)
-        guard needsTypesetting(parsed) else {
-            // Nothing to stack: plain selectable text beats a picture of text.
-            return inlineText(body)
-        }
-        equations.append(parsed)
-        return equationPlaceholder
     }
 
     // MARK: - Atoms
