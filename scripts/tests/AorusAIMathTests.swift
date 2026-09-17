@@ -13,7 +13,7 @@ import Foundation
 
 private var failures: [String] = []
 
-private func expect(_ actual: String, _ expected: String, _ what: String) {
+private func expect<Value: Equatable>(_ actual: Value, _ expected: Value, _ what: String) {
     if actual != expected {
         failures.append("\(what)\n      expected: \(expected)\n      actual:   \(actual)")
     }
