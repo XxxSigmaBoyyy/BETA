@@ -253,15 +253,17 @@ enum AorusBackupArchive {
         var observed: [ManifestEntry] = []
         var seenPaths = Set<String>()
         var index: UInt64 = 0
+        // The flag is the loop's condition rather than something checked after it: every
+        // other way out of the loop throws, so a guard below would never have run.
         var reachedEndMarker = false
 
-        while true {
+        while !reachedEndMarker {
             let pathLenData = handle.readData(ofLength: 4)
             guard pathLenData.count == 4 else { throw Failure.truncated }
             let sealedPathLen = readUInt32LE(pathLenData)
             if sealedPathLen == 0 {
                 reachedEndMarker = true
-                break
+                continue
             }
             guard sealedPathLen <= limits.maxSealedPathSize else { throw Failure.corrupt }
             guard observed.count < limits.maxEntryCount else { throw Failure.corrupt }
@@ -307,7 +309,6 @@ enum AorusBackupArchive {
             try accept(Entry(path: path, body: body))
             index += 1
         }
-        guard reachedEndMarker else { throw Failure.corrupt }
 
         let manifestLenData = handle.readData(ofLength: 4)
         guard manifestLenData.count == 4 else { throw Failure.truncated }

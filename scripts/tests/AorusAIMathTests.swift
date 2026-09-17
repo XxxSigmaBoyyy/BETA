@@ -131,7 +131,8 @@ private func leavesProseAlone() {
            "an ampersand, a percent, a dollar and a path are not maths")
     expect(inline(#"\foo{bar}"#), #"\foo{bar}"#, "a command we do not know is left as written")
     expect(inline(#"\frac{a}"#), #"\frac{a}"#, "and so is a call with a half missing")
-    expect(inline(#"100\% \$5 \{x\} \#1"#), "100% $5 {x} #1", "escapes are the characters")
+    // Two hashes: in a `#"…"#` literal the escape character is `\#`, so `\#1` is read as one.
+    expect(inline(##"100\% \$5 \{x\} \#1"##), "100% $5 {x} #1", "escapes are the characters")
 }
 
 private func setsEnvironments() {
