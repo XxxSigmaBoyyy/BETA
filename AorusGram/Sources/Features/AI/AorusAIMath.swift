@@ -114,7 +114,12 @@ public enum AorusAIMath {
     /// dollars, so only a PAIR is removed — and the pair of dollars first, because the
     /// single-dollar rule would take the opening two and strand the closing two mid-line.
     private static func withoutMathDelimiters(_ source: String) -> String {
+        // `\(…\)` and `\[…\]` are the other pair of delimiters, and they are not escapes:
+        // without this they reached the reader as literal brackets round the formula.
         var value = source
+        for delimiter in ["\\(", "\\)", "\\[", "\\]"] {
+            value = value.replacingOccurrences(of: delimiter, with: "")
+        }
         for pattern in [#"\$\$([\s\S]+?)\$\$"#, #"(?<!\\)\$([^$\n]+)\$"#] {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             let text = NSMutableString(string: value)
