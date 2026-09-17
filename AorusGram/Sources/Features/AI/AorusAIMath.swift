@@ -160,6 +160,149 @@ public enum AorusAIMath {
         return result
     }
 
+    /// The maths written back as LaTeX, for a reader who wants to paste it somewhere that
+    /// understands it.
+    ///
+    /// Not the source the model sent — that is gone by the time anything is on screen, and
+    /// keeping it would mean carrying a second copy of every answer. This is the tree written
+    /// out again, so what comes back is equivalent rather than identical: `\dfrac` comes back
+    /// as `\frac`, `≠` as `\ne`, `x²` as `x^{2}`. It parses to the same tree.
+    public static func latex(_ atoms: [Atom]) -> String {
+        var result = ""
+        for atom in atoms {
+            switch atom {
+            case let .text(value):
+                result += latexText(value)
+            case let .fraction(numerator, denominator):
+                result += "\\frac{" + latex(numerator) + "}{" + latex(denominator) + "}"
+            case let .radical(degree, body):
+                let index = degree.isEmpty ? "" : "[" + latex(degree) + "]"
+                result += "\\sqrt" + index + "{" + latex(body) + "}"
+            case let .script(base, upper, lower):
+                result += latex(base)
+                if !lower.isEmpty { result += "_{" + latex(lower) + "}" }
+                if !upper.isEmpty { result += "^{" + latex(upper) + "}" }
+            case let .bigOperator(symbol, upper, lower):
+                result += (operatorCommands[symbol].map { "\\" + $0 } ?? symbol)
+                if !lower.isEmpty { result += "_{" + latex(lower) + "}" }
+                if !upper.isEmpty { result += "^{" + latex(upper) + "}" }
+            case let .delimited(open, close, body):
+                guard !open.isEmpty || !close.isEmpty else {
+                    // A group with no brackets of its own — `\text{…}` with more than one
+                    // piece in it. `\left.\right.` would be valid and would say nothing.
+                    result += latex(body)
+                    continue
+                }
+                result += "\\left" + (open.isEmpty ? "." : latexDelimiter(open))
+                result += latex(body)
+                result += "\\right" + (close.isEmpty ? "." : latexDelimiter(close))
+            case let .stack(open, rows):
+                let environment = stackEnvironments[open] ?? "matrix"
+                result += "\\begin{" + environment + "}"
+                result += rows.map { latex($0) }.joined(separator: " \\\\ ")
+                result += "\\end{" + environment + "}"
+            }
+        }
+        return result
+    }
+
+    /// One run of set text, written back as source: the glyphs become their commands again,
+    /// a raised or lowered character becomes a script, and what LaTeX reserves is escaped.
+    private static func latexText(_ value: String) -> String {
+        let characters = Array(value)
+        var result = ""
+        var pendingMark = ""
+        var pendingBody = ""
+        func flushScript() {
+            guard !pendingMark.isEmpty else { return }
+            result += pendingMark + "{" + pendingBody + "}"
+            pendingMark = ""
+            pendingBody = ""
+        }
+        for (index, character) in characters.enumerated() {
+            if let plain = raisedCharacters[character] {
+                if pendingMark != "^" { flushScript(); pendingMark = "^" }
+                pendingBody.append(plain)
+                continue
+            }
+            if let plain = loweredCharacters[character] {
+                if pendingMark != "_" { flushScript(); pendingMark = "_" }
+                pendingBody.append(plain)
+                continue
+            }
+            flushScript()
+            if let command = symbolCommands[String(character)] {
+                // A command name ends at the first character that is not a letter, so the
+                // space is only needed when a letter follows — `\ne 0` would otherwise be
+                // written `\ne  0`, with the author's own space after it.
+                let next = index + 1 < characters.count ? characters[index + 1] : " "
+                result += "\\" + command + (next.isLetter ? " " : "")
+                continue
+            }
+            if reservedCharacters.contains(character) {
+                result += "\\" + String(character)
+                continue
+            }
+            result.append(character)
+        }
+        flushScript()
+        return result
+    }
+
+    private static func latexDelimiter(_ value: String) -> String {
+        switch value {
+        case "{": return "\\{"
+        case "}": return "\\}"
+        case "‖": return "\\Vert"
+        case "⟨": return "\\langle"
+        case "⟩": return "\\rangle"
+        case "⌊": return "\\lfloor"
+        case "⌋": return "\\rfloor"
+        case "⌈": return "\\lceil"
+        case "⌉": return "\\rceil"
+        default: return value
+        }
+    }
+
+    private static let reservedCharacters: Set<Character> = ["%", "&", "#", "_", "$"]
+
+    /// Built from the tables the parser reads, so a symbol added in one direction cannot be
+    /// missing in the other. The first spelling wins: `≠` comes back as `\ne`, not `\neq`.
+    private static let symbolCommands: [String: String] = {
+        var table: [String: String] = [:]
+        for name in symbols.keys.sorted() {
+            guard let glyph = symbols[name], !glyph.isEmpty, glyph != " ", glyph != "  " else { continue }
+            if table[glyph] == nil || name.count < (table[glyph] ?? "").count {
+                table[glyph] = name
+            }
+        }
+        return table
+    }()
+
+    private static let operatorCommands: [String: String] = {
+        var table: [String: String] = [:]
+        for (name, symbol) in limitOperators where table[symbol] == nil {
+            table[symbol] = name
+        }
+        return table
+    }()
+
+    private static let stackEnvironments: [String: String] = [
+        "{": "cases", "(": "pmatrix", "[": "bmatrix", "|": "vmatrix", "‖": "Vmatrix", "": "matrix",
+    ]
+
+    private static let raisedCharacters: [Character: Character] = {
+        var table: [Character: Character] = [:]
+        for (plain, raised) in superscripts where table[raised] == nil { table[raised] = plain }
+        return table
+    }()
+
+    private static let loweredCharacters: [Character: Character] = {
+        var table: [Character: Character] = [:]
+        for (plain, lowered) in subscripts where table[lowered] == nil { table[lowered] = plain }
+        return table
+    }()
+
     // MARK: - What is drawn and what is set
 
     private static func emit(_ atoms: [Atom], into text: inout String, drawables: inout [Atom]) {
@@ -460,7 +603,8 @@ public enum AorusAIMath {
                 if characters[index] == opener {
                     depth -= 1
                     if depth == 0 {
-                        return (String(characters[index...]), String(characters[..<index]))
+                        return (rounded(String(characters[index...])),
+                                String(characters[..<index]))
                     }
                 }
                 index -= 1
@@ -474,6 +618,25 @@ public enum AorusAIMath {
             return (String(characters[index...]), String(characters[..<index]))
         }
         return (String(last), String(characters.dropLast()))
+    }
+
+    /// A group being raised to a power is written with round brackets.
+    ///
+    /// `[x(x-6)]^2` is correct maths and reads as a squared bracket next to an ordinary one,
+    /// which is the "какие-то [" in the report. Square brackets are NOT normalised in general
+    /// — `x ∈ [0, 1]` is a closed interval and `(0, 1)` is a different set — only the pair
+    /// that a script is sitting on, where the brackets are grouping and nothing else.
+    private static func rounded(_ group: String) -> String {
+        guard group.count > 2, group.hasPrefix("["), group.hasSuffix("]") else { return group }
+        let inner = String(group.dropFirst().dropLast())
+        // An interval is a pair, and a pair has a comma in it at the top level.
+        var depth = 0
+        for character in inner {
+            if character == "(" || character == "[" || character == "{" { depth += 1 }
+            if character == ")" || character == "]" || character == "}" { depth -= 1 }
+            if character == ",", depth == 0 { return group }
+        }
+        return "(" + inner + ")"
     }
 
     private static func parseScriptArgument(_ scanner: inout Scanner, depth: Int) -> [Atom]? {

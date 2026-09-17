@@ -53,6 +53,11 @@ public final class AorusAIMentionBox: NSObject {
 
 extension NSAttributedString.Key {
     public static let aorusAIMention = NSAttributedString.Key("AorusAIMention")
+    /// What a drawn formula reads as. A drawing occupies one OBJECT REPLACEMENT CHARACTER,
+    /// and copying that character gives a reader nothing, so the text form travels with it.
+    public static let aorusAIMathText = NSAttributedString.Key("AorusAIMathText")
+    /// And the same formula as LaTeX, for pasting somewhere that understands it.
+    public static let aorusAIMathLaTeX = NSAttributedString.Key("AorusAIMathLaTeX")
 }
 
 extension NSAttributedString {

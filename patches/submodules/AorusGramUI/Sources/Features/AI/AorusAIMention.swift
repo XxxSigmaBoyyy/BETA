@@ -588,6 +588,41 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         UIPasteboard.general.string = text
     }
 
+    /// The selection as LaTeX, for pasting somewhere that understands it.
+    ///
+    /// Every drawn formula carries the source it was set from, so this is the formula itself
+    /// rather than a description of it. Text around the formulas comes along as it reads.
+    @objc func aorusCopyLaTeX(_ sender: Any?) {
+        let text = aorusText(in: selectedRange, preferringLaTeX: true)
+        guard let text, !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+    }
+
+    /// True when the selection has a drawn formula in it, which is when offering LaTeX makes
+    /// any sense at all.
+    func aorusSelectionCarriesMaths() -> Bool {
+        return aorusCarriesMaths(in: selectedRange)
+    }
+
+    func aorusCarriesMaths(in range: NSRange) -> Bool {
+        guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return false }
+        var found = false
+        textStorage.enumerateAttribute(.aorusAIMathLaTeX, in: range, options: []) { value, _, stop in
+            if value != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(aorusCopyLaTeX(_:)) {
+            return aorusSelectionCarriesMaths()
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
     /// Cut is a copy and a deletion, and it must put the same thing on the pasteboard.
     ///
     /// The deletion is left to UIKit — it owns the caret, the undo stack and the delegate
@@ -605,6 +640,15 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
     /// Returns nil when the selection carries no pill at all, so the ordinary path is left
     /// to UIKit rather than reimplemented.
     func aorusSourceText(in range: NSRange) -> String? {
+        return aorusText(in: range, preferringLaTeX: false)
+    }
+
+    /// The selected text with every pill restored to its `@handle` and every drawn formula
+    /// restored to what it reads as — or, when asked, to the LaTeX it was set from.
+    ///
+    /// Returns nil when the selection carries neither, so the ordinary path is left to UIKit
+    /// rather than reimplemented.
+    func aorusText(in range: NSRange, preferringLaTeX: Bool) -> String? {
         guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return nil }
         var carriesMention = false
         var result = ""
@@ -613,6 +657,16 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         let string = textStorage.string as NSString
         while cursor < end {
             var effective = NSRange(location: 0, length: 0)
+            // A drawn formula first: it is one character, and that character is OBJECT
+            // REPLACEMENT. Copying it as itself is what puts an empty box on the pasteboard.
+            let latex = textStorage.attribute(.aorusAIMathLaTeX, at: cursor, effectiveRange: nil) as? String
+            let plain = textStorage.attribute(.aorusAIMathText, at: cursor, effectiveRange: nil) as? String
+            if latex != nil || plain != nil {
+                carriesMention = true
+                result += (preferringLaTeX ? latex : plain) ?? plain ?? latex ?? ""
+                cursor += 1
+                continue
+            }
             let box = textStorage.attribute(.aorusAIMention, at: cursor, effectiveRange: &effective) as? AorusAIMentionBox
             if let box, box.renderedLength > 0 {
                 // The pill's own extent, which is not the whole attribute run: characters

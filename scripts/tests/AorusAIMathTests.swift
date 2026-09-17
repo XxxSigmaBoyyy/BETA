@@ -327,6 +327,60 @@ private func survivesWhatAModelActuallySends() {
     expect(second.text.contains("x · \u{FFFC}"), "a fraction after an operator keeps the operator")
 }
 
+// MARK: - Brackets a power sits on
+
+private func roundsTheBracketsAPowerSitsOn() {
+    // "там есть [ какие-то": `[x(x-6)]^2` is correct maths and reads as a squared square
+    // bracket next to an ordinary round one.
+    expect(inline(#"[x(x-6)]^2"#), "(x(x-6))²", "a square bracket being raised is rounded")
+    expect(inline(#"\frac{[x(x-6)]^2}{x(x-2)}"#), "((x(x-6))²)/(x(x-2))",
+           "including inside a fraction, which is where it was seen")
+
+    // Not in general, though: these are different sets, and one of them is not a bracket
+    // anybody may change.
+    expect(inline("x ∈ [0, 1]"), "x ∈ [0, 1]", "a closed interval keeps its brackets")
+    expect(inline("[0, 1]^2"), "[0, 1]²", "and keeps them even when it is squared")
+    expect(inline("[a]^2"), "(a)²", "a single term in brackets is grouping")
+    expect(inline("(x+1)^2"), "(x+1)²", "a round bracket is left as written")
+}
+
+// MARK: - Back to LaTeX
+
+private func writesItselfBackAsLaTeX() {
+    func latex(_ source: String) -> String {
+        return AorusAIMath.latex(AorusAIMath.parse(source))
+    }
+    expect(latex(#"\frac{a}{b}"#), #"\frac{a}{b}"#, "a fraction")
+    expect(latex(#"\dfrac{a}{b}"#), #"\frac{a}{b}"#, "every spelling of it comes back as one")
+    expect(latex("x^2"), "x^{2}", "a squared term, grouped as LaTeX wants it")
+    expect(latex("a_{ij}"), "a_{ij}", "a subscript")
+    expect(latex(#"\sqrt{x+1}"#), #"\sqrt{x+1}"#, "a root")
+    expect(latex(#"\sqrt[3]{8}"#), #"\sqrt[3]{8}"#, "and one with a degree")
+    expect(latex(#"x \ne 0"#), #"x \ne 0"#, "a relation, with the author's own spacing")
+    expect(latex(#"\alpha + \beta"#), #"\alpha + \beta"#, "Greek")
+    expect(latex(#"\sum_{i=1}^{n} i"#), #"\sum_{i=1}^{n} i"#, "a sum with its limits")
+    expect(latex(#"\lim_{x \to 0} f"#), #"\lim_{x \to 0} f"#, "a limit")
+    expect(latex(#"\left(\frac{a}{b}\right)"#), #"\left(\frac{a}{b}\right)"#, "grown brackets")
+    expect(latex("100% of $5"), #"100\% of \$5"#, "and what LaTeX reserves is escaped")
+
+    // The real test: what comes back parses to the same thing.
+    let sources = [
+        #"\frac{x(x-6)^2}{x-2}"#,
+        #"\frac{[x(x-6)]^2}{x(x-2)}"#,
+        #"\sqrt{\frac{a+1}{b}}"#,
+        #"\sum_{i=1}^{n} \frac{1}{i^2}"#,
+        #"\lim_{x \to 0} \frac{\sin x}{x} = 1"#,
+        #"\left(\frac{a}{b}\right)^2 + \sqrt[3]{8}"#,
+        #"\begin{cases} x, & x > 0 \\ -x, & x < 0 \end{cases}"#,
+        #"x \ne 0, \alpha \le \beta, A \cup B"#,
+    ]
+    for source in sources {
+        let once = AorusAIMath.plainText(AorusAIMath.parse(source))
+        let twice = AorusAIMath.plainText(AorusAIMath.parse(AorusAIMath.latex(AorusAIMath.parse(source))))
+        expect(twice, once, "round trip through LaTeX preserves \(source)")
+    }
+}
+
 @main
 private enum AorusAIMathTests {
     static func main() {
@@ -337,6 +391,8 @@ private enum AorusAIMathTests {
         setsEnvironments()
         liftsEveryFractionWhereverItStands()
         drawsEveryConstructThatOnlyADrawingCanShow()
+        roundsTheBracketsAPowerSitsOn()
+        writesItselfBackAsLaTeX()
         survivesWhatAModelActuallySends()
         guard failures.isEmpty else {
             for failure in failures {

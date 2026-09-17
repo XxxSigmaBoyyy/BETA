@@ -5238,8 +5238,16 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
             slotValues[index] = value
             switch (slots[index], blocks[index]) {
             case let (.text(view), .text(source)):
+                // Replacing the text drops whatever the reader had selected in it. A turn
+                // that is still arriving re-renders several times a second, so a selection
+                // made while it does would vanish under their finger.
+                let selection = view.selectedRange
+                let wasSelecting = view.isFirstResponder && selection.length > 0
                 view.attributedText = AorusAIMarkdown.attributed(source, color: configuredTextColor, accent: configuredAccent, mentions: mentions)
                 view.refreshMentionImages()
+                if wasSelecting, NSMaxRange(selection) <= view.textStorage.length {
+                    view.selectedRange = selection
+                }
                 // A non-scrolling UITextView does not reliably re-publish its intrinsic
                 // height when its attributed text is replaced. Inside a stack view that means
                 // the row keeps the height of the *first* delta: the answer went on arriving,
@@ -5490,6 +5498,40 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         case "offline": return .offline
         default: return .failure
         }
+    }
+
+    /// A drawn formula is part of the sentence, not a picture in it.
+    ///
+    /// From iOS 17 a text attachment is an interactive text item of its own: a long press on
+    /// one opens the system's menu for an image — save it, share it — and the press never
+    /// becomes a text selection. That is both halves of the report: the `x ·` in front of the
+    /// fraction cannot be selected with it, and the highlight that does appear goes away with
+    /// the menu a moment later. Declining the interaction hands the gesture back to the text
+    /// view, which then selects across the formula like any other character.
+    @available(iOS 17.0, *)
+    func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
+                  defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+        if case .textAttachment = textItem.content { return nil }
+        return UITextItem.MenuConfiguration(menu: defaultMenu)
+    }
+
+    @available(iOS 17.0, *)
+    func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
+                  defaultAction: UIAction) -> UIAction? {
+        if case .textAttachment = textItem.content { return nil }
+        return defaultAction
+    }
+
+    /// "Copy LaTeX", offered only when the selection actually has a formula in it.
+    @available(iOS 16.0, *)
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                  suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard let view = textView as? AorusAIMentionTextView,
+              view.aorusCarriesMaths(in: range) else { return nil }
+        let copyLaTeX = UIAction(title: aorusAILocalized("Копировать LaTeX", "Copy LaTeX")) { [weak view] _ in
+            view?.aorusCopyLaTeX(nil)
+        }
+        return UIMenu(children: suggestedActions + [copyLaTeX])
     }
 
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
@@ -6649,10 +6691,18 @@ private enum AorusAIMarkdown {
         while index < drawables.count, searchRange.length > 0 {
             let found = text.range(of: AorusAIMath.drawablePlaceholder, options: [], range: searchRange)
             guard found.location != NSNotFound else { break }
+            let drawable = drawables[index]
             let attachment = AorusAIMathTypesetter.attachment(
-                for: drawables[index], font: bodyFont, color: color
+                for: drawable, font: bodyFont, color: color
             )
             output.addAttribute(.attachment, value: attachment, range: found)
+            // A drawing is one OBJECT REPLACEMENT CHARACTER, and copying that gives a reader
+            // nothing at all. Both forms of the formula travel with it: the text it reads as,
+            // and the LaTeX it came from.
+            output.addAttribute(.aorusAIMathText,
+                                value: AorusAIMath.plainText([drawable]), range: found)
+            output.addAttribute(.aorusAIMathLaTeX,
+                                value: AorusAIMath.latex([drawable]), range: found)
             let next = found.location + found.length
             searchRange = NSRange(location: next, length: text.length - next)
             index += 1
