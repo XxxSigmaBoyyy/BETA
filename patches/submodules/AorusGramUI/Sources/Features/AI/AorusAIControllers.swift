@@ -6488,8 +6488,9 @@ private enum AorusAIMarkdown {
     }
 
     static func attributed(_ source: String, color: UIColor, accent: UIColor, mentions: [String: AorusAIMention] = [:]) -> NSAttributedString {
-        // Every fraction is lifted out here and put back at the very end, drawn. What is left
-        // in its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass below
+        // Everything that has to be drawn — a fraction, a root, an operator with limits, a
+        // system — is lifted out here and put back at the very end, typeset. What is left in
+        // its place until then is one OBJECT REPLACEMENT CHARACTER, which no pass below
         // matches and which therefore cannot be split, emphasised or linked by mistake.
         let rendered = AorusAIMath.render(source)
         let normalized = normalizeLists(rendered.text)
@@ -6536,27 +6537,27 @@ private enum AorusAIMarkdown {
         )
         // Last of all, so that no pass after it can move a range out from under an
         // attachment, and so that the placeholders are found in the finished text.
-        applyFractions(rendered.fractions, in: output, color: color)
+        applyDrawnMaths(rendered.drawables, in: output, color: color)
         return output
     }
 
-    /// Draws each fraction where its placeholder stands.
+    /// Draws each construct where its placeholder stands.
     ///
     /// Everything around them is left as it is — real, selectable text. A placeholder is one
     /// character and an attachment is one character, so putting one in place of the other
     /// moves nothing, and the ranges every earlier pass produced stay where they were.
-    private static func applyFractions(_ fractions: [AorusAIMath.Fraction],
-                                       in output: NSMutableAttributedString,
-                                       color: UIColor) {
-        guard !fractions.isEmpty else { return }
+    private static func applyDrawnMaths(_ drawables: [AorusAIMath.Atom],
+                                        in output: NSMutableAttributedString,
+                                        color: UIColor) {
+        guard !drawables.isEmpty else { return }
         let text = output.string as NSString
         var searchRange = NSRange(location: 0, length: text.length)
         var index = 0
-        while index < fractions.count, searchRange.length > 0 {
-            let found = text.range(of: AorusAIMath.fractionPlaceholder, options: [], range: searchRange)
+        while index < drawables.count, searchRange.length > 0 {
+            let found = text.range(of: AorusAIMath.drawablePlaceholder, options: [], range: searchRange)
             guard found.location != NSNotFound else { break }
             let attachment = AorusAIMathTypesetter.attachment(
-                for: fractions[index], font: bodyFont, color: color
+                for: drawables[index], font: bodyFont, color: color
             )
             output.addAttribute(.attachment, value: attachment, range: found)
             let next = found.location + found.length

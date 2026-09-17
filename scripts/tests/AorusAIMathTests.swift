@@ -150,53 +150,128 @@ private func liftsEveryFractionWhereverItStands() {
     // equation came back as `([x(x - 6)]²)/(x(x - 2))`, which is what a fraction looks like
     // when the renderer cannot draw one.
     let bare = AorusAIMath.render(#"\frac{[x(x-6)]^2}{x(x-2)}"#)
-    expect(bare.fractions.count, 1, "a fraction with no delimiters around it is still a fraction")
+    expect(bare.drawables.count, 1, "a fraction with no delimiters around it is still a fraction")
     expect(bare.text, "\u{FFFC}", "and leaves a placeholder for the drawing")
-    expect(AorusAIMath.plainText([.fraction(numerator: bare.fractions[0].numerator,
-                                            denominator: bare.fractions[0].denominator)]),
-           "([x(x - 6)]²)/(x(x - 2))",
+    expect(AorusAIMath.plainText(bare.drawables), "([x(x-6)]²)/(x(x-2))",
            "whose text fallback is still correct")
 
     let inSentence = AorusAIMath.render(#"Теперь дробь: \frac{x^2(x-6)^2}{x(x-2)} и дальше"#)
-    expect(inSentence.fractions.count, 1, "one in the middle of a sentence is drawn too")
+    expect(inSentence.drawables.count, 1, "one in the middle of a sentence is drawn too")
     expect(inSentence.text, "Теперь дробь: \u{FFFC} и дальше", "with the prose either side kept")
 
     let display = AorusAIMath.render("Решим:\n$$\\frac{x(x-2)^2}{x(x-6)} = 0$$\nДальше.")
-    expect(display.fractions.count, 1, "a display equation still works")
+    expect(display.drawables.count, 1, "a display equation still works")
     expect(display.text, "Решим:\n\u{FFFC} = 0\nДальше.", "with only the fraction lifted")
 
     let bracket = AorusAIMath.render("\\[\\frac{a}{b}\\]")
-    expect(bracket.fractions.count, 1, "`\\[…\\]` is unwrapped, not printed")
+    expect(bracket.drawables.count, 1, "`\\[…\\]` is unwrapped, not printed")
     expect(bracket.text, "\u{FFFC}", "and leaves nothing behind")
 
     let fenced = AorusAIMath.render("До\n$$\n\\frac{a+1}{b}\n$$\nПосле")
-    expect(fenced.fractions.count, 1, "a fence on its own line is a delimiter")
+    expect(fenced.drawables.count, 1, "a fence on its own line is a delimiter")
     expect(fenced.text, "До\n\u{FFFC}\nПосле", "and is consumed, not shown")
 
     // A glyph of its own beats a drawing: ½ keeps the line's height and reads perfectly.
     let half = AorusAIMath.render(#"Возьмём \frac{1}{2} от числа"#)
-    expect(half.fractions.count, 0, "a vulgar fraction is not drawn")
+    expect(half.drawables.count, 0, "a vulgar fraction is not drawn")
     expect(half.text, "Возьмём ½ от числа", "it is set")
 
     let noFraction = AorusAIMath.render("$$x = 2$$")
-    expect(noFraction.fractions.count, 0, "an equation with no fraction has nothing to draw")
+    expect(noFraction.drawables.count, 0, "an equation with no fraction has nothing to draw")
     expect(noFraction.text, "x = 2", "and is just text")
 
     let nested = AorusAIMath.render(#"\frac{\frac{a}{b}}{c}"#)
-    expect(nested.fractions.count, 1, "a fraction inside a fraction is one drawing")
-    expect(nested.fractions.first?.numerator.contains(where: { $0.isFraction }) == true,
-           "whose numerator is itself a fraction")
+    expect(nested.drawables.count, 1, "a fraction inside a fraction is one drawing")
+    if case let .fraction(numerator, _)? = nested.drawables.first {
+        var isNested = false
+        for atom in numerator {
+            if case .fraction = atom { isNested = true }
+        }
+        expect(isNested, "whose numerator is itself a fraction")
+    } else {
+        failures.append("a nested fraction parses as a fraction")
+    }
 
     // A code span is code. `\frac` in one is what the reader asked to see.
     let code = AorusAIMath.render("Пиши `\\frac{a}{b}` в LaTeX")
-    expect(code.fractions.count, 0, "nothing is lifted out of a code span")
+    expect(code.drawables.count, 0, "nothing is lifted out of a code span")
     expect(code.text, "Пиши `\\frac{a}{b}` в LaTeX", "and it survives exactly")
 
     let two = AorusAIMath.render(#"\frac{a}{b} = \frac{c}{d}"#)
-    expect(two.fractions.count, 2, "two fractions on a line are two drawings")
+    expect(two.drawables.count, 2, "two fractions on a line are two drawings")
     expect(two.text, "\u{FFFC} = \u{FFFC}", "in the order they appear")
 
     expect(AorusAIMath.plainText(AorusAIMath.atoms("x = 2")), "x = 2", "atoms of plain text")
+}
+
+private func drawsEveryConstructThatOnlyADrawingCanShow() {
+    // A root needs its bar carried over the whole radicand.
+    let root = AorusAIMath.render(#"\sqrt{x+1}"#)
+    expect(root.drawables.count, 1, "a root is drawn")
+    expect(root.text, "\u{FFFC}", "and leaves a placeholder")
+    expect(AorusAIMath.plainText(root.drawables), "√(x+1)", "its text fallback is still right")
+
+    let cube = AorusAIMath.render(#"\sqrt[3]{8} = 2"#)
+    expect(cube.drawables.count, 1, "so is one with a degree")
+    expect(cube.text, "\u{FFFC} = 2", "with the rest of the line kept")
+
+    // A script whose parts have characters of their own stays text — it reads better and it
+    // stays selectable. One whose parts do not is drawn rather than written `e^(iπ)`.
+    let squared = AorusAIMath.render("x^2 + 1")
+    expect(squared.drawables.count, 0, "a squared term is a character")
+    expect(squared.text, "x² + 1", "so it is set, not drawn")
+
+    let exponential = AorusAIMath.render(#"e^{i\pi} + 1 = 0"#)
+    expect(exponential.drawables.count, 1, "an exponent with no characters for it is drawn")
+    expect(exponential.text, "\u{FFFC} + 1 = 0", "and the rest of the identity is text")
+
+    let indexed = AorusAIMath.render("a_{fig}")
+    expect(indexed.drawables.count, 1, "and so is a subscript with no characters for it")
+
+    // Limits belong above and below, which only a drawing can do.
+    let sum = AorusAIMath.render(#"\sum_{i=1}^{n} i"#)
+    expect(sum.drawables.count, 1, "a sum with limits is drawn")
+    expect(sum.text, "\u{FFFC} i", "with what follows it kept as text")
+    expect(AorusAIMath.plainText(sum.drawables), "∑ᵢ₌₁ⁿ", "its fallback is the flattened form")
+
+    let limit = AorusAIMath.render(#"\lim_{x \to 0} f(x)"#)
+    expect(limit.drawables.count, 1, "a limit is drawn")
+
+    let integral = AorusAIMath.render(#"\int_0^1 x^2 dx"#)
+    expect(integral.drawables.count, 0, "an integral's limits are characters, so it is set")
+    expect(integral.text, "∫₀¹ x² dx", "exactly as before")
+
+    let bareSum = AorusAIMath.render(#"\sum a_i"#)
+    expect(bareSum.drawables.count, 0, "a sum with no limits is just a symbol")
+    expect(bareSum.text, "∑ aᵢ", "and is set")
+
+    // Brackets grow to what they hold — but only when there is something to grow to.
+    let tall = AorusAIMath.render(#"\left(\frac{a}{b}\right)^2"#)
+    expect(tall.drawables.count, 1, "brackets round a fraction are drawn with it")
+
+    let flat = AorusAIMath.render(#"\left(a+b\right)"#)
+    expect(flat.drawables.count, 0, "brackets round plain text are plain text")
+    expect(flat.text, "(a+b)", "written as they were")
+
+    // A system needs its brace.
+    let system = AorusAIMath.render(#"\begin{cases} x, & x > 0 \\ -x, & x < 0 \end{cases}"#)
+    expect(system.drawables.count, 1, "a system is drawn")
+    expect(system.text, "\u{FFFC}", "as one thing")
+    if case let .stack(open, rows)? = system.drawables.first {
+        expect(open, "{", "with the brace a system has")
+        expect(rows.count, 2, "and both its rows")
+    } else {
+        failures.append("a system parses as a stack")
+    }
+
+    let matrix = AorusAIMath.render(#"\begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}"#)
+    expect(matrix.drawables.count, 1, "and so is a matrix")
+    if case let .stack(open, rows)? = matrix.drawables.first {
+        expect(open, "(", "with the bracket its environment names")
+        expect(rows.count, 2, "and both its rows")
+    } else {
+        failures.append("a matrix parses as a stack")
+    }
 }
 
 private func survivesWhatAModelActuallySends() {
@@ -222,7 +297,7 @@ private func survivesWhatAModelActuallySends() {
     expect(!rendered.text.contains("\u{2044}"), "and no fraction slash either")
     expect(rendered.text.contains("x ≠ 0"), "the condition reads as a condition")
     expect(rendered.text.contains("Ответ: x = 2"), "the answer reads as the answer")
-    expect(rendered.fractions.count, 2, "both fractions in it are drawn")
+    expect(rendered.drawables.count, 2, "both fractions in it are drawn")
 
     // And the whole answer from the second screenshot, which used no display delimiters at all.
     let undelimited = """
@@ -247,7 +322,7 @@ private func survivesWhatAModelActuallySends() {
     x \\cdot \\frac{(x-6)^2}{x-2}
     """
     let second = AorusAIMath.render(undelimited)
-    expect(second.fractions.count, 4, "every one of the four fractions is drawn")
+    expect(second.drawables.count, 4, "every one of the four fractions is drawn")
     expect(second.text.contains("x²(x-6)²"), "and a line that is not a fraction is still set")
     expect(second.text.contains("x · \u{FFFC}"), "a fraction after an operator keeps the operator")
 }
@@ -261,6 +336,7 @@ private enum AorusAIMathTests {
         leavesProseAlone()
         setsEnvironments()
         liftsEveryFractionWhereverItStands()
+        drawsEveryConstructThatOnlyADrawingCanShow()
         survivesWhatAModelActuallySends()
         guard failures.isEmpty else {
             for failure in failures {
