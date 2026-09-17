@@ -152,7 +152,8 @@ private func liftsEveryFractionWhereverItStands() {
     let bare = AorusAIMath.render(#"\frac{[x(x-6)]^2}{x(x-2)}"#)
     expect(bare.drawables.count, 1, "a fraction with no delimiters around it is still a fraction")
     expect(bare.text, "\u{FFFC}", "and leaves a placeholder for the drawing")
-    expect(AorusAIMath.plainText(bare.drawables), "([x(x-6)]²)/(x(x-2))",
+    // Round, not square: a bracket a power sits on is grouping — see the section below.
+    expect(AorusAIMath.plainText(bare.drawables), "((x(x-6))²)/(x(x-2))",
            "whose text fallback is still correct")
 
     let inSentence = AorusAIMath.render(#"Теперь дробь: \frac{x^2(x-6)^2}{x(x-2)} и дальше"#)
@@ -325,6 +326,9 @@ private func survivesWhatAModelActuallySends() {
     expect(second.drawables.count, 4, "every one of the four fractions is drawn")
     expect(second.text.contains("x²(x-6)²"), "and a line that is not a fraction is still set")
     expect(second.text.contains("x · \u{FFFC}"), "a fraction after an operator keeps the operator")
+    // And the thing the reader actually saw: not one square bracket left in the answer.
+    expect(!second.text.contains("["), "no square bracket survives into what is read")
+    expect(!second.text.contains("]"), "nor its closing half")
 }
 
 // MARK: - Brackets a power sits on

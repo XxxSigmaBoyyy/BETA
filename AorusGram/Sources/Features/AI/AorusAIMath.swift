@@ -231,16 +231,19 @@ public enum AorusAIMath {
                 continue
             }
             flushScript()
+            // What LaTeX reserves comes first: `%` has a command name of its own in the
+            // symbol table, and writing `\percent` where `\%` was meant is a comment marker
+            // that swallows the rest of the line.
+            if reservedCharacters.contains(character) {
+                result += "\\" + String(character)
+                continue
+            }
             if let command = symbolCommands[String(character)] {
                 // A command name ends at the first character that is not a letter, so the
                 // space is only needed when a letter follows — `\ne 0` would otherwise be
                 // written `\ne  0`, with the author's own space after it.
                 let next = index + 1 < characters.count ? characters[index + 1] : " "
                 result += "\\" + command + (next.isLetter ? " " : "")
-                continue
-            }
-            if reservedCharacters.contains(character) {
-                result += "\\" + String(character)
                 continue
             }
             result.append(character)
