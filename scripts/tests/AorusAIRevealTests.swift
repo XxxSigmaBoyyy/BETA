@@ -100,12 +100,28 @@ private func neverCutsAFormulaInHalf() {
     expect(AorusAIReveal.safeLength(of: cases, atMost: cases.count), cases.count,
            "and all of itself once it is there")
 
-    // A code fence is the same shape of problem.
+    // A code fence is held back only until it IS a fence. After that the listing types out
+    // like everything else: a fifty-line block that waited for its closing fence was the one
+    // place an answer still landed in one piece.
     let fence = "до\n```swift\nlet x = 1\n```\nпосле"
-    expect(AorusAIReveal.safeLength(of: fence, atMost: 15) <= 3,
-           "an open code fence is not shown half-open")
+    expect(AorusAIReveal.safeLength(of: fence, atMost: 5), 3,
+           "a fence half-arrived shows none of itself")
+    expect(AorusAIReveal.safeLength(of: fence, atMost: 9), 3,
+           "and neither does its language while it is still being typed")
+    expect(AorusAIReveal.safeLength(of: fence, atMost: 15), 15,
+           "but its body types out once the opening fence is a whole line")
+    expect(AorusAIReveal.safeLength(of: fence, atMost: 24), 22,
+           "and the run of backticks that may be closing it is never cut into")
     expect(AorusAIReveal.safeLength(of: fence, atMost: fence.count), fence.count,
            "a closed one is shown whole")
+    // Nothing inside a fence is LaTeX: a brace in a listing is a brace.
+    let listing = "```swift\nif x { y() }\n```"
+    for limit in 0...listing.count {
+        let length = AorusAIReveal.safeLength(of: listing, atMost: limit)
+        expect(length >= 0 && length <= limit, "a brace in code holds nothing back at \(limit)")
+    }
+    expect(AorusAIReveal.safeLength(of: listing, atMost: 20), 20,
+           "an open brace in a listing is not an open group")
 
     // A command whose name is still arriving is not a command yet.
     expect(AorusAIReveal.safeLength(of: #"a \alpha b"#, atMost: 5), 2,

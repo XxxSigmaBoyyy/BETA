@@ -6470,7 +6470,16 @@ private enum AorusAIMarkdown {
             appendTextBlocks(prefix, to: &result)
             let afterFence = rest[start.upperBound...]
             guard let end = afterFence.range(of: "```") else {
-                appendTextBlocks(String(rest[start.lowerBound...]), to: &result)
+                // Still arriving. A block whose closing fence has not come yet is shown as
+                // the card it is going to be, filling as it types — holding it back until
+                // the fence arrived was the one place an answer still landed all at once.
+                // Only when it really is a fence, though: a stray ``` in a sentence has
+                // prose after it, not a language, and that stays the text it was.
+                if let opening = openingCodeBlock(in: String(afterFence)) {
+                    result.append(.code(opening.language, opening.code))
+                } else {
+                    appendTextBlocks(String(rest[start.lowerBound...]), to: &result)
+                }
                 return result
             }
             let payload = String(afterFence[..<end.lowerBound])
@@ -6485,6 +6494,28 @@ private enum AorusAIMarkdown {
         }
         appendTextBlocks(String(rest), to: &result)
         return result
+    }
+
+    /// A fenced block whose closing fence has not arrived, or nil when what follows the
+    /// fence does not look like one.
+    ///
+    /// The info string is what tells them apart. A real fence carries a language or nothing
+    /// at all; a `\`\`\`` somebody wrote in the middle of a sentence carries the rest of the
+    /// sentence, and swallowing a paragraph into a code card is worse than showing the three
+    /// backticks the author typed.
+    private static func openingCodeBlock(in payload: String) -> (language: String?, code: String)? {
+        let split = payload.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        // The first line has not ended yet: there is no body to show, and the language is
+        // still being typed.
+        guard split.count > 1 else { return nil }
+        let info = String(split[0]).trimmingCharacters(in: .whitespaces)
+        guard info.count <= 20,
+              info.range(of: #"^[A-Za-z0-9+#._-]*$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        var code = String(split[1])
+        while code.hasSuffix("\n") { code.removeLast() }
+        return (info.isEmpty ? nil : info, code)
     }
 
     private static func appendTextBlocks(_ source: String, to result: inout [AorusAIMarkdownBlock]) {

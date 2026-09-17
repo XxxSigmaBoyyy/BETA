@@ -70,6 +70,9 @@ public enum AorusAIReveal {
         var openDollars = 0        // dollar delimiters still waiting to be closed
         var backtickRun = 0
         var openFence = false
+        // Whether the opening fence's own line has ended. Until it has there is no code yet,
+        // only "```swi" — and a language name half-arrived is not something to show.
+        var fenceBodyStarted = false
         var inlineCodeOpen = false
         var environmentDepth = 0
         // A command whose arguments have not all arrived. `\frac{x+1}` has a closing brace
@@ -81,6 +84,36 @@ public enum AorusAIReveal {
 
         while index < ceiling {
             let character = characters[index]
+
+            // Inside a fenced block nothing is LaTeX: a brace is a brace, a dollar is a
+            // dollar, and the code is typed out a character at a time like everything else.
+            // Holding the whole block back until its closing fence arrived was the one place
+            // an answer still appeared all at once — and a fifty-line listing is exactly
+            // where waiting is most obvious.
+            if openFence {
+                if character == "`" {
+                    backtickRun += 1
+                    index += 1
+                    if index >= ceiling || characters[index] != "`" {
+                        if backtickRun >= 3 {
+                            openFence = false
+                            fenceBodyStarted = false
+                            if braceDepth == 0, openDollars == 0, environmentDepth == 0,
+                               pendingArguments == 0, !inlineCodeOpen {
+                                safe = index
+                            }
+                        }
+                        backtickRun = 0
+                    }
+                    continue
+                }
+                if character == "\n" { fenceBodyStarted = true }
+                index += 1
+                // Not before the fence's own line has ended, and never in the middle of a
+                // run of backticks that may turn out to be the closing fence.
+                if fenceBodyStarted { safe = index }
+                continue
+            }
 
             if character == "\\" {
                 // A command, an escape, or a line break. Whatever it is, the text is not
