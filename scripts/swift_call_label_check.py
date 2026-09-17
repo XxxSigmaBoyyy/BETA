@@ -44,6 +44,16 @@ KEYWORDS = {
     "func", "var", "let", "as", "is", "not", "and", "or",
 }
 
+# Members every type gets from the language or the frameworks, which our sources never
+# declare and which are not ours to check.
+KNOWN_FOREIGN = {
+    "init", "shared", "self", "type", "some", "none", "allCases", "default", "standard",
+    "main", "current", "zero", "max", "min", "first", "last", "count", "append", "insert",
+    "remove", "removeAll", "contains", "map", "flatMap", "compactMap", "filter", "reduce",
+    "sorted", "joined", "split", "hasPrefix", "hasSuffix", "prefix", "suffix", "dropFirst",
+    "dropLast", "trimmingCharacters", "replacingOccurrences", "components", "description",
+}
+
 TYPE_DECL = re.compile(r"\b(?:class|struct|enum|extension|actor|protocol)\s+([A-Za-z_]\w*)")
 FUNC_DECL = re.compile(r"\bfunc\s+([A-Za-z_]\w*)\s*(?:<[^>(]*>)?\s*\(")
 CALL = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
@@ -176,6 +186,9 @@ def collect(paths):
     free = {}
     sources = {}
     layout = {}
+    # `Owner.Nested(...)` is a type being made, not a method being called. Without this every
+    # `AorusBackupArchive.Limits(...)` reads as a missing member.
+    nested = {}
     for path in paths:
         # A literal collapses to `S`, not to nothing: `t("a", "b")` has to keep two
         # arguments, or every call that passes only literals looks like `t()`.
@@ -183,6 +196,10 @@ def collect(paths):
         sources[path] = code
         spans = enclosing_types(code)
         layout[path] = spans
+        for match in TYPE_DECL.finditer(code):
+            owner = innermost(spans, match.start())
+            if owner is not None and match.group(1) != owner:
+                nested.setdefault(owner, set()).add(match.group(1))
         for match in FUNC_DECL.finditer(code):
             close = match_paren(code, match.end() - 1)
             if close < 0:
@@ -203,7 +220,7 @@ def collect(paths):
                 by_type.setdefault(owner[1], {}).setdefault(match.group(1), set()).update(accepted)
             else:
                 free.setdefault(path, {}).setdefault(match.group(1), set()).update(accepted)
-    return sources, layout, by_type, free
+    return sources, layout, by_type, free, nested
 
 
 def line_of(code, index):
@@ -219,7 +236,7 @@ def innermost(spans, position):
     return best[1] if best else None
 
 
-def check(sources, layout, by_type, free):
+def check(sources, layout, by_type, free, nested):
     failures = []
     for path, code in sources.items():
         spans = layout.get(path, [])
@@ -261,7 +278,23 @@ def check(sources, layout, by_type, free):
         for match in QUALIFIED.finditer(code):
             owner, name = match.group(1), match.group(2)
             methods = by_type.get(owner)
-            if not methods or name not in methods:
+            if methods is None:
+                continue
+            if name not in methods:
+                # A member of OUR type that our sources do not declare anywhere. This is the
+                # shape a careless span replacement leaves behind: the declaration goes and
+                # the call stays, and nothing short of the hour-long build notices.
+                #
+                # Only for a type we own, and only when the member is declared nowhere at all
+                # — inherited and framework members are somebody else's to check.
+                if name in KNOWN_FOREIGN or name in nested.get(owner, set()):
+                    continue
+                if any(name in table for table in by_type.values()):
+                    continue
+                failures.append(
+                    f"{path}:{line_of(code, match.start())}: {owner}.{name} is called, and "
+                    f"{owner} has no such member anywhere in these sources"
+                )
                 continue
             close = match_paren(code, match.end() - 1)
             if close < 0:
@@ -284,8 +317,8 @@ def main():
         base = root / directory
         if base.is_dir():
             paths.extend(sorted(base.rglob("*.swift")))
-    sources, layout, by_type, free = collect(paths)
-    failures = check(sources, layout, by_type, free)
+    sources, layout, by_type, free, nested = collect(paths)
+    failures = check(sources, layout, by_type, free, nested)
     if failures:
         print("Swift call label check: FAILED")
         for failure in failures:

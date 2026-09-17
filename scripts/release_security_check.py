@@ -1154,6 +1154,7 @@ def main() -> int:
     check_single_anti_screenshot_owner(root, errors)
     check_artifact_edit_contract(root, errors)
     check_aorus_code_encryption(root, errors)
+    check_ambiguous_timer(root, errors)
     check_mirrored_sources(root, errors)
     check_declaration_attributes(root, errors)
     check_missing_override(root, errors)
@@ -1331,6 +1332,27 @@ def check_single_anti_screenshot_owner(root: Path, errors: list[str]) -> None:
     for marker in required:
         if marker not in source:
             fail(errors, f"AntiScreenshotManager must expose the shared core owner: missing {marker!r}")
+
+
+def check_ambiguous_timer(root: Path, errors: list[str]) -> None:
+    """`Timer` has to be qualified wherever SwiftSignalKit is imported.
+
+    SwiftSignalKit exports a `Timer` of its own. In a file that imports it the bare name is
+    ambiguous and the compiler says so — an hour into the build, because nothing before that
+    type-checks these sources. The files that already got this right say `Foundation.Timer`.
+    """
+    for directory in ("AorusGram/Sources", "patches/submodules"):
+        base = root / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.swift")):
+            text = path.read_text(encoding="utf-8")
+            if "import SwiftSignalKit" not in text:
+                continue
+            for match in re.finditer(r"(?<![.\w])Timer\s*[.(]", strip_swift(text)):
+                line = text.count("\n", 0, match.start()) + 1
+                fail(errors, f"{path.relative_to(root)}:{line}: Timer is ambiguous in a file "
+                             f"that imports SwiftSignalKit — write Foundation.Timer")
 
 
 def check_mirrored_sources(root: Path, errors: list[str]) -> None:

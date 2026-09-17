@@ -3601,7 +3601,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private func startRevealIfNeeded() {
         guard revealTimer == nil else { return }
         lastRevealTick = Date()
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+        // `Foundation.` qualified, as everywhere else in this file: SwiftSignalKit exports
+        // a `Timer` of its own and both are in scope, so the bare name does not resolve.
+        let timer = Foundation.Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
             // The run loop holds the timer, not the controller: without this it would go on
             // firing thirty times a second for the rest of the process once the screen closed.
             guard let self else {
@@ -6655,6 +6657,30 @@ private enum AorusAIMarkdown {
             searchRange = NSRange(location: next, length: text.length - next)
             index += 1
         }
+    }
+
+    /// The text form: a table cell, a quote, anywhere a run of text is all there is and a
+    /// display equation has nowhere to go. The rules themselves live in AorusAIMath, where
+    /// they can be compiled and tested on their own.
+    static func displayTypography(_ source: String) -> String {
+        return normalizeLists(AorusAIMath.typography(source))
+    }
+
+    private static func normalizeLists(_ source: String) -> String {
+        return source.components(separatedBy: .newlines).map { line in
+            if let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+\[([ xX])\]\s+(.+)$"#),
+               let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) {
+                let nsLine = line as NSString
+                let mark = nsLine.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces).isEmpty ? "☐" : "☑︎"
+                return nsLine.substring(with: match.range(at: 1)) + mark + " " + nsLine.substring(with: match.range(at: 3))
+            }
+            guard let regex = try? NSRegularExpression(pattern: #"^(\s*)[-*+]\s+(.+)$"#),
+                  let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else {
+                return line
+            }
+            let nsLine = line as NSString
+            return nsLine.substring(with: match.range(at: 1)) + "• " + nsLine.substring(with: match.range(at: 2))
+        }.joined(separator: "\n")
     }
 
     private static func replacing(pattern: String, in source: String, transform: ([String]) -> String) -> String {
