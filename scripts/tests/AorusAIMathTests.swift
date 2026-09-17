@@ -348,6 +348,82 @@ private func roundsTheBracketsAPowerSitsOn() {
     expect(inline("(x+1)^2"), "(x+1)²", "a round bracket is left as written")
 }
 
+// MARK: - Everything else a model writes
+
+private func setsTheRestOfWhatAModelWrites() {
+    // Words inside maths, and a named operator.
+    expect(inline(#"\text{если } x > 0"#), "если x > 0", "words in a formula are words")
+    expect(inline(#"\operatorname{lcm}(4,6) = 12"#), "lcm(4,6) = 12", "a named operator")
+    expect(inline(#"\mathbf{v} = \mathrm{d}x"#), "v = dx", "a face is not content")
+
+    // What LaTeX reserves, written as an escape. None of it is a command.
+    expect(inline(#"Скидка 50\% и \$20"#), "Скидка 50% и $20", "escaped reserved characters")
+    // Two hashes, because `\#` is what escapes something inside a one-hash raw literal.
+    expect(inline(##"\{a, b\} \& \#1 \_x"##), "{a, b} & #1 _x", "and the rest of them")
+    expect(inline("Рост 12% за год"), "Рост 12% за год", "a per-cent sign in prose is left alone")
+
+    // Thin spaces are spaces; the negative one is nothing.
+    expect(inline(#"a\,b\;c\:d\!e"#), "a b c de", "the spacing commands")
+
+    // Style commands leave no trace at all.
+    expect(inline(#"\displaystyle\frac{1}{2}"#), "½", "a style command is not content")
+    // The space the author left before it stays; the tag itself does not.
+    expect(inline(#"x = 1 \tag{1}"#).trimmingCharacters(in: .whitespaces), "x = 1",
+           "and neither is a tag")
+
+    // A function name keeps its subscript and its power.
+    let log = inline(#"\log_2 8 = 3"#)
+    expect(!log.contains("\\"), "a function name is not written with its backslash: \(log)")
+    expect(log.contains("₂"), "and keeps its base as a subscript: \(log)")
+    let sine = inline(#"\sin^2 x + \cos^2 x = 1"#)
+    expect(!sine.contains("\\"), "the trigonometric identity carries no commands: \(sine)")
+    expect(sine.contains("²"), "and is squared where it says so: \(sine)")
+
+    // A binomial coefficient, a nested fraction and a root round a fraction all need a
+    // drawing — there is no way to write any of them on one line.
+    let binomial = AorusAIMath.render(#"\binom{n}{k} = \frac{n!}{k!(n-k)!}"#)
+    expect(binomial.drawables.count, 2, "a binomial and a fraction are two drawings")
+    let nested = AorusAIMath.render(#"\frac{\frac{a}{b}}{c}"#)
+    expect(nested.drawables.count, 1, "a fraction inside a fraction is one drawing")
+    expect(nested.text, "\u{FFFC}", "and nothing else on the line")
+    let rooted = AorusAIMath.render(#"\sqrt{\frac{a+1}{b}}"#)
+    expect(rooted.drawables.count, 1, "a root round a fraction is one drawing")
+
+    // Aligned equations are rows, and they are drawn as rows.
+    let aligned = AorusAIMath.render(#"\begin{aligned} x &= 1 \\ y &= 2 \end{aligned}"#)
+    expect(aligned.drawables.count, 1, "an aligned block is one drawing")
+    if case let .stack(open, rows)? = aligned.drawables.first {
+        expect(open, "", "with no bracket down its side")
+        expect(rows.count, 2, "and both its rows")
+    } else {
+        failures.append("an aligned block parses as a stack")
+    }
+
+    // Every matrix environment brings its own bracket.
+    for (environment, bracket) in [("bmatrix", "["), ("vmatrix", "|"), ("Bmatrix", "{")] {
+        let source = "\\begin{\(environment)} 1 & 0 \\\\ 0 & 1 \\end{\(environment)}"
+        let matrix = AorusAIMath.render(source)
+        if case let .stack(open, rows)? = matrix.drawables.first {
+            expect(open, bracket, "\(environment) is drawn with its own bracket")
+            expect(rows.count, 2, "and both its rows")
+        } else {
+            failures.append("\(environment) parses as a stack")
+        }
+    }
+
+    // A display block written on three lines is the formula on the middle one.
+    let display = AorusAIMath.render("$$\nx = \\frac{a+b}{c}\n$$")
+    expect(display.drawables.count, 1, "a display block is drawn")
+    expect(display.text, "x = \u{FFFC}", "and its fences are not content")
+
+    // Code is code. A formula a model is explaining rather than stating must survive to the
+    // reader exactly as it was typed.
+    let code = AorusAIMath.render("Пиши `\\frac{x+1}{y}` в ответе")
+    expect(code.drawables.count, 0, "a fraction inside backticks is not drawn")
+    expect(code.text, #"Пиши `\frac{x+1}{y}` в ответе"#, "it is shown exactly as written")
+    expect(inline("`x^2` и x^2"), "`x^2` и x²", "and the same line can hold both")
+}
+
 // MARK: - Back to LaTeX
 
 private func writesItselfBackAsLaTeX() {
@@ -396,6 +472,7 @@ private enum AorusAIMathTests {
         liftsEveryFractionWhereverItStands()
         drawsEveryConstructThatOnlyADrawingCanShow()
         roundsTheBracketsAPowerSitsOn()
+        setsTheRestOfWhatAModelWrites()
         writesItselfBackAsLaTeX()
         survivesWhatAModelActuallySends()
         guard failures.isEmpty else {
