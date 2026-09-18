@@ -616,12 +616,16 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         guard let image = attachment.image else { return nil }
         let size = attachment.bounds.size
         guard size.width >= 1.0, size.height >= 1.0 else { return nil }
-        let padding: CGFloat = 12.0
+        // Wide enough to cover what UIKit puts underneath. The platter it makes is the item's
+        // own bounds grown by a margin of its own, so a stand-in the size of the formula leaves
+        // a grey rim showing round it — which is the grey square in the report. This is grown
+        // past that margin, so nothing of the platter is left to see.
+        let padding: CGFloat = 26.0
         let container = UIView(frame: CGRect(x: 0.0, y: 0.0,
                                              width: size.width + padding * 2.0,
                                              height: size.height + padding * 2.0))
         container.backgroundColor = self.aorusPageBackground
-        container.layer.cornerRadius = 12.0
+        container.layer.cornerRadius = 18.0
         container.layer.cornerCurve = .continuous
         container.layer.masksToBounds = true
         let drawn = UIImageView(image: image)
@@ -695,9 +699,14 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         guard let image = AorusAIMathTypesetter.image(
             for: atoms,
             font: UIFont.systemFont(ofSize: size),
+            // The page's ink and the page's colour. The text view's own background is clear —
+            // it is the page showing through — and filling with clear is what saved a
+            // transparent picture, which Photos shows as a white square.
             color: self.textColor ?? .white,
-            background: self.backgroundColor ?? .black,
-            padding: size * 0.5
+            background: self.aorusPageBackground,
+            // A frame round the formula, not a box it sits in the middle of: the picture is as
+            // wide as the formula and only a little taller.
+            padding: size * 0.22
         ) else { return }
         UIImageWriteToSavedPhotosAlbum(image, self,
                                        #selector(aorusDidSaveMathImage(_:didFinishSavingWithError:contextInfo:)),

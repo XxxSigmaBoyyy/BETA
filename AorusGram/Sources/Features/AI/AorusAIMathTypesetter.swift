@@ -65,9 +65,12 @@ public enum AorusAIMathTypesetter {
                           height: max(metrics.height.rounded(.up), 1) + padding * 2.0)
         guard size.width < 8192.0, size.height < 8192.0 else { return nil }
         let format = UIGraphicsImageRendererFormat.preferred()
-        format.opaque = false
+        // Opaque, and filled edge to edge. A picture with any transparency left in it is shown
+        // by Photos on white, and white is what the formula is drawn in — the saved file was a
+        // white square with nothing legible on it.
+        format.opaque = true
         return UIGraphicsImageRenderer(size: size, format: format).image { context in
-            background.setFill()
+            background.withAlphaComponent(1.0).setFill()
             context.fill(CGRect(origin: CGPoint(), size: size))
             draw(atoms, at: CGPoint(x: padding, y: padding + metrics.ascent), font: font, color: color)
         }
