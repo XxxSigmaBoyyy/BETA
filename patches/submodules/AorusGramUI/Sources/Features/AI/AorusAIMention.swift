@@ -607,34 +607,6 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         UIPasteboard.general.string = text
     }
 
-    /// What a held formula is lifted on.
-    ///
-    /// `UITextItem.MenuConfiguration.Preview` is `.default` or `.view(UIView)` — there is no
-    /// colour to set on it, so the colour is the view's. `.default` is the grey platter that
-    /// showed under a held fraction; this is the page's own black with the formula on it.
-    func aorusMathLift(for attachment: NSTextAttachment) -> UIView? {
-        guard let image = attachment.image else { return nil }
-        let size = attachment.bounds.size
-        guard size.width >= 1.0, size.height >= 1.0 else { return nil }
-        // Wide enough to cover what UIKit puts underneath. The platter it makes is the item's
-        // own bounds grown by a margin of its own, so a stand-in the size of the formula leaves
-        // a grey rim showing round it — which is the grey square in the report. This is grown
-        // past that margin, so nothing of the platter is left to see.
-        let padding: CGFloat = 26.0
-        let container = UIView(frame: CGRect(x: 0.0, y: 0.0,
-                                             width: size.width + padding * 2.0,
-                                             height: size.height + padding * 2.0))
-        container.backgroundColor = self.aorusPageBackground
-        container.layer.cornerRadius = 18.0
-        container.layer.cornerCurve = .continuous
-        container.layer.masksToBounds = true
-        let drawn = UIImageView(image: image)
-        drawn.frame = CGRect(x: padding, y: padding, width: size.width, height: size.height)
-        drawn.contentMode = .scaleAspectFit
-        container.addSubview(drawn)
-        return container
-    }
-
     /// True when the selection has a drawn formula in it, which is when offering LaTeX makes
     /// any sense at all.
     func aorusSelectionCarriesMaths() -> Bool {

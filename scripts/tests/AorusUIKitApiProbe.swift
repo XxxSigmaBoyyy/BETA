@@ -36,17 +36,9 @@ func aorusProbeSelectLine(_ textView: UITextView, range: NSRange) {
 }
 
 @available(iOS 17.0, *)
-func aorusProbeLift(_ image: UIImage, size: CGSize, menu: UIMenu) -> UITextItem.MenuConfiguration {
-    // What a held formula is lifted on: a view of ours, which is where its colour comes from.
-    let container = UIView(frame: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-    container.backgroundColor = .black
-    container.layer.cornerRadius = 12.0
-    container.layer.cornerCurve = .continuous
-    container.layer.masksToBounds = true
-    let drawn = UIImageView(image: image)
-    drawn.contentMode = .scaleAspectFit
-    container.addSubview(drawn)
-    return UITextItem.MenuConfiguration(preview: .view(container), menu: menu)
+func aorusProbeNoLift(_ menu: UIMenu) -> UITextItem.MenuConfiguration {
+    // A menu with nothing lifted: the Optional preview is what says so.
+    return UITextItem.MenuConfiguration(preview: nil, menu: menu)
 }
 
 final class AorusProbeSaver: NSObject {

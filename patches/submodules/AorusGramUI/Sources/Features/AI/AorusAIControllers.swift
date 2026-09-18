@@ -5574,18 +5574,21 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     @available(iOS 17.0, *)
     func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
                   defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
-        guard case let .textAttachment(attachment) = textItem.content,
+        guard case .textAttachment = textItem.content,
               let view = textView as? AorusAIMentionTextView,
               let menu = view.aorusMathMenu(in: textItem.range) else {
             return UITextItem.MenuConfiguration(menu: defaultMenu)
         }
-        // `Preview` is `.default` or `.view(UIView)` and carries no colour of its own, so the
-        // colour is the view's: `.default` is the grey platter that showed under a held
-        // fraction, and this is the page's own black with the formula on it.
-        guard let lift = view.aorusMathLift(for: attachment) else {
-            return UITextItem.MenuConfiguration(menu: menu)
-        }
-        return UITextItem.MenuConfiguration(preview: .view(lift), menu: menu)
+        // No preview at all, which is what the grey square was.
+        //
+        // `Preview` has two cases — `.default` and `.view(_:)` — and the parameter is an
+        // Optional whose default is `.default`. Both cases are *lifted*, and UIKit lifts them
+        // on a platter it makes itself: `.default` lifted the formula on grey, and handing it a
+        // view of our own only moved the grey to the rim around that view, however big it was
+        // made. The Optional is the way out: nil is no preview, nothing is lifted, and there is
+        // nothing for a platter to sit behind. The menu opens on its own, over the formula
+        // where it stands.
+        return UITextItem.MenuConfiguration(preview: nil, menu: menu)
     }
 
     /// A tap on a formula does nothing. It is a piece of the sentence, and tapping a word does
