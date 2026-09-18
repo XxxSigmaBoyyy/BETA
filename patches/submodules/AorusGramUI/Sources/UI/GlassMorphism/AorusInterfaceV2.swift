@@ -2,11 +2,15 @@ import Foundation
 import UIKit
 import AorusGram
 
-// AorusGram Interface 2.0: the switch that turns the glass profile on.
+// AorusGram Interface 2.0: the switch that turns the glass interface on.
 //
-// Off by default and marked BETA. The feature replaces the whole profile header, so an
-// opt-in is the only honest default — someone who never enables it must see the stock
-// profile, unchanged, no matter what happens in here.
+// Released, and no longer carrying a tag that says otherwise: it heads the Interface block
+// in the settings, under its own name in both languages, with no badge and no footnote.
+//
+// Still off by default, which is a separate question from whether it is finished. The
+// feature replaces the whole profile header and repaints every list in the client, so
+// opt-in is the only honest default — someone who never turns it on must see the stock
+// interface, unchanged, no matter what happens in here.
 
 public enum AorusInterfaceV2 {
     public static let key = "aorusgram_interface_v2"

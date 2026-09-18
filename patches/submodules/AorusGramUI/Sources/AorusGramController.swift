@@ -326,6 +326,7 @@ private struct AorusState: Equatable {
     var messageSeconds: Bool
     var doubleTapCopy: Bool
     var tripleTapDelete: Bool
+    var interfaceV2: Bool
     var glassUI: Bool
     var showStories: Bool
     var amoledMode: Bool
@@ -450,6 +451,7 @@ private enum AorusEntry: ItemListNodeEntry {
     case cacheInterval(PresentationTheme, String, Int)
 
     case uiHeader(PresentationTheme, String)
+    case interfaceV2(PresentationTheme, String, Bool)
     case glassUI(PresentationTheme, String, Bool)
     case amoledMode(PresentationTheme, String, Bool)
     case profileReportButton(PresentationTheme, String, Bool)
@@ -517,7 +519,7 @@ private enum AorusEntry: ItemListNodeEntry {
              .performanceDisk, .performanceThermal, .performanceGraph, .ramAutoClean,
              .ramInterval, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
-        case .uiHeader, .glassUI, .amoledMode, .profileReportButton, .siriShortcuts, .appBadge, .squareAvatars, .customFont, .showStories:
+        case .uiHeader, .interfaceV2, .glassUI, .amoledMode, .profileReportButton, .siriShortcuts, .appBadge, .squareAvatars, .customFont, .showStories:
             return AorusSection.ui.rawValue
         case .tabsHeader, .hideContactsTab, .hideCallsTab, .hideSearchButton, .hideTabTitles, .compactTabBar:
             return AorusSection.tabs.rawValue
@@ -577,9 +579,13 @@ private enum AorusEntry: ItemListNodeEntry {
         case .cacheAutoClean:       return 37
         case .cacheInterval:        return 38
         case .uiHeader:             return 50
-        case .glassUI:              return 51
-        case .amoledMode:           return 52
-        case .profileReportButton:  return 53
+        // Interface 2.0 heads the block, so it takes 51 and the three rows that stood on 51,
+        // 52 and 53 each move up one. These numbers order the list and nothing else reads
+        // them, so the shift costs nothing; 54 was free, which is what makes the chain fit.
+        case .interfaceV2:          return 51
+        case .glassUI:              return 52
+        case .amoledMode:           return 53
+        case .profileReportButton:  return 54
         case .hideCallsTab:         return 63
         case .hideContactsTab:      return 62
         case .siriShortcuts:        return 56
@@ -711,6 +717,8 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .cacheInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }  // Int ==
         case let .uiHeader(lt, ls):
             if case let .uiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .interfaceV2(lt, ls, lv):
+            if case let .interfaceV2(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .glassUI(lt, ls, lv):
             if case let .glassUI(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .amoledMode(lt, ls, lv):
@@ -892,6 +900,10 @@ private enum AorusEntry: ItemListNodeEntry {
                                            sectionId: section, updated: args.setCacheInterval)
         case let .uiHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .interfaceV2(_, title, value):
+            // No badge and no footnote. It is the first row of the Interface block, it is
+            // released, and a released switch says what it is in its own title.
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.interfaceV2, $0) })
         case let .glassUI(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.glassUI, $0) })
         case let .amoledMode(_, title, value):
@@ -1012,6 +1024,7 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         // below so they animate in/out directly under their parent toggles.
 
         .uiHeader(theme, l10n.uiHeader),
+        .interfaceV2(theme, l10n.interfaceV2, state.interfaceV2),
         .glassUI(theme, l10n.glassUI, state.glassUI),
         .amoledMode(theme, l10n.amoledMode, state.amoledMode),
         .profileReportButton(theme, l10n.profileReportButton, state.profileReportButton),
@@ -1197,6 +1210,7 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
         messageSeconds:     mgr.messageSeconds,
         doubleTapCopy:      mgr.doubleTapCopy,
         tripleTapDelete:    mgr.tripleTapDelete,
+        interfaceV2:        AorusInterfaceV2.isEnabled,
         glassUI:            mgr.glassUI,
         showStories:        UserDefaults.standard.object(forKey: "aorusgram_show_stories") as? Bool ?? true,
         amoledMode:         mgr.amoledMode,
@@ -1294,6 +1308,18 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
             // their layers, so toggling only fully applies (everywhere) after a restart.
             if keyPath == \AorusState.glassUI {
                 NotificationCenter.default.post(name: NSNotification.Name("aorusgram_settings_changed"), object: nil)
+                aorusPresentRestartNotice(context: context, controller: weakController)
+            }
+            // Screens already on the stack keep the header and the theme they were built with,
+            // so the change only fully lands after a relaunch. The same pill every other
+            // restart-requiring switch in the fork uses -- text plus a button that performs the
+            // restart -- rather than a toast that states the requirement and leaves the reader
+            // to work out how to meet it.
+            if keyPath == \AorusState.interfaceV2 {
+                // Written here rather than with the block above, because saving it posts a
+                // change notice that rebuilds an open profile — every OTHER switch on this
+                // screen would otherwise do that too, for a value it did not touch.
+                AorusInterfaceV2.setEnabled(s.interfaceV2)
                 aorusPresentRestartNotice(context: context, controller: weakController)
             }
             // The chat-list stories strip re-reads this key on every layout, so posting
