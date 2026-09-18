@@ -5500,21 +5500,30 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         }
     }
 
-    /// A drawn formula is part of the sentence, not a picture in it.
+    /// What a long press on a drawn formula opens.
     ///
-    /// From iOS 17 a text attachment is an interactive text item of its own: a long press on
-    /// one opens the system's menu for an image — save it, share it — and the press never
-    /// becomes a text selection. That is both halves of the report: the `x ·` in front of the
-    /// fraction cannot be selected with it, and the highlight that does appear goes away with
-    /// the menu a moment later. Declining the interaction hands the gesture back to the text
-    /// view, which then selects across the formula like any other character.
+    /// From iOS 17 a text attachment is an interactive text item of its own, and the menu UIKit
+    /// builds for one is a picture's menu — save it, share it. Returning nil from here was an
+    /// attempt to hand the press back to the text view so that it would select across the
+    /// formula instead; it does not do that. The press was left with nothing to open, which is
+    /// the buzz-twice-and-nothing-happens that came back as a report.
+    ///
+    /// So the item keeps a menu, and the menu is the formula's own: copy it as it reads, copy
+    /// it as LaTeX, or turn it into an ordinary text selection — which is the one thing that
+    /// does let the reader take the `x +` in front of it along.
     @available(iOS 17.0, *)
     func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
                   defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
-        if case .textAttachment = textItem.content { return nil }
-        return UITextItem.MenuConfiguration(menu: defaultMenu)
+        guard case .textAttachment = textItem.content,
+              let view = textView as? AorusAIMentionTextView,
+              let menu = view.aorusMathMenu(in: textItem.range) else {
+            return UITextItem.MenuConfiguration(menu: defaultMenu)
+        }
+        return UITextItem.MenuConfiguration(menu: menu)
     }
 
+    /// A tap on a formula does nothing. It is a piece of the sentence, and tapping a word does
+    /// not open anything either.
     @available(iOS 17.0, *)
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
                   defaultAction: UIAction) -> UIAction? {
@@ -5522,12 +5531,17 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         return defaultAction
     }
 
-    /// "Copy LaTeX", offered only when the selection actually has a formula in it.
+    /// "Copy LaTeX", added to the ordinary text menu when the selection has a formula in it.
+    ///
+    /// The menu is always returned. Handing back nil here to mean "nothing to add" is not what
+    /// nil means, and a selection with no formula in it must keep every button it came with.
     @available(iOS 16.0, *)
     func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
                   suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard let view = textView as? AorusAIMentionTextView,
-              view.aorusCarriesMaths(in: range) else { return nil }
+              view.aorusCarriesMaths(in: range) else {
+            return UIMenu(children: suggestedActions)
+        }
         let copyLaTeX = UIAction(title: aorusAILocalized("Копировать LaTeX", "Copy LaTeX")) { [weak view] _ in
             view?.aorusCopyLaTeX(nil)
         }

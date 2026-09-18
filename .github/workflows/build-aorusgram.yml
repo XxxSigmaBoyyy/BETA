@@ -133,6 +133,14 @@ jobs:
             -target arm64-apple-ios13.0 \
             aorusgram/AorusGram/Sources/Features/UI/AorusGlassSnapshot.swift \
             aorusgram/scripts/tests/AorusGlassSnapshotStubs.swift
+          # The UIKit calls the AI chat makes, repeated against the real SDK. Those two files
+          # name Telegram's modules and can only be parsed here, and a method that does not
+          # exist parses perfectly — so every one of them is written out once more in a file
+          # that CAN be type-checked, and a wrong name fails in seconds instead of an hour.
+          swiftc -typecheck \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -target arm64-apple-ios13.0 \
+            aorusgram/scripts/tests/AorusUIKitApiProbe.swift
           # The backup manager imports nothing but Foundation, CryptoKit and Security — it is
           # deliberately reachable from neither module's translation table — so it can be
           # type-checked here in seconds instead of an hour into the Bazel build.

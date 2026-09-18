@@ -607,6 +607,54 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         return aorusCarriesMaths(in: selectedRange)
     }
 
+    /// The menu a drawn formula answers a long press with.
+    ///
+    /// From iOS 17 a formula is an interactive text item of its own, and the menu UIKit builds
+    /// for one is a picture's menu — save it, share it. Handing back nothing instead was worse:
+    /// the press had nothing to open, so holding a formula buzzed twice and did nothing at all.
+    /// It has a menu again, and the menu is the formula's own: both ways of copying it, and a
+    /// way into an ordinary text selection for the reader who wants the `x +` in front of it too.
+    func aorusMathMenu(in range: NSRange) -> UIMenu? {
+        guard aorusCarriesMaths(in: range) else { return nil }
+        let plain = aorusText(in: range, preferringLaTeX: false)
+        let latex = aorusText(in: range, preferringLaTeX: true)
+        var children: [UIMenuElement] = []
+        if let plain, !plain.isEmpty {
+            children.append(UIAction(title: aorusAILocalized("Копировать", "Copy")) { _ in
+                UIPasteboard.general.string = plain
+            })
+        }
+        if let latex, !latex.isEmpty, latex != plain {
+            children.append(UIAction(title: aorusAILocalized("Копировать LaTeX", "Copy LaTeX")) { _ in
+                UIPasteboard.general.string = latex
+            })
+        }
+        children.append(UIAction(title: aorusAILocalized("Выделить", "Select")) { [weak self] _ in
+            self?.aorusSelectLine(containing: range)
+        })
+        return UIMenu(children: children)
+    }
+
+    /// Selects the whole line the formula sits on, and opens the text menu over it.
+    ///
+    /// This is the way to the thing a formula cannot give on its own: a selection with handles,
+    /// which the reader drags to take the formula together with whatever stands beside it.
+    func aorusSelectLine(containing range: NSRange) {
+        let text = textStorage.string as NSString
+        guard range.length > 0, NSMaxRange(range) <= text.length else { return }
+        let line = text.lineRange(for: range)
+        guard line.length > 0 else { return }
+        becomeFirstResponder()
+        selectedRange = line
+        guard #available(iOS 16.0, *), let interaction = self.editMenuInteraction else { return }
+        guard let start = position(from: beginningOfDocument, offset: line.location),
+              let end = position(from: start, offset: line.length),
+              let selection = textRange(from: start, to: end) else { return }
+        let rect = firstRect(for: selection)
+        let point = CGPoint(x: rect.midX, y: rect.minY)
+        interaction.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
+    }
+
     func aorusCarriesMaths(in range: NSRange) -> Bool {
         guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return false }
         var found = false
