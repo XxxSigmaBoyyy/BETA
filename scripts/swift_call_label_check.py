@@ -55,6 +55,9 @@ KNOWN_FOREIGN = {
 }
 
 TYPE_DECL = re.compile(r"\b(?:class|struct|enum|extension|actor|protocol)\s+([A-Za-z_]\w*)")
+# `class Cell: UITableViewCell, UITextViewDelegate {` — the first name after the colon is the
+# superclass when it is one of ours, and an inherited method is not a mistake.
+TYPE_PARENTS = re.compile(r"\b(?:class|extension)\s+([A-Za-z_]\w*)\s*:\s*([^{]+)\{")
 FUNC_DECL = re.compile(r"\bfunc\s+([A-Za-z_]\w*)\s*(?:<[^>(]*>)?\s*\(")
 CALL = re.compile(r"(?<![\w.$])([A-Za-z_]\w*)\s*\(")
 QUALIFIED = re.compile(r"\b([A-Z]\w*)\.(?:shared\.)?([A-Za-z_]\w*)\s*\(")
@@ -64,6 +67,10 @@ ONE_NAME = re.compile(r"^\s*(?:@\w+\s+)*([A-Za-z_]\w*)\s*:")
 # `let finish = { ... }` gives the name of a closure, not of the method it happens to share a
 # name with, and `case object(...)` declares an enum case rather than calling anything.
 BINDING = re.compile(r"\b(?:let|var)\s+([A-Za-z_]\w*)\s*[:=]")
+# `{ body in` and `{ (body, next) in` — a closure's own parameters. Calling one of those is
+# calling a closure, not a method, and the name it happens to share with somebody's method is
+# a coincidence.
+CLOSURE_PARAMS = re.compile(r"\{\s*\(?\s*([A-Za-z_][\w,\s]*?)\s*\)?\s+in\b")
 PRECEDING_WORD = re.compile(r"([A-Za-z_]\w*)\s*$")
 
 
@@ -180,6 +187,17 @@ def enclosing_types(code):
     return spans
 
 
+def ancestors(name, parents, seen=None):
+    """Every one of our own types `name` inherits from, however deep."""
+    seen = seen if seen is not None else set()
+    for parent in parents.get(name, ()):  # noqa: B007
+        if parent in seen:
+            continue
+        seen.add(parent)
+        ancestors(parent, parents, seen)
+    return seen
+
+
 def collect(paths):
     """Declarations, grouped by owning type and (for free functions) by file."""
     by_type = {}
@@ -189,6 +207,7 @@ def collect(paths):
     # `Owner.Nested(...)` is a type being made, not a method being called. Without this every
     # `AorusBackupArchive.Limits(...)` reads as a missing member.
     nested = {}
+    parents = {}
     for path in paths:
         # A literal collapses to `S`, not to nothing: `t("a", "b")` has to keep two
         # arguments, or every call that passes only literals looks like `t()`.
@@ -200,6 +219,10 @@ def collect(paths):
             owner = innermost(spans, match.start())
             if owner is not None and match.group(1) != owner:
                 nested.setdefault(owner, set()).add(match.group(1))
+        for match in TYPE_PARENTS.finditer(code):
+            inherited = [piece.strip().split("<")[0].strip()
+                         for piece in match.group(2).split(",")]
+            parents.setdefault(match.group(1), set()).update(name for name in inherited if name)
         for match in FUNC_DECL.finditer(code):
             close = match_paren(code, match.end() - 1)
             if close < 0:
@@ -220,7 +243,7 @@ def collect(paths):
                 by_type.setdefault(owner[1], {}).setdefault(match.group(1), set()).update(accepted)
             else:
                 free.setdefault(path, {}).setdefault(match.group(1), set()).update(accepted)
-    return sources, layout, by_type, free, nested
+    return sources, layout, by_type, free, nested, parents
 
 
 def line_of(code, index):
@@ -236,11 +259,36 @@ def innermost(spans, position):
     return best[1] if best else None
 
 
-def check(sources, layout, by_type, free, nested):
+def locals_in(code):
+    """Names that are something other than a method in this file: bindings, parameters, the
+    arguments of a closure. A call to one of them is not a call to anybody's method."""
+    names = {binding.group(1) for binding in BINDING.finditer(code)}
+    for match in CLOSURE_PARAMS.finditer(code):
+        for piece in match.group(1).split(","):
+            piece = piece.strip()
+            if piece and piece.isidentifier():
+                names.add(piece)
+    for match in FUNC_DECL.finditer(code):
+        close = match_paren(code, match.end() - 1)
+        if close < 0:
+            continue
+        for piece in split_arguments(code[match.end():close]):
+            two = TWO_NAMES.match(piece)
+            if two:
+                names.add(two.group(1))
+                names.add(two.group(2))
+                continue
+            one = ONE_NAME.match(piece)
+            if one:
+                names.add(one.group(1))
+    return names
+
+
+def check(sources, layout, by_type, free, nested, parents):
     failures = []
     for path, code in sources.items():
         spans = layout.get(path, [])
-        bound = {binding.group(1) for binding in BINDING.finditer(code)}
+        bound = locals_in(code)
         for match in CALL.finditer(code):
             name = match.group(1)
             if name in KEYWORDS:
@@ -258,6 +306,25 @@ def check(sources, layout, by_type, free, nested):
             if name not in declared_here:
                 declared_here = free.get(path, {})
             if name not in declared_here:
+                # Not this type's, and not this file's. If exactly ONE of our own types
+                # declares it, and this type does not inherit from that one, the call cannot
+                # resolve: it is a method of something else, reached from a place that has no
+                # way to reach it. That is what a delegate method written into the wrong type
+                # looks like, and nothing short of the hour-long build sees it otherwise.
+                if owner is None or name in KNOWN_FOREIGN:
+                    continue
+                holders = [holder for holder, table in by_type.items() if name in table]
+                if len(holders) != 1 or holders[0] == owner:
+                    continue
+                if holders[0] in ancestors(owner, parents):
+                    continue
+                before = code[:match.start()].rstrip()
+                if before.endswith(".") or before.endswith("func"):
+                    continue
+                failures.append(
+                    f"{path}:{line_of(code, match.start())}: {name}(...) is called inside "
+                    f"{owner}, which has no such method — only {holders[0]} declares it"
+                )
                 continue
             # `Type.name(` and `x.name(` are handled by the qualified pass, which knows what
             # the receiver is. Here only a bare `name(` is attributed to this file.
@@ -317,8 +384,8 @@ def main():
         base = root / directory
         if base.is_dir():
             paths.extend(sorted(base.rglob("*.swift")))
-    sources, layout, by_type, free, nested = collect(paths)
-    failures = check(sources, layout, by_type, free, nested)
+    sources, layout, by_type, free, nested, parents = collect(paths)
+    failures = check(sources, layout, by_type, free, nested, parents)
     if failures:
         print("Swift call label check: FAILED")
         for failure in failures:

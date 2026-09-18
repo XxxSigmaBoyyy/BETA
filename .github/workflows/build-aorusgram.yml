@@ -137,7 +137,10 @@ jobs:
           # name Telegram's modules and can only be parsed here, and a method that does not
           # exist parses perfectly — so every one of them is written out once more in a file
           # that CAN be type-checked, and a wrong name fails in seconds instead of an hour.
-          swiftc -typecheck \
+          # -warnings-as-errors on purpose: "nearly matches optional requirement" is a
+          # warning, and it is exactly the failure this file exists to catch — a delegate
+          # method one label out is not an error, it is a method nobody ever calls.
+          swiftc -typecheck -warnings-as-errors \
             -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
             -target arm64-apple-ios13.0 \
             aorusgram/scripts/tests/AorusUIKitApiProbe.swift

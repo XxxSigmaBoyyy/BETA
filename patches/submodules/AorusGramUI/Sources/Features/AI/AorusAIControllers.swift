@@ -3579,6 +3579,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
     private var revealedCharacters: [UUID: Int] = [:]
     private var revealTimer: Foundation.Timer?
     private var lastRevealTick: Date?
+    /// Guards the catch-up in `textViewDidChangeSelection`: replacing a text view's contents
+    /// changes its selection, which calls back here.
+    private var isFlushingHeldMessage = false
 
     /// The message as it should appear now: as much of it as has been revealed, and still
     /// streaming as far as the reader is concerned until the reveal has caught up — so the
@@ -3664,6 +3667,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.055, execute: work)
     }
 
+    /// Brings a message up to date after the reader lets go of a selection in it.
+    private func flushHeldMessage(id: UUID) {
+        guard !isFlushingHeldMessage else { return }
+        isFlushingHeldMessage = true
+        reloadMessage(id: id)
+        isFlushingHeldMessage = false
+    }
+
     private func reloadMessage(id: UUID) {
         guard let row = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
         // Same rule as `jumpToNewestMessage`: a row the table has not been told about cannot be
@@ -3698,6 +3709,14 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             // had several paragraphs ago.
             recordHeight(of: cell, at: indexPath)
         } else {
+            // A rebuild takes the cell apart, and any selection or menu the reader is holding
+            // goes with it. While the answer is still arriving there is another delta along in
+            // a moment, so the rebuild waits until they let go; once it is finished the rebuild
+            // happens anyway, because there is no later delta to carry it.
+            if let cell = tableView.cellForRow(at: indexPath) as? AorusAIMessageCell,
+               cell.isReaderHolding, message.state == .streaming {
+                return
+            }
             tableView.reloadRows(at: [indexPath], with: .none)
         }
         if wasAtBottom {
@@ -3783,6 +3802,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         cell.onArtifact = { [weak self] artifact in self?.toggleArtifact(artifact) }
         cell.onCopy = { [weak self] in self?.presentCopiedFeedback() }
         cell.onRetry = { [weak self] in self?.retry(messageId: message.id) }
+        // Deltas that arrived while the reader held a selection were skipped rather than pushed
+        // under their fingers. This is the moment to catch that message up: an answer that
+        // finished while it was held has no later delta to carry it.
+        cell.onReaderReleased = { [weak self] id in self?.flushHeldMessage(id: id) }
         cell.onOpenWorkTrail = { [weak self] in self?.presentWorkTrail(messageId: message.id) }
         return cell
     }
@@ -5034,6 +5057,28 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     private var referenceCard: AorusAIReferenceCard?
     private var slots: [BodySlot] = []
     private var slotValues: [String] = []
+
+    /// True while the reader is doing something with this message's text: dragging a
+    /// selection, holding a formula, reading a menu that one of those opened.
+    ///
+    /// A streaming answer re-renders several times a second, and replacing a text view's
+    /// contents takes the selection and any menu standing on it with them. Nothing that is
+    /// being held is touched while it is held — the next delta after the reader lets go
+    /// carries everything they missed, because the slot is left marked as out of date.
+    var isReaderHolding: Bool {
+        for slot in self.slots {
+            switch slot {
+            case let .text(view):
+                if view.selectedRange.length > 0 { return true }
+            case let .quote(card):
+                if card.isReaderHolding { return true }
+            case .code, .table, .separator:
+                break
+            }
+        }
+        return false
+    }
+
     private var structureSignature: String?
     private var configuredMessageId: UUID?
     private var configuredTextColor: UIColor = .white
@@ -5043,6 +5088,9 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     var onArtifact: ((AorusAIArtifact) -> Void)?
     var onCopy: (() -> Void)?
     var onRetry: (() -> Void)?
+    /// Called when the reader lets go of a selection in this cell, so the controller can push
+    /// whatever was held back while they were holding it.
+    var onReaderReleased: ((UUID) -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -5218,7 +5266,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         structureSignature = nil
         configuredMessageId = nil
         copyText = ""
-        onOpenLink = nil; onArtifact = nil; onCopy = nil; onRetry = nil
+        onOpenLink = nil; onArtifact = nil; onCopy = nil; onRetry = nil; onReaderReleased = nil
     }
 
     /// Streaming path (§27): keeps the existing view tree and only pushes the text that
@@ -5235,6 +5283,14 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         for index in blocks.indices {
             let value = Self.value(of: blocks[index])
             guard value != slotValues[index] else { continue }
+            // Held text is left exactly as it is, and the slot keeps its old value so that the
+            // first delta after the reader lets go brings it all the way up to date.
+            if case let .text(view) = slots[index], view.selectedRange.length > 0 {
+                continue
+            }
+            if case let .quote(card) = slots[index], card.isReaderHolding {
+                continue
+            }
             slotValues[index] = value
             switch (slots[index], blocks[index]) {
             case let (.text(view), .text(source)):
@@ -5548,6 +5604,18 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         return UIMenu(children: suggestedActions + [copyLaTeX])
     }
 
+    /// The moment a selection is let go, the message it was made in is brought up to date.
+    ///
+    /// Deltas that arrived while the reader was holding text were skipped rather than pushed
+    /// under their fingers, and the slot was left marked as out of date. Without this the last
+    /// of them would have nothing to arrive on: an answer that finished while the selection was
+    /// held has no later delta to carry it.
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        guard textView.selectedRange.length == 0, !self.isReaderHolding else { return }
+        guard let id = self.configuredMessageId else { return }
+        self.onReaderReleased?(id)
+    }
+
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         // Only a real tap opens anything.
         //
@@ -5823,6 +5891,11 @@ private final class AorusAINoticeCard: UIView {
 private final class AorusAIQuoteCard: UIView {
     private let line = UIView()
     private let textView = AorusAIMentionTextView.make()
+
+    /// The same rule the answer's own text follows: what is being held is not replaced.
+    var isReaderHolding: Bool {
+        return self.textView.selectedRange.length > 0
+    }
 
     func configureMentions(context: AccountContext, theme: PresentationTheme) {
         textView.configureMentions(context: context, theme: theme)
