@@ -43,8 +43,15 @@ import UIKit
 // covered that the pane was not already covering, and nothing is ever added above anything — a
 // passcode cover, if one is put up, is added over everything and stays there.
 public enum AorusGlassSnapshot {
-    /// The pictures currently standing in for the materials.
-    private static var frozen: [UIImageView] = []
+    /// Each picture, the pane it was taken from and the place it was taken at. The place is
+    /// what makes it checkable: a copy is only honest while its pane is still where it was.
+    private struct Frozen {
+        weak var pane: UIView?
+        let picture: UIImageView
+        let rect: CGRect
+    }
+
+    private static var frozen: [Frozen] = []
     private static var isInstalled = false
 
     /// Called once, from the bootstrap.
@@ -60,6 +67,13 @@ public enum AorusGlassSnapshot {
         }
         center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             self.thaw()
+        }
+        // A second checkpoint, after the going-away transition has settled. The header of a
+        // profile re-lays itself out on the way out — which is how a copy came to sit over
+        // content that had moved, and be seen as a band of the wrong size. Anything that no
+        // longer matches what it was taken from is dropped before the picture is taken.
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            self.dropStale()
         }
     }
 
@@ -86,18 +100,20 @@ public enum AorusGlassSnapshot {
                 self.freeze(pane: pane, from: frame, in: window)
             }
         }
+        // An exact copy is exact only while the pane it was taken from stays where it was. A
+        // layout pass right after the capture — the screen going inactive is one — would leave
+        // a copy over content that has since moved, and that is the one way any of this can be
+        // seen at all. Checked once on the next turn of the run loop, and again when the app
+        // actually reaches the background.
+        DispatchQueue.main.async {
+            self.dropStale()
+        }
     }
 
     private static func freeze(pane: UIView, from capture: UIImage, in window: UIWindow) {
         let host = self.contentView(of: pane)
         let rect = pane.convert(pane.bounds, to: window).intersection(window.bounds)
         guard rect.width >= 1.0, rect.height >= 1.0 else { return }
-        // Nothing that reaches into the strip along the top of the screen. That is where the
-        // navigation bar sits, over the profile photo, and it is the one place a copy was
-        // visible as a copy — a washed band across the header. The bar is the app's own
-        // business; the panes below it are what this is for.
-        let top = window.safeAreaInsets.top
-        if top > 0.0, rect.minY < top { return }
         guard let cropped = self.crop(capture, to: rect) else { return }
 
         let picture = UIImageView(image: cropped)
@@ -110,27 +126,23 @@ public enum AorusGlassSnapshot {
         picture.contentMode = .scaleToFill
         self.applyShape(of: pane, to: picture)
         host.insertSubview(picture, at: 0)
-        self.frozen.append(picture)
-        // An exact copy is exact only while the pane it was taken from stays where it was. A
-        // layout pass right after the capture — the screen going inactive is a layout pass —
-        // would leave the copy over content that has since moved, and that is the one way this
-        // can be seen at all. Checked on the next turn of the run loop, and dropped if so.
-        DispatchQueue.main.async { [weak pane, weak picture] in
-            guard let pane, let picture, picture.superview != nil else { return }
-            guard let window = pane.window else {
-                self.drop(picture)
-                return
-            }
-            if !pane.convert(pane.bounds, to: window).intersection(window.bounds).equalTo(rect) {
-                self.drop(picture)
-            }
-        }
+        self.frozen.append(Frozen(pane: pane, picture: picture, rect: rect))
     }
 
-    private static func drop(_ picture: UIImageView) {
-        picture.image = nil
-        picture.removeFromSuperview()
-        self.frozen.removeAll { $0 === picture }
+    /// Drops every copy whose pane has moved, resized or gone since it was taken.
+    private static func dropStale() {
+        var kept: [Frozen] = []
+        for entry in self.frozen {
+            guard let pane = entry.pane, let window = pane.window,
+                  entry.picture.superview != nil,
+                  pane.convert(pane.bounds, to: window).intersection(window.bounds).equalTo(entry.rect) else {
+                entry.picture.image = nil
+                entry.picture.removeFromSuperview()
+                continue
+            }
+            kept.append(entry)
+        }
+        self.frozen = kept
     }
 
     /// Where a stand-in goes: under the pane's content, over the pane's material.
@@ -159,11 +171,11 @@ public enum AorusGlassSnapshot {
     // MARK: - Thawing
 
     private static func thaw() {
-        let pictures = self.frozen
+        let entries = self.frozen
         self.frozen = []
-        for picture in pictures {
-            picture.image = nil
-            picture.removeFromSuperview()
+        for entry in entries {
+            entry.picture.image = nil
+            entry.picture.removeFromSuperview()
         }
     }
 
