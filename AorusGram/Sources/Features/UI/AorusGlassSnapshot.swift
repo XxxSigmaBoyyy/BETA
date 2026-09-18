@@ -28,17 +28,18 @@ import UIKit
 // cannot — it re-runs the layer tree in-process, and a backdrop filter has nothing to sample
 // there. That is written down elsewhere in this fork, and it cost a day to learn.)
 //
-// The photograph is then blurred a little before it is used. If the capture came back with the
-// material in it, that costs a touch of softness nobody can see in a card the size of a thumb.
-// If it came back without — some materials fall back to a flat fill when their backdrop is not
-// available — the blur is what makes the page behind read as glass rather than as a sharp
-// rectangle where a pane should be. Either way the card looks like the app.
+// The photograph is then blurred before it is used, about as hard as the material blurs what is
+// behind it. If the capture came back with the material in it, that costs a softness nobody can
+// see in a card the size of a thumb. If it came back without — some materials fall back to a
+// flat fill when their backdrop is not available — the blur is what makes the page behind read
+// as glass rather than as a sharp rectangle where a pane should be. Either way the card looks
+// like the app.
 //
 // The photograph is of the screen, which means it also holds whatever was drawn ON the pane —
-// the row titles, the switches. Blurred to nothing and put back underneath the real ones, they
-// read as a faint haze behind the text rather than as text, and that is the price of not
-// touching the hierarchy before the capture: emptying every pane for one frame to photograph it
-// clean would be visible to anyone who swiped up and changed their mind.
+// the row titles, the switches. The blur is strong enough that they come back as part of the
+// wash rather than as a second, softer copy of themselves, and that is the price of not touching
+// the hierarchy before the capture: emptying every pane for one frame to photograph it clean
+// risks a frame of empty panes reaching anyone who swiped up and changed their mind.
 //
 // Each photograph goes INSIDE its own pane, underneath the pane's own content, so nothing is
 // covered that was not already covered by that pane: a label sitting on the glass still sits on
@@ -75,12 +76,11 @@ public enum AorusGlassSnapshot {
     private static func freeze() {
         guard self.frozen.isEmpty else { return }
         // Nothing to preserve when there is no glass to begin with. Interface 2.0 is one way to
-        // have some; the fork's own glass switch is the other. Both are read the way the
-        // patched Telegram code reads them — by their key — because the switch itself lives in
-        // the UI module and this runs from the core one, at launch, before that module has
-        // been touched.
-        // The entitlement is asked the same way every feature asks it — a stored key on its own
-        // has never been permission to do anything in this fork.
+        // have some; the fork's own glass switch is the other. The first is read by its key, the
+        // way the patched Telegram code reads it, because the switch itself lives in the UI
+        // module and this runs from the core one — but the entitlement behind it is asked the
+        // same way every feature asks it, since a stored key on its own has never been
+        // permission to do anything in this fork.
         let interfaceV2 = AorusLicenseAccess.isAllowed
             && UserDefaults.standard.bool(forKey: "aorusgram_interface_v2")
         guard interfaceV2 || AorusGramConfig.isEnabled(.glassUI) else { return }
@@ -227,8 +227,12 @@ public enum AorusGlassSnapshot {
     /// with the smooth resampler is two draws and reads as the same thing.
     private static func blurred(_ image: UIImage) -> UIImage {
         let size = image.size
-        let small = CGSize(width: max(1.0, (size.width / 10.0).rounded(.up)),
-                           height: max(1.0, (size.height / 10.0).rounded(.up)))
+        // A sixteenth, which is a strong blur on purpose. The material itself is that blurry —
+        // a pane over a photograph is a wash of its colours, not a soft copy of it — and the
+        // strength is also what turns the row titles the capture happens to contain into part
+        // of the wash instead of a legible ghost behind the real ones.
+        let small = CGSize(width: max(1.0, (size.width / 16.0).rounded(.up)),
+                           height: max(1.0, (size.height / 16.0).rounded(.up)))
         let format = UIGraphicsImageRendererFormat.preferred()
         format.opaque = false
         format.scale = 1.0
