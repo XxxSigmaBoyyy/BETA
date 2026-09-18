@@ -5091,6 +5091,9 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     /// Called when the reader lets go of a selection in this cell, so the controller can push
     /// whatever was held back while they were holding it.
     var onReaderReleased: ((UUID) -> Void)?
+    /// What the selection was the last time it changed, so that a release can be told from a
+    /// re-render.
+    private var lastSelectionLength = 0
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -5267,6 +5270,7 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
         configuredMessageId = nil
         copyText = ""
         onOpenLink = nil; onArtifact = nil; onCopy = nil; onRetry = nil; onReaderReleased = nil
+        lastSelectionLength = 0
     }
 
     /// Streaming path (§27): keeps the existing view tree and only pushes the text that
@@ -5611,7 +5615,13 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     /// of them would have nothing to arrive on: an answer that finished while the selection was
     /// held has no later delta to carry it.
     func textViewDidChangeSelection(_ textView: UITextView) {
-        guard textView.selectedRange.length == 0, !self.isReaderHolding else { return }
+        // A RELEASE, not merely an empty selection. This fires on every re-render too — setting
+        // a text view's contents changes its selection — and answering those would put a second
+        // full pass through the message behind every delta of every answer.
+        let length = textView.selectedRange.length
+        let released = self.lastSelectionLength > 0 && length == 0
+        self.lastSelectionLength = length
+        guard released, !self.isReaderHolding else { return }
         guard let id = self.configuredMessageId else { return }
         self.onReaderReleased?(id)
     }
