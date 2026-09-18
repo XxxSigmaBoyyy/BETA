@@ -72,6 +72,9 @@ BINDING = re.compile(r"\b(?:let|var)\s+([A-Za-z_]\w*)\s*[:=]")
 # a coincidence.
 CLOSURE_PARAMS = re.compile(r"\{\s*\(?\s*([A-Za-z_][\w,\s]*?)\s*\)?\s+in\b")
 PRECEDING_WORD = re.compile(r"([A-Za-z_]\w*)\s*$")
+# `#selector(name(_:with:))` and `#keyPath(a.b)` name a method; they do not call one, and the
+# labels inside them are the declaration's own, written with colons rather than arguments.
+SELECTOR = re.compile(r"#(?:selector|keyPath)\s*\(")
 
 
 def match_paren(code, start):
@@ -259,6 +262,20 @@ def innermost(spans, position):
     return best[1] if best else None
 
 
+def selector_spans(code):
+    """(start, end) of every `#selector(...)` / `#keyPath(...)`, which are not calls."""
+    spans = []
+    for match in SELECTOR.finditer(code):
+        close = match_paren(code, match.end() - 1)
+        if close > 0:
+            spans.append((match.start(), close))
+    return spans
+
+
+def inside(spans, position):
+    return any(start <= position <= end for start, end in spans)
+
+
 def locals_in(code):
     """Names that are something other than a method in this file: bindings, parameters, the
     arguments of a closure. A call to one of them is not a call to anybody's method."""
@@ -289,9 +306,12 @@ def check(sources, layout, by_type, free, nested, parents):
     for path, code in sources.items():
         spans = layout.get(path, [])
         bound = locals_in(code)
+        selectors = selector_spans(code)
         for match in CALL.finditer(code):
             name = match.group(1)
             if name in KEYWORDS:
+                continue
+            if inside(selectors, match.start()):
                 continue
             # Scope matters: a bare `name(` means this type's method, or a free function in
             # this file. A same-named method on ANOTHER type in the same file is a different
@@ -343,6 +363,8 @@ def check(sources, layout, by_type, free, nested, parents):
                     f"({'; '.join(sorted(name + '(' + ', '.join(option) + ')' for option in declared_here[name]))})"
                 )
         for match in QUALIFIED.finditer(code):
+            if inside(selectors, match.start()):
+                continue
             owner, name = match.group(1), match.group(2)
             methods = by_type.get(owner)
             if methods is None:

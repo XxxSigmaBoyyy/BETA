@@ -5579,12 +5579,13 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
               let menu = view.aorusMathMenu(in: textItem.range) else {
             return UITextItem.MenuConfiguration(menu: defaultMenu)
         }
-        // With no preview of our own UIKit lifts the formula on a platter of its own making,
-        // and that platter is grey. Ours is the page's black.
-        guard let preview = view.aorusMathPreview(for: attachment, in: textItem.range) else {
+        // `Preview` is `.default` or `.view(UIView)` and carries no colour of its own, so the
+        // colour is the view's: `.default` is the grey platter that showed under a held
+        // fraction, and this is the page's own black with the formula on it.
+        guard let lift = view.aorusMathLift(for: attachment) else {
             return UITextItem.MenuConfiguration(menu: menu)
         }
-        return UITextItem.MenuConfiguration(preview: preview, menu: menu)
+        return UITextItem.MenuConfiguration(preview: .view(lift), menu: menu)
     }
 
     /// A tap on a formula does nothing. It is a piece of the sentence, and tapping a word does

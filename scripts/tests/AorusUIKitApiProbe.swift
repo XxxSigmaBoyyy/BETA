@@ -36,17 +36,32 @@ func aorusProbeSelectLine(_ textView: UITextView, range: NSRange) {
 }
 
 @available(iOS 17.0, *)
-func aorusProbePreview(_ view: UIView, image: UIImage, rect: CGRect, menu: UIMenu) -> UITextItem.MenuConfiguration {
-    // The lift under a held formula: our own picture, on our own colour, at the formula's place.
-    let lifted = UIImageView(image: image)
-    lifted.frame = CGRect(origin: CGPoint(), size: rect.size)
-    lifted.contentMode = .scaleAspectFit
-    let parameters = UIPreviewParameters()
-    parameters.backgroundColor = .black
-    parameters.visiblePath = UIBezierPath(roundedRect: lifted.bounds, cornerRadius: 6.0)
-    let target = UIPreviewTarget(container: view, center: CGPoint(x: rect.midX, y: rect.midY))
-    let preview = UITargetedPreview(view: lifted, parameters: parameters, target: target)
-    return UITextItem.MenuConfiguration(preview: preview, menu: menu)
+func aorusProbeLift(_ image: UIImage, size: CGSize, menu: UIMenu) -> UITextItem.MenuConfiguration {
+    // What a held formula is lifted on: a view of ours, which is where its colour comes from.
+    let container = UIView(frame: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    container.backgroundColor = .black
+    container.layer.cornerRadius = 12.0
+    container.layer.cornerCurve = .continuous
+    container.layer.masksToBounds = true
+    let drawn = UIImageView(image: image)
+    drawn.contentMode = .scaleAspectFit
+    container.addSubview(drawn)
+    return UITextItem.MenuConfiguration(preview: .view(container), menu: menu)
+}
+
+final class AorusProbeSaver: NSObject {
+    // The callback UIKit makes when a save finishes, and the selector that names it.
+    @objc func aorusDidSaveMathImage(_ image: UIImage,
+                                     didFinishSavingWithError error: Error?,
+                                     contextInfo: UnsafeRawPointer?) {
+        UINotificationFeedbackGenerator().notificationOccurred(error == nil ? .success : .error)
+    }
+
+    func save(_ image: UIImage) {
+        UIImageWriteToSavedPhotosAlbum(image, self,
+                                       #selector(aorusDidSaveMathImage(_:didFinishSavingWithError:contextInfo:)),
+                                       nil)
+    }
 }
 
 func aorusProbeSave(_ textView: UITextView, image: UIImage) {

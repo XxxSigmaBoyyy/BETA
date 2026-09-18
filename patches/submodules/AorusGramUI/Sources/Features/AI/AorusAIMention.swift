@@ -570,8 +570,14 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
 
     func configureMentions(context: AccountContext, theme: PresentationTheme) {
         AorusAIMentionAvatarCache.shared.use(context: context)
+        self.aorusPageBackground = AorusAIPalette.resolve(theme).plainBackground
         refreshMentionImages()
     }
+
+    /// The colour of the page this text sits on. The text view itself is clear — it is the page
+    /// showing through — so the colour has to be remembered from the theme when it is given one.
+    /// It is what a held formula is lifted on.
+    private var aorusPageBackground: UIColor = .black
 
     /// Copying a pill yields the handle that was written, not the name that is drawn.
     ///
@@ -599,6 +605,113 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         let text = aorusText(in: selectedRange, preferringLaTeX: true)
         guard let text, !text.isEmpty else { return }
         UIPasteboard.general.string = text
+    }
+
+    /// What a held formula is lifted on.
+    ///
+    /// `UITextItem.MenuConfiguration.Preview` is `.default` or `.view(UIView)` — there is no
+    /// colour to set on it, so the colour is the view's. `.default` is the grey platter that
+    /// showed under a held fraction; this is the page's own black with the formula on it.
+    func aorusMathLift(for attachment: NSTextAttachment) -> UIView? {
+        guard let image = attachment.image else { return nil }
+        let size = attachment.bounds.size
+        guard size.width >= 1.0, size.height >= 1.0 else { return nil }
+        let padding: CGFloat = 12.0
+        let container = UIView(frame: CGRect(x: 0.0, y: 0.0,
+                                             width: size.width + padding * 2.0,
+                                             height: size.height + padding * 2.0))
+        container.backgroundColor = self.aorusPageBackground
+        container.layer.cornerRadius = 12.0
+        container.layer.cornerCurve = .continuous
+        container.layer.masksToBounds = true
+        let drawn = UIImageView(image: image)
+        drawn.frame = CGRect(x: padding, y: padding, width: size.width, height: size.height)
+        drawn.contentMode = .scaleAspectFit
+        container.addSubview(drawn)
+        return container
+    }
+
+    /// True when the selection has a drawn formula in it, which is when offering LaTeX makes
+    /// any sense at all.
+    func aorusSelectionCarriesMaths() -> Bool {
+        return aorusCarriesMaths(in: selectedRange)
+    }
+
+    /// The menu a drawn formula answers a long press with.
+    ///
+    /// From iOS 17 a formula is an interactive text item of its own, and the menu UIKit builds
+    /// for one is a picture's menu — save it, share it. Handing back nothing instead was worse:
+    /// the press had nothing to open, so holding a formula buzzed twice and did nothing at all.
+    /// It has a menu again, and the menu is the formula's own: both ways of copying it, and a
+    /// way into an ordinary text selection for the reader who wants the `x +` in front of it too.
+    func aorusMathMenu(in range: NSRange) -> UIMenu? {
+        guard aorusCarriesMaths(in: range) else { return nil }
+        let plain = aorusText(in: range, preferringLaTeX: false)
+        let latex = aorusText(in: range, preferringLaTeX: true)
+        var children: [UIMenuElement] = []
+        if let plain, !plain.isEmpty {
+            children.append(UIAction(title: aorusAILocalized("Копировать", "Copy")) { _ in
+                UIPasteboard.general.string = plain
+            })
+        }
+        if let latex, !latex.isEmpty, latex != plain {
+            children.append(UIAction(title: aorusAILocalized("Копировать LaTeX", "Copy LaTeX")) { _ in
+                UIPasteboard.general.string = latex
+            })
+        }
+        if self.aorusMathAtoms(in: range) != nil {
+            children.append(UIAction(title: aorusAILocalized("Сохранить изображением", "Save as Image")) { [weak self] _ in
+                self?.aorusSaveMathImage(in: range)
+            })
+        }
+        children.append(UIAction(title: aorusAILocalized("Выделить", "Select")) { [weak self] _ in
+            self?.aorusSelectLine(containing: range)
+        })
+        return UIMenu(children: children)
+    }
+
+    /// The formula at `range`, as structure rather than as a picture of itself.
+    ///
+    /// Read back from the LaTeX it carries: that is written out from the same tree it was set
+    /// from, and it parses to the same tree again — which is what makes drawing it a second
+    /// time, at any size, give the same formula.
+    private func aorusMathAtoms(in range: NSRange) -> [AorusAIMath.Atom]? {
+        guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return nil }
+        guard let latex = textStorage.attribute(.aorusAIMathLaTeX, at: range.location,
+                                                effectiveRange: nil) as? String,
+              !latex.isEmpty else { return nil }
+        let atoms = AorusAIMath.parse(latex)
+        return atoms.isEmpty ? nil : atoms
+    }
+
+    /// Draws the formula again, large, and puts it in the photo library.
+    ///
+    /// Drawn rather than enlarged, so a fraction that runs the width of the screen is as sharp
+    /// saved as it is on screen: the tree is typeset a second time at four times the reading
+    /// size, on the page's own black, with room around it.
+    func aorusSaveMathImage(in range: NSRange) {
+        guard let atoms = aorusMathAtoms(in: range) else { return }
+        let size = (self.font?.pointSize ?? 16.5) * 4.0
+        guard let image = AorusAIMathTypesetter.image(
+            for: atoms,
+            font: UIFont.systemFont(ofSize: size),
+            color: self.textColor ?? .white,
+            background: self.backgroundColor ?? .black,
+            padding: size * 0.5
+        ) else { return }
+        UIImageWriteToSavedPhotosAlbum(image, self,
+                                       #selector(aorusDidSaveMathImage(_:didFinishSavingWithError:contextInfo:)),
+                                       nil)
+    }
+
+    /// Saving is asynchronous and can be refused — the reader may never have been asked for the
+    /// photo library, or may have said no. Either way the tap has to answer for itself, so it
+    /// answers the way the rest of the app does: the same haptic Copy uses when it works, and a
+    /// different one when it does not.
+    @objc private func aorusDidSaveMathImage(_ image: UIImage,
+                                             didFinishSavingWithError error: Error?,
+                                             contextInfo: UnsafeRawPointer?) {
+        UINotificationFeedbackGenerator().notificationOccurred(error == nil ? .success : .error)
     }
 
     /// True when the selection has a drawn formula in it, which is when offering LaTeX makes
