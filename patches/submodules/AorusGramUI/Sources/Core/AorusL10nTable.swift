@@ -55,7 +55,7 @@ enum AorusL10nTable {
     private static let it: [String: String] = [
         "Checking…": "Verifica…",
         "%@ via Moscow": "%@ via Mosca",
-        "Glass interface.": "Interfaccia in vetro.",
+        "Interface 2.0": "Interfaccia 2.0",
         "Audio Call": "Chiamata audio",
         "Video Call": "Videochiamata",
         "No Mask": "Senza maschera",
@@ -704,7 +704,7 @@ enum AorusL10nTable {
     private static let pl: [String: String] = [
         "Checking…": "Sprawdzanie…",
         "%@ via Moscow": "%@ przez Moskwę",
-        "Glass interface.": "Szklany interfejs.",
+        "Interface 2.0": "Interfejs 2.0",
         "Audio Call": "Połączenie głosowe",
         "Video Call": "Połączenie wideo",
         "No Mask": "Bez maski",
@@ -1353,7 +1353,7 @@ enum AorusL10nTable {
     private static let nl: [String: String] = [
         "Checking…": "Controleren…",
         "%@ via Moscow": "%@ via Moskou",
-        "Glass interface.": "Glazen interface.",
+        "Interface 2.0": "Interface 2.0",
         "Audio Call": "Audiogesprek",
         "Video Call": "Videogesprek",
         "No Mask": "Geen masker",
@@ -2002,7 +2002,7 @@ enum AorusL10nTable {
     private static let ca: [String: String] = [
         "Checking…": "Comprovant…",
         "%@ via Moscow": "%@ via Moscou",
-        "Glass interface.": "Interfície de vidre.",
+        "Interface 2.0": "Interfície 2.0",
         "Audio Call": "Trucada d'àudio",
         "Video Call": "Videotrucada",
         "No Mask": "Sense màscara",
@@ -2651,7 +2651,7 @@ enum AorusL10nTable {
     private static let id: [String: String] = [
         "Checking…": "Memeriksa…",
         "%@ via Moscow": "%@ via Moskow",
-        "Glass interface.": "Antarmuka kaca.",
+        "Interface 2.0": "Antarmuka 2.0",
         "Audio Call": "Panggilan Suara",
         "Video Call": "Panggilan Video",
         "No Mask": "Tanpa masker",
@@ -3300,7 +3300,7 @@ enum AorusL10nTable {
     private static let ms: [String: String] = [
         "Checking…": "Menyemak…",
         "%@ via Moscow": "%@ melalui Moscow",
-        "Glass interface.": "Antara muka kaca.",
+        "Interface 2.0": "Antara Muka 2.0",
         "Audio Call": "Panggilan Audio",
         "Video Call": "Panggilan Video",
         "No Mask": "Tiada topeng",
@@ -3949,7 +3949,7 @@ enum AorusL10nTable {
     private static let be: [String: String] = [
         "Checking…": "Праверка…",
         "%@ via Moscow": "%@ праз Маскву",
-        "Glass interface.": "Шкляны інтэрфейс.",
+        "Interface 2.0": "Інтэрфейс 2.0",
         "Audio Call": "Аудыёзванок",
         "Video Call": "Відэазванок",
         "No Mask": "Без маскі",
@@ -4598,7 +4598,7 @@ enum AorusL10nTable {
     private static let uz: [String: String] = [
         "Checking…": "Tekshirilmoqda…",
         "%@ via Moscow": "%@ Moskva orqali",
-        "Glass interface.": "Shisha interfeys.",
+        "Interface 2.0": "Interfeys 2.0",
         "Audio Call": "Audio qo'ng'iroq",
         "Video Call": "Video qo'ng'iroq",
         "No Mask": "Niqobsiz",
@@ -5247,7 +5247,7 @@ enum AorusL10nTable {
     private static let ko: [String: String] = [
         "Checking…": "확인 중…",
         "%@ via Moscow": "%@ (모스크바 경유)",
-        "Glass interface.": "유리 인터페이스.",
+        "Interface 2.0": "인터페이스 2.0",
         "Audio Call": "음성 통화",
         "Video Call": "영상 통화",
         "No Mask": "마스크 없음",
@@ -5896,7 +5896,7 @@ enum AorusL10nTable {
     private static let ar: [String: String] = [
         "Checking…": "جارٍ التحقق…",
         "%@ via Moscow": "%@ عبر موسكو",
-        "Glass interface.": "واجهة زجاجية.",
+        "Interface 2.0": "الواجهة 2.0",
         "Audio Call": "مكالمة صوتية",
         "Video Call": "مكالمة فيديو",
         "No Mask": "بدون قناع",
@@ -6545,7 +6545,7 @@ enum AorusL10nTable {
     private static let fa: [String: String] = [
         "Checking…": "در حال بررسی…",
         "%@ via Moscow": "%@ از طریق مسکو",
-        "Glass interface.": "رابط شیشه‌ای.",
+        "Interface 2.0": "رابط کاربری 2.0",
         "Audio Call": "تماس صوتی",
         "Video Call": "تماس تصویری",
         "No Mask": "بدون ماسک",
@@ -7194,7 +7194,7 @@ enum AorusL10nTable {
     private static let kk: [String: String] = [
         "Checking…": "Тексерілуде…",
         "%@ via Moscow": "%@ Мәскеу арқылы",
-        "Glass interface.": "Шыны интерфейс.",
+        "Interface 2.0": "Интерфейс 2.0",
         "Audio Call": "Аудиоқоңырау",
         "Video Call": "Бейнеқоңырау",
         "No Mask": "Маскасыз",
@@ -7843,7 +7843,7 @@ enum AorusL10nTable {
     private static let zhHans: [String: String] = [
         "Checking…": "检查中…",
         "%@ via Moscow": "%@（经莫斯科）",
-        "Glass interface.": "玻璃界面。",
+        "Interface 2.0": "界面 2.0",
         "Audio Call": "语音通话",
         "Video Call": "视频通话",
         "No Mask": "不使用面具",
@@ -8493,7 +8493,7 @@ enum AorusL10nTable {
     private static let zhHant: [String: String] = [
         "Checking…": "檢查中…",
         "%@ via Moscow": "%@（經莫斯科）",
-        "Glass interface.": "玻璃介面。",
+        "Interface 2.0": "介面 2.0",
         "Audio Call": "語音通話",
         "Video Call": "視訊通話",
         "No Mask": "不使用面具",
@@ -9142,7 +9142,7 @@ enum AorusL10nTable {
     private static let ja: [String: String] = [
         "Checking…": "確認中…",
         "%@ via Moscow": "%@（モスクワ経由）",
-        "Glass interface.": "ガラスのインターフェース。",
+        "Interface 2.0": "インターフェース 2.0",
         "Audio Call": "音声通話",
         "Video Call": "ビデオ通話",
         "No Mask": "マスクなし",
@@ -9791,7 +9791,7 @@ enum AorusL10nTable {
     private static let fi: [String: String] = [
         "Checking…": "Tarkistetaan…",
         "%@ via Moscow": "%@ Moskovan kautta",
-        "Glass interface.": "Lasinen käyttöliittymä.",
+        "Interface 2.0": "Käyttöliittymä 2.0",
         "Audio Call": "Äänipuhelu",
         "Video Call": "Videopuhelu",
         "No Mask": "Ei naamiota",
@@ -10440,7 +10440,7 @@ enum AorusL10nTable {
     private static let he: [String: String] = [
         "Checking…": "בודק…",
         "%@ via Moscow": "%@ דרך מוסקבה",
-        "Glass interface.": "ממשק זכוכית.",
+        "Interface 2.0": "ממשק 2.0",
         "Audio Call": "שיחה קולית",
         "Video Call": "שיחת וידאו",
         "No Mask": "ללא מסכה",
@@ -11089,7 +11089,7 @@ enum AorusL10nTable {
     private static let hr: [String: String] = [
         "Checking…": "Provjera…",
         "%@ via Moscow": "%@ preko Moskve",
-        "Glass interface.": "Stakleno sučelje.",
+        "Interface 2.0": "Sučelje 2.0",
         "Audio Call": "Audiopoziv",
         "Video Call": "Videopoziv",
         "No Mask": "Bez maske",
@@ -11738,7 +11738,7 @@ enum AorusL10nTable {
     private static let sr: [String: String] = [
         "Checking…": "Провера…",
         "%@ via Moscow": "%@ преко Москве",
-        "Glass interface.": "Стаклени интерфејс.",
+        "Interface 2.0": "Интерфејс 2.0",
         "Audio Call": "Аудио позив",
         "Video Call": "Видео позив",
         "No Mask": "Без маске",
@@ -12387,7 +12387,7 @@ enum AorusL10nTable {
     private static let cs: [String: String] = [
         "Checking…": "Kontrola…",
         "%@ via Moscow": "%@ přes Moskvu",
-        "Glass interface.": "Skleněné rozhraní.",
+        "Interface 2.0": "Rozhraní 2.0",
         "Audio Call": "Hlasový hovor",
         "Video Call": "Videohovor",
         "No Mask": "Bez masky",
@@ -13036,7 +13036,7 @@ enum AorusL10nTable {
     private static let sk: [String: String] = [
         "Checking…": "Kontroluje sa…",
         "%@ via Moscow": "%@ cez Moskvu",
-        "Glass interface.": "Sklenené rozhranie.",
+        "Interface 2.0": "Rozhranie 2.0",
         "Audio Call": "Hlasový hovor",
         "Video Call": "Videohovor",
         "No Mask": "Bez masky",
@@ -13685,7 +13685,7 @@ enum AorusL10nTable {
     private static let ro: [String: String] = [
         "Checking…": "Se verifică…",
         "%@ via Moscow": "%@ prin Moscova",
-        "Glass interface.": "Interfață de sticlă.",
+        "Interface 2.0": "Interfață 2.0",
         "Audio Call": "Apel audio",
         "Video Call": "Apel video",
         "No Mask": "Fără mască",
@@ -14334,7 +14334,7 @@ enum AorusL10nTable {
     private static let hu: [String: String] = [
         "Checking…": "Ellenőrzés…",
         "%@ via Moscow": "%@ Moszkván át",
-        "Glass interface.": "Üveg felület.",
+        "Interface 2.0": "Felület 2.0",
         "Audio Call": "Hanghívás",
         "Video Call": "Videóhívás",
         "No Mask": "Maszk nélkül",
@@ -14983,7 +14983,7 @@ enum AorusL10nTable {
     private static let nb: [String: String] = [
         "Checking…": "Sjekker…",
         "%@ via Moscow": "%@ via Moskva",
-        "Glass interface.": "Glassgrensesnitt.",
+        "Interface 2.0": "Grensesnitt 2.0",
         "Audio Call": "Lydsamtale",
         "Video Call": "Videosamtale",
         "No Mask": "Uten maske",
@@ -15632,7 +15632,7 @@ enum AorusL10nTable {
     private static let sv: [String: String] = [
         "Checking…": "Kontrollerar…",
         "%@ via Moscow": "%@ via Moskva",
-        "Glass interface.": "Glasgränssnitt.",
+        "Interface 2.0": "Gränssnitt 2.0",
         "Audio Call": "Röstsamtal",
         "Video Call": "Videosamtal",
         "No Mask": "Ingen mask",
@@ -16281,7 +16281,7 @@ enum AorusL10nTable {
     private static let vi: [String: String] = [
         "Checking…": "Đang kiểm tra…",
         "%@ via Moscow": "%@ qua Moskva",
-        "Glass interface.": "Giao diện kính.",
+        "Interface 2.0": "Giao diện 2.0",
         "Audio Call": "Cuộc gọi thoại",
         "Video Call": "Cuộc gọi video",
         "No Mask": "Không dùng mặt nạ",
@@ -16930,7 +16930,7 @@ enum AorusL10nTable {
     private static let uk: [String: String] = [
         "Checking…": "Перевірка…",
         "%@ via Moscow": "%@ через Москву",
-        "Glass interface.": "Скляний інтерфейс.",
+        "Interface 2.0": "Інтерфейс 2.0",
         "Audio Call": "Аудіодзвінок",
         "Video Call": "Відеодзвінок",
         "No Mask": "Без маски",
@@ -17588,7 +17588,7 @@ enum AorusL10nTable {
     private static let es: [String: String] = [
         "Checking…": "Comprobando…",
         "%@ via Moscow": "%@ vía Moscú",
-        "Glass interface.": "Interfaz de cristal.",
+        "Interface 2.0": "Interfaz 2.0",
         "Audio Call": "Llamada de audio",
         "Video Call": "Videollamada",
         "No Mask": "Sin máscara",
@@ -18246,7 +18246,7 @@ enum AorusL10nTable {
     private static let pt: [String: String] = [
         "Checking…": "Verificando…",
         "%@ via Moscow": "%@ via Moscou",
-        "Glass interface.": "Interface de vidro.",
+        "Interface 2.0": "Interface 2.0",
         "Audio Call": "Chamada de áudio",
         "Video Call": "Chamada de vídeo",
         "No Mask": "Sem máscara",
@@ -18904,7 +18904,7 @@ enum AorusL10nTable {
     private static let de: [String: String] = [
         "Checking…": "Wird geprüft…",
         "%@ via Moscow": "%@ über Moskau",
-        "Glass interface.": "Glas-Oberfläche.",
+        "Interface 2.0": "Oberfläche 2.0",
         "Audio Call": "Audioanruf",
         "Video Call": "Videoanruf",
         "No Mask": "Ohne Maske",
@@ -19562,7 +19562,7 @@ enum AorusL10nTable {
     private static let fr: [String: String] = [
         "Checking…": "Vérification…",
         "%@ via Moscow": "%@ via Moscou",
-        "Glass interface.": "Interface en verre.",
+        "Interface 2.0": "Interface 2.0",
         "Audio Call": "Appel audio",
         "Video Call": "Appel vidéo",
         "No Mask": "Sans masque",
@@ -20220,7 +20220,7 @@ enum AorusL10nTable {
     private static let tr: [String: String] = [
         "Checking…": "Kontrol ediliyor…",
         "%@ via Moscow": "%@ Moskova üzerinden",
-        "Glass interface.": "Cam arayüz.",
+        "Interface 2.0": "Arayüz 2.0",
         "Audio Call": "Sesli Arama",
         "Video Call": "Görüntülü Arama",
         "No Mask": "Maskesiz",
