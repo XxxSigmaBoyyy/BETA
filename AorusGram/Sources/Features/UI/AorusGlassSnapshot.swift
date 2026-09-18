@@ -92,6 +92,12 @@ public enum AorusGlassSnapshot {
         let host = self.contentView(of: pane)
         let rect = pane.convert(pane.bounds, to: window).intersection(window.bounds)
         guard rect.width >= 1.0, rect.height >= 1.0 else { return }
+        // Nothing that reaches into the strip along the top of the screen. That is where the
+        // navigation bar sits, over the profile photo, and it is the one place a copy was
+        // visible as a copy — a washed band across the header. The bar is the app's own
+        // business; the panes below it are what this is for.
+        let top = window.safeAreaInsets.top
+        if top > 0.0, rect.minY < top { return }
         guard let cropped = self.crop(capture, to: rect) else { return }
 
         let picture = UIImageView(image: cropped)
@@ -105,6 +111,26 @@ public enum AorusGlassSnapshot {
         self.applyShape(of: pane, to: picture)
         host.insertSubview(picture, at: 0)
         self.frozen.append(picture)
+        // An exact copy is exact only while the pane it was taken from stays where it was. A
+        // layout pass right after the capture — the screen going inactive is a layout pass —
+        // would leave the copy over content that has since moved, and that is the one way this
+        // can be seen at all. Checked on the next turn of the run loop, and dropped if so.
+        DispatchQueue.main.async { [weak pane, weak picture] in
+            guard let pane, let picture, picture.superview != nil else { return }
+            guard let window = pane.window else {
+                self.drop(picture)
+                return
+            }
+            if !pane.convert(pane.bounds, to: window).intersection(window.bounds).equalTo(rect) {
+                self.drop(picture)
+            }
+        }
+    }
+
+    private static func drop(_ picture: UIImageView) {
+        picture.image = nil
+        picture.removeFromSuperview()
+        self.frozen.removeAll { $0 === picture }
     }
 
     /// Where a stand-in goes: under the pane's content, over the pane's material.

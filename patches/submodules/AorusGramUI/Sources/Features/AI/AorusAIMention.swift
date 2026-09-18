@@ -629,10 +629,75 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
                 UIPasteboard.general.string = latex
             })
         }
+        if self.aorusMathAtoms(in: range) != nil {
+            children.append(UIAction(title: aorusAILocalized("Сохранить изображением", "Save as Image")) { [weak self] _ in
+                self?.aorusSaveMathImage(in: range)
+            })
+        }
         children.append(UIAction(title: aorusAILocalized("Выделить", "Select")) { [weak self] _ in
             self?.aorusSelectLine(containing: range)
         })
         return UIMenu(children: children)
+    }
+
+    /// The formula at `range`, as structure rather than as a picture of itself.
+    ///
+    /// Read back from the LaTeX it carries: that is written out from the same tree it was set
+    /// from, and it parses to the same tree again — which is what makes drawing it a second
+    /// time, at any size, give the same formula.
+    private func aorusMathAtoms(in range: NSRange) -> [AorusAIMath.Atom]? {
+        guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return nil }
+        guard let latex = textStorage.attribute(.aorusAIMathLaTeX, at: range.location,
+                                                effectiveRange: nil) as? String,
+              !latex.isEmpty else { return nil }
+        let atoms = AorusAIMath.parse(latex)
+        return atoms.isEmpty ? nil : atoms
+    }
+
+    /// Draws the formula again, large, and puts it in the photo library.
+    ///
+    /// Drawn rather than enlarged, so a fraction that runs the width of the screen is as sharp
+    /// saved as it is on screen: the tree is typeset a second time at four times the reading
+    /// size, on the page's own black, with room around it.
+    func aorusSaveMathImage(in range: NSRange) {
+        guard let atoms = aorusMathAtoms(in: range) else { return }
+        let size = (self.font?.pointSize ?? 16.5) * 4.0
+        guard let image = AorusAIMathTypesetter.image(
+            for: atoms,
+            font: UIFont.systemFont(ofSize: size),
+            color: self.textColor ?? .white,
+            background: self.backgroundColor ?? .black,
+            padding: size * 0.5
+        ) else { return }
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+    }
+
+    /// What the system lifts when a formula is held.
+    ///
+    /// Without one UIKit builds its own, and its own is a grey platter — the grey square that
+    /// showed under a held fraction. This is the formula's picture on the page's own colour, so
+    /// what lifts is the formula and nothing else.
+    @available(iOS 17.0, *)
+    func aorusMathPreview(for attachment: NSTextAttachment, in range: NSRange) -> UITargetedPreview? {
+        guard let image = attachment.image else { return nil }
+        guard range.length > 0, NSMaxRange(range) <= textStorage.length else { return nil }
+        guard let start = position(from: beginningOfDocument, offset: range.location),
+              let end = position(from: start, offset: range.length),
+              let textRange = textRange(from: start, to: end) else { return nil }
+        let rect = firstRect(for: textRange)
+        guard rect.width > 1.0, rect.height > 1.0, rect.origin.x.isFinite, rect.origin.y.isFinite else {
+            return nil
+        }
+        let lifted = UIImageView(image: image)
+        lifted.frame = CGRect(origin: CGPoint(), size: rect.size)
+        lifted.contentMode = .scaleAspectFit
+        let parameters = UIPreviewParameters()
+        // The page's own colour, not the system's platter. `visiblePath` keeps the lift to the
+        // formula's own corners instead of a rectangle around it.
+        parameters.backgroundColor = self.backgroundColor ?? .black
+        parameters.visiblePath = UIBezierPath(roundedRect: lifted.bounds, cornerRadius: 6.0)
+        let target = UIPreviewTarget(container: self, center: CGPoint(x: rect.midX, y: rect.midY))
+        return UITargetedPreview(view: lifted, parameters: parameters, target: target)
     }
 
     /// Selects the whole line the formula sits on.

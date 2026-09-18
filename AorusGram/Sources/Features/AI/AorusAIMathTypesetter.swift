@@ -45,6 +45,34 @@ public enum AorusAIMathTypesetter {
         return attachment
     }
 
+    /// A whole formula as a picture that can leave the app: saved to the photo library, sent
+    /// on, pasted somewhere else.
+    ///
+    /// Not the attachment's own image. That one is drawn at the size it has to sit at in a
+    /// sentence, which is right for reading and small for keeping — a long fraction saved at
+    /// reading size is a strip of grey. This draws the same tree again at whatever size it is
+    /// asked for, on its own background, with room around it, and at the screen's scale: the
+    /// result is as sharp as the formula on screen however wide it runs, because it is drawn
+    /// rather than enlarged.
+    public static func image(for atoms: [AorusAIMath.Atom],
+                             font: UIFont,
+                             color: UIColor,
+                             background: UIColor,
+                             padding: CGFloat) -> UIImage? {
+        guard !atoms.isEmpty else { return nil }
+        let metrics = measure(atoms, font: font)
+        let size = CGSize(width: max(metrics.width.rounded(.up), 1) + padding * 2.0,
+                          height: max(metrics.height.rounded(.up), 1) + padding * 2.0)
+        guard size.width < 8192.0, size.height < 8192.0 else { return nil }
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            background.setFill()
+            context.fill(CGRect(origin: CGPoint(), size: size))
+            draw(atoms, at: CGPoint(x: padding, y: padding + metrics.ascent), font: font, color: color)
+        }
+    }
+
     // MARK: - Cache
     //
     // A streaming answer is re-rendered on every token, and every render would otherwise draw

@@ -35,6 +35,31 @@ func aorusProbeSelectLine(_ textView: UITextView, range: NSRange) {
     textView.selectedRange = line
 }
 
+@available(iOS 17.0, *)
+func aorusProbePreview(_ view: UIView, image: UIImage, rect: CGRect, menu: UIMenu) -> UITextItem.MenuConfiguration {
+    // The lift under a held formula: our own picture, on our own colour, at the formula's place.
+    let lifted = UIImageView(image: image)
+    lifted.frame = CGRect(origin: CGPoint(), size: rect.size)
+    lifted.contentMode = .scaleAspectFit
+    let parameters = UIPreviewParameters()
+    parameters.backgroundColor = .black
+    parameters.visiblePath = UIBezierPath(roundedRect: lifted.bounds, cornerRadius: 6.0)
+    let target = UIPreviewTarget(container: view, center: CGPoint(x: rect.midX, y: rect.midY))
+    let preview = UITargetedPreview(view: lifted, parameters: parameters, target: target)
+    return UITextItem.MenuConfiguration(preview: preview, menu: menu)
+}
+
+func aorusProbeSave(_ textView: UITextView, image: UIImage) {
+    // Where a formula goes when it is saved, and where its own place on screen comes from.
+    UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+    guard let start = textView.position(from: textView.beginningOfDocument, offset: 0),
+          let end = textView.position(from: start, offset: 1),
+          let range = textView.textRange(from: start, to: end) else { return }
+    _ = textView.firstRect(for: range)
+    _ = textView.textColor
+    _ = textView.font?.pointSize
+}
+
 func aorusProbeHolding(_ textView: UITextView, table: UITableView) -> Bool {
     // Whether the reader is holding a selection, and finding the cell a text view sits in.
     let held = textView.selectedRange.length > 0

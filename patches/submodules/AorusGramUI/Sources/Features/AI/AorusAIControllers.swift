@@ -5574,12 +5574,17 @@ private final class AorusAIMessageCell: UITableViewCell, UITextViewDelegate {
     @available(iOS 17.0, *)
     func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem,
                   defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
-        guard case .textAttachment = textItem.content,
+        guard case let .textAttachment(attachment) = textItem.content,
               let view = textView as? AorusAIMentionTextView,
               let menu = view.aorusMathMenu(in: textItem.range) else {
             return UITextItem.MenuConfiguration(menu: defaultMenu)
         }
-        return UITextItem.MenuConfiguration(menu: menu)
+        // With no preview of our own UIKit lifts the formula on a platter of its own making,
+        // and that platter is grey. Ours is the page's black.
+        guard let preview = view.aorusMathPreview(for: attachment, in: textItem.range) else {
+            return UITextItem.MenuConfiguration(menu: menu)
+        }
+        return UITextItem.MenuConfiguration(preview: preview, menu: menu)
     }
 
     /// A tap on a formula does nothing. It is a piece of the sentence, and tapping a word does
