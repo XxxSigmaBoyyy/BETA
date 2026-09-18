@@ -635,10 +635,13 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         return UIMenu(children: children)
     }
 
-    /// Selects the whole line the formula sits on, and opens the text menu over it.
+    /// Selects the whole line the formula sits on.
     ///
     /// This is the way to the thing a formula cannot give on its own: a selection with handles,
-    /// which the reader drags to take the formula together with whatever stands beside it.
+    /// which the reader drags to take the formula together with whatever stands beside it. The
+    /// selection is made and left there — a text view shows its own menu for a selection when it
+    /// is touched, and there is no supported way to open that menu from here (`UITextView` has
+    /// no edit-menu interaction to ask; the preflight probe says so in twenty-five seconds).
     func aorusSelectLine(containing range: NSRange) {
         let text = textStorage.string as NSString
         guard range.length > 0, NSMaxRange(range) <= text.length else { return }
@@ -646,13 +649,6 @@ class AorusAIMentionTextView: UITextView, UIGestureRecognizerDelegate {
         guard line.length > 0 else { return }
         becomeFirstResponder()
         selectedRange = line
-        guard #available(iOS 16.0, *), let interaction = self.editMenuInteraction else { return }
-        guard let start = position(from: beginningOfDocument, offset: line.location),
-              let end = position(from: start, offset: line.length),
-              let selection = textRange(from: start, to: end) else { return }
-        let rect = firstRect(for: selection)
-        let point = CGPoint(x: rect.midX, y: rect.minY)
-        interaction.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
     }
 
     func aorusCarriesMaths(in range: NSRange) -> Bool {

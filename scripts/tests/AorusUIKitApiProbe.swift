@@ -23,20 +23,12 @@ func aorusProbeTextItem(_ item: UITextItem, defaultMenu: UIMenu) -> UITextItem.M
     return UITextItem.MenuConfiguration(menu: UIMenu(children: [UIAction(title: "x") { _ in }]))
 }
 
-@available(iOS 16.0, *)
-func aorusProbeEditMenu(_ textView: UITextView, range: NSRange) {
-    // Selecting a line and opening the text menu over it.
+func aorusProbeSelectLine(_ textView: UITextView, range: NSRange) {
+    // Selecting the line a formula sits on.
     let text = textView.textStorage.string as NSString
     let line = text.lineRange(for: range)
     textView.becomeFirstResponder()
     textView.selectedRange = line
-    guard let interaction = textView.editMenuInteraction else { return }
-    guard let start = textView.position(from: textView.beginningOfDocument, offset: line.location),
-          let end = textView.position(from: start, offset: line.length),
-          let selection = textView.textRange(from: start, to: end) else { return }
-    let rect = textView.firstRect(for: selection)
-    interaction.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil,
-                                                              sourcePoint: CGPoint(x: rect.midX, y: rect.minY)))
 }
 
 @available(iOS 16.0, *)
