@@ -169,6 +169,10 @@ public final class AorusGramBootstrap {
         }
 
         observeAppLifecycle()
+
+        // The glass has to outlive the moment the app stops being looked at, or the card in the
+        // app switcher shows panes with no material in them.
+        AorusGlassSnapshot.install()
     }
 
     private static func removeLegacyCallLogs() {

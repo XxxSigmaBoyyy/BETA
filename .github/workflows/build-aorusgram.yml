@@ -125,6 +125,14 @@ jobs:
             -target arm64-apple-ios13.0 \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIMath.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIMathTypesetter.swift
+          # The same treatment for the glass freeze: it is UIKit and nothing else, apart from
+          # two reads the stubs stand in for, and every API in it has to exist on the oldest
+          # iOS the app deploys to.
+          swiftc -typecheck \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -target arm64-apple-ios13.0 \
+            aorusgram/AorusGram/Sources/Features/UI/AorusGlassSnapshot.swift \
+            aorusgram/scripts/tests/AorusGlassSnapshotStubs.swift
           # The UIKit calls the AI chat makes, repeated against the real SDK. Those two files
           # name Telegram's modules and can only be parsed here, and a method that does not
           # exist parses perfectly — so every one of them is written out once more in a file
