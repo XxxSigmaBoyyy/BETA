@@ -211,6 +211,12 @@ def collect(paths):
     # `AorusBackupArchive.Limits(...)` reads as a missing member.
     nested = {}
     parents = {}
+    # (file, owner, name, the parameter list as written) -> where it is declared. Two identical
+    # declarations of one type IN ONE FILE is not an overload, it is the same method written
+    # twice — what a careless span replacement leaves behind, and what the build calls "invalid
+    # redeclaration" an hour later. The file is part of the key on purpose: this fork mirrors
+    # whole types across its two modules deliberately, and those are not duplicates.
+    written = {}
     for path in paths:
         # A literal collapses to `S`, not to nothing: `t("a", "b")` has to keep two
         # arguments, or every call that passes only literals looks like `t()`.
@@ -243,10 +249,14 @@ def collect(paths):
                     if owner is None or start > owner[0]:
                         owner = (start, name)
             if owner:
+                signature = " ".join(code[match.end():close].split())
+                key = (str(path), owner[1], match.group(1), signature)
+                written.setdefault(key, []).append((path, line_of(code, match.start())))
+            if owner:
                 by_type.setdefault(owner[1], {}).setdefault(match.group(1), set()).update(accepted)
             else:
                 free.setdefault(path, {}).setdefault(match.group(1), set()).update(accepted)
-    return sources, layout, by_type, free, nested, parents
+    return sources, layout, by_type, free, nested, parents, written
 
 
 def line_of(code, index):
@@ -301,8 +311,14 @@ def locals_in(code):
     return names
 
 
-def check(sources, layout, by_type, free, nested, parents):
+def check(sources, layout, by_type, free, nested, parents, written):
     failures = []
+    for (_, owner, name, _), places in sorted(written.items()):
+        if len(places) < 2:
+            continue
+        lines = ", ".join(str(line) for _, line in places)
+        failures.append(f"{places[0][0]}: {owner}.{name} is declared {len(places)} times in this "
+                        f"file with the same parameters (lines {lines})")
     for path, code in sources.items():
         spans = layout.get(path, [])
         bound = locals_in(code)
@@ -406,8 +422,8 @@ def main():
         base = root / directory
         if base.is_dir():
             paths.extend(sorted(base.rglob("*.swift")))
-    sources, layout, by_type, free, nested, parents = collect(paths)
-    failures = check(sources, layout, by_type, free, nested, parents)
+    sources, layout, by_type, free, nested, parents, written = collect(paths)
+    failures = check(sources, layout, by_type, free, nested, parents, written)
     if failures:
         print("Swift call label check: FAILED")
         for failure in failures:
