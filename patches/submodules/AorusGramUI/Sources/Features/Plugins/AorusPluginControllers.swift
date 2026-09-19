@@ -671,7 +671,8 @@ private final class AorusPluginPickerCell: UICollectionViewCell {
 
     func configure(icon name: String?, color: UIColor, selected: Bool) {
         background.backgroundColor = name == nil ? color : color.withAlphaComponent(0.16)
-        icon.image = name.map { UIImage(systemName: $0) }
+        // `map` over an optional name would wrap the already-optional image again.
+        icon.image = name.flatMap { UIImage(systemName: $0) }
         icon.tintColor = color
         check.isHidden = !selected
         contentView.layer.borderWidth = selected ? 2 : 0

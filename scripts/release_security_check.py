@@ -1241,6 +1241,55 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         fail(errors, "plugin editor debug runtime is not bound to the license gate")
     if "AorusPluginExport(record: record, settings: [:])" not in store:
         fail(errors, "plugin exports may include installation-owned settings")
+    check_plugin_ui_stubs(root, errors)
+
+
+def check_plugin_ui_stubs(root: Path, errors: list[str]) -> None:
+    """The stubs the plugin screens are type-checked against must match the real runtime.
+
+    `AorusPluginUIStubs.swift` lets the preflight type-check `AorusPluginControllers.swift`
+    without Telegram's modules. Everything it stands in for is pinned upstream code except
+    `AorusPluginRuntimeManager`, which is ours and changes with the feature — and a stub
+    that has drifted from it is worse than no stub at all: the screens would be checked
+    against a runtime that no longer exists, and the mismatch would surface an hour into
+    Bazel, which is the exact failure the stubs were written to prevent. So every method
+    the stub declares has to appear, with the same signature, in the real file.
+    """
+    stubs = root / "scripts/tests/AorusPluginUIStubs.swift"
+    runtime = root / "patches/submodules/AorusGramUI/Sources/Features/Plugins/AorusPluginRuntime.swift"
+    if not stubs.is_file():
+        fail(errors, "plugin UI type-check stubs are missing")
+        return
+    if not runtime.is_file():
+        return
+    stub_text = stubs.read_text(encoding="utf-8")
+    runtime_text = runtime.read_text(encoding="utf-8")
+    block = re.search(
+        r"public final class AorusPluginRuntimeManager \{(.*?)\n\}", stub_text, re.S
+    )
+    if block is None:
+        fail(errors, "plugin UI stubs no longer declare AorusPluginRuntimeManager")
+        return
+
+    def normalized(line: str) -> str:
+        return " ".join(line.split())
+
+    real = {normalized(line) for line in runtime_text.split("\n")}
+    declared = 0
+    for line in block.group(1).split("\n"):
+        text = normalized(line)
+        if not text.startswith("public func "):
+            continue
+        declared += 1
+        # The real declaration opens its body on the same line; the stub closes it there.
+        signature = text.split(" {")[0]
+        if not any(candidate.startswith(signature + " {") for candidate in real):
+            fail(
+                errors,
+                f"plugin UI stub has drifted from AorusPluginRuntime: {signature}",
+            )
+    if declared == 0:
+        fail(errors, "plugin UI stubs declare no runtime methods to check")
 
 
 # Files that exist under both `AorusGram/Sources` (the core module) and

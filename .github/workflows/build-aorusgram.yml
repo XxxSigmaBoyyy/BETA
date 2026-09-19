@@ -183,6 +183,26 @@ jobs:
             echo "parsing $source"
             swiftc -frontend -parse "$source"
           done
+          # Parsing is not enough for the plugin screens: a property whose name a Telegram
+          # base class already uses, a case pattern from a type with the same-looking name
+          # and an optional wrapped twice all parse perfectly and each one cost a 40-minute
+          # Bazel run. The file's Telegram imports are replaced by stubs copied from the
+          # pinned tree, and the body is type-checked for real against the iOS SDK.
+          mkdir -p /tmp/aorus-plugin-ui
+          sed -E '/^import (Display|AccountContext|TelegramPresentationData|TelegramCore|Postbox|SwiftSignalKit|ContextUI|QuickLook|AorusGram)$/d' \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/Plugins/AorusPluginControllers.swift \
+            > /tmp/aorus-plugin-ui/AorusPluginControllers.swift
+          swiftc -typecheck \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -target arm64-apple-ios13.0 \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginModel.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginStore.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginPrelude.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginSyntax.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginSandbox.swift \
+            aorusgram/scripts/tests/AorusPluginUIStubs.swift \
+            /tmp/aorus-plugin-ui/AorusPluginControllers.swift
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \
