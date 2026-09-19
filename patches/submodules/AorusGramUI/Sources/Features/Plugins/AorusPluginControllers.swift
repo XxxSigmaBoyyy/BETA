@@ -24,6 +24,7 @@ private enum AorusPluginUIString {
     case name, description, version, author, icon, accent, reviewPermissions, grantAndEnable, noPermissions, syntaxReady
     case status, running, stopped, failed, diagnostics, commands, events, noCommands
     case isolation, available, unavailable, granted, outgoingHook, active, inactive, customColor
+    case sourceChangedDisabled
 
     var text: String {
         switch self {
@@ -72,6 +73,7 @@ private enum AorusPluginUIString {
         case .active: return aorusL("Активен", "Active")
         case .inactive: return aorusL("Неактивен", "Inactive")
         case .customColor: return aorusL("Свой цвет", "Custom color")
+        case .sourceChangedDisabled: return aorusL("Код изменился, поэтому плагин выключен, а выданные разрешения отозваны.", "The code changed, so the plugin was switched off and the permissions it had were revoked.")
         }
     }
 }
@@ -948,6 +950,7 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
     @objc private func save() {
         let source = editor.text ?? ""
         let sourceChanged = source != record.source
+        let wasEnabled = record.manifest.isEnabled
         record.source = source
         do {
             if sourceChanged {
@@ -960,9 +963,54 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
             }
             title = record.manifest.name
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            // Editing the code revokes the grants that were given for the old code and
+            // switches the plugin off — correct, and invisible: the editor looked the same
+            // afterwards, so the obvious next step was to go and try the new commands,
+            // which of course did nothing. Say it, and offer the one action that fixes it.
+            if sourceChanged, wasEnabled, !record.manifest.isEnabled {
+                offerReenable()
+            }
         } catch {
             appendConsole("ERROR: \(error.localizedDescription)")
         }
+    }
+
+    private func offerReenable() {
+        let requested = AorusPluginPermission.requestedBySource(record.source)
+        let lines = requested.sorted { $0.rawValue < $1.rawValue }.map { permissionTitle($0) }
+        let detail = lines.isEmpty ? AorusPluginUIString.noPermissions.text : lines.joined(separator: "\n")
+        let alert = UIAlertController(
+            title: AorusPluginUIString.reviewPermissions.text,
+            message: AorusPluginUIString.sourceChangedDisabled.text + "\n\n" + detail,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
+        alert.addAction(UIAlertAction(title: AorusPluginUIString.grantAndEnable.text, style: .default) { [weak self] _ in
+            guard let self else { return }
+            do {
+                try AorusPluginStore.shared.setPermissionState(
+                    AorusPluginPermissionState(sourceDigest: AorusPluginStore.sourceDigest(self.record.source), granted: requested),
+                    for: self.record.manifest.id
+                )
+                var manifest = self.record.manifest
+                manifest.isEnabled = true
+                try AorusPluginStore.shared.updateManifest(manifest)
+                self.record.manifest = manifest
+                AorusPluginRuntimeManager.shared.start(id: manifest.id) { [weak self] error in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let error {
+                            self.appendConsole("ERROR: \(error.message)")
+                        } else {
+                            self.appendConsole(AorusPluginUIString.running.text)
+                        }
+                    }
+                }
+            } catch {
+                self.appendConsole("ERROR: \(error.localizedDescription)")
+            }
+        })
+        present(alert, animated: true)
     }
 
     @objc private func runPlugin() {

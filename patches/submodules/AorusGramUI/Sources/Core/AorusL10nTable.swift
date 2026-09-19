@@ -53,6 +53,7 @@ enum AorusL10nTable {
     ]
 
     private static let it: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Il codice è cambiato, quindi il plugin è stato disattivato e le sue autorizzazioni revocate.",
         "Running": "In esecuzione",
         "Stopped": "Fermo",
         "Failed": "Errore",
@@ -769,6 +770,7 @@ enum AorusL10nTable {
     ]
 
     private static let pl: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod się zmienił, więc wtyczka została wyłączona, a przyznane uprawnienia cofnięte.",
         "Running": "Działa",
         "Stopped": "Zatrzymana",
         "Failed": "Błąd",
@@ -1485,6 +1487,7 @@ enum AorusL10nTable {
     ]
 
     private static let nl: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "De code is gewijzigd, dus de plug-in is uitgeschakeld en de verleende machtigingen zijn ingetrokken.",
         "Running": "Actief",
         "Stopped": "Gestopt",
         "Failed": "Fout",
@@ -2201,6 +2204,7 @@ enum AorusL10nTable {
     ]
 
     private static let ca: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "El codi ha canviat, així que el complement s'ha desactivat i els permisos concedits s'han revocat.",
         "Running": "En execució",
         "Stopped": "Aturat",
         "Failed": "Error",
@@ -2917,6 +2921,7 @@ enum AorusL10nTable {
     ]
 
     private static let id: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kode berubah, jadi plugin dimatikan dan izin yang diberikan dicabut.",
         "Running": "Berjalan",
         "Stopped": "Berhenti",
         "Failed": "Gagal",
@@ -3633,6 +3638,7 @@ enum AorusL10nTable {
     ]
 
     private static let ms: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod telah berubah, jadi pemalam dimatikan dan kebenaran yang diberikan ditarik balik.",
         "Running": "Berjalan",
         "Stopped": "Dihentikan",
         "Failed": "Gagal",
@@ -4349,6 +4355,7 @@ enum AorusL10nTable {
     ]
 
     private static let be: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код змяніўся, таму ўбудова выключана, а выдадзеныя дазволы адкліканыя.",
         "Running": "Працуе",
         "Stopped": "Спынена",
         "Failed": "Збой",
@@ -5065,6 +5072,7 @@ enum AorusL10nTable {
     ]
 
     private static let uz: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod o'zgardi, shuning uchun plagin o'chirildi va berilgan ruxsatlar bekor qilindi.",
         "Running": "Ishlayapti",
         "Stopped": "To'xtatilgan",
         "Failed": "Xato",
@@ -5781,6 +5789,7 @@ enum AorusL10nTable {
     ]
 
     private static let ko: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "코드가 바뀌어 플러그인이 꺼지고 부여된 권한이 취소되었습니다.",
         "Running": "실행 중",
         "Stopped": "중지됨",
         "Failed": "실패",
@@ -6497,6 +6506,7 @@ enum AorusL10nTable {
     ]
 
     private static let ar: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "تغيّر الكود، لذلك أُوقفت الإضافة وسُحبت الأذونات الممنوحة لها.",
         "Running": "قيد التشغيل",
         "Stopped": "متوقفة",
         "Failed": "فشل",
@@ -7213,6 +7223,7 @@ enum AorusL10nTable {
     ]
 
     private static let fa: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "کد تغییر کرد، بنابراین افزونه خاموش شد و دسترسی‌های داده‌شده لغو شدند.",
         "Running": "در حال اجرا",
         "Stopped": "متوقف",
         "Failed": "خطا",
@@ -7929,6 +7940,7 @@ enum AorusL10nTable {
     ]
 
     private static let kk: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код өзгерді, сондықтан плагин өшірілді және берілген рұқсаттар қайтарып алынды.",
         "Running": "Жұмыс істеп тұр",
         "Stopped": "Тоқтатылған",
         "Failed": "Қате",
@@ -8645,6 +8657,7 @@ enum AorusL10nTable {
     ]
 
     private static let zhHans: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "代码已更改，因此插件已关闭，已授予的权限也被收回。",
         "Running": "运行中",
         "Stopped": "已停止",
         "Failed": "失败",
@@ -9362,6 +9375,7 @@ enum AorusL10nTable {
 
 
     private static let zhHant: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "程式碼已變更，因此外掛程式已關閉，已授予的權限也被收回。",
         "Running": "執行中",
         "Stopped": "已停止",
         "Failed": "失敗",
@@ -10078,6 +10092,7 @@ enum AorusL10nTable {
     ]
 
     private static let ja: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "コードが変わったため、プラグインは停止され、与えられていた権限は取り消されました。",
         "Running": "実行中",
         "Stopped": "停止中",
         "Failed": "失敗",
@@ -10794,6 +10809,7 @@ enum AorusL10nTable {
     ]
 
     private static let fi: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koodi muuttui, joten laajennus kytkettiin pois ja sille myönnetyt oikeudet peruttiin.",
         "Running": "Käynnissä",
         "Stopped": "Pysäytetty",
         "Failed": "Virhe",
@@ -11510,6 +11526,7 @@ enum AorusL10nTable {
     ]
 
     private static let he: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "הקוד השתנה, ולכן התוסף כובה וההרשאות שניתנו לו בוטלו.",
         "Running": "פועל",
         "Stopped": "מופסק",
         "Failed": "תקלה",
@@ -12226,6 +12243,7 @@ enum AorusL10nTable {
     ]
 
     private static let hr: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod se promijenio, pa je dodatak isključen, a dodijeljena dopuštenja opozvana.",
         "Running": "Radi",
         "Stopped": "Zaustavljen",
         "Failed": "Greška",
@@ -12942,6 +12960,7 @@ enum AorusL10nTable {
     ]
 
     private static let sr: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код се променио, па је додатак искључен, а додељене дозволе опозване.",
         "Running": "Ради",
         "Stopped": "Заустављен",
         "Failed": "Грешка",
@@ -13658,6 +13677,7 @@ enum AorusL10nTable {
     ]
 
     private static let cs: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kód se změnil, plugin byl proto vypnut a udělená oprávnění odebrána.",
         "Running": "Běží",
         "Stopped": "Zastaven",
         "Failed": "Chyba",
@@ -14374,6 +14394,7 @@ enum AorusL10nTable {
     ]
 
     private static let sk: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kód sa zmenil, doplnok bol preto vypnutý a udelené povolenia odobrané.",
         "Running": "Beží",
         "Stopped": "Zastavený",
         "Failed": "Chyba",
@@ -15090,6 +15111,7 @@ enum AorusL10nTable {
     ]
 
     private static let ro: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Codul s-a schimbat, așa că pluginul a fost oprit, iar permisiunile acordate au fost retrase.",
         "Running": "În execuție",
         "Stopped": "Oprit",
         "Failed": "Eroare",
@@ -15806,6 +15828,7 @@ enum AorusL10nTable {
     ]
 
     private static let hu: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "A kód megváltozott, ezért a bővítmény kikapcsolt, és a megadott engedélyeket visszavontuk.",
         "Running": "Fut",
         "Stopped": "Leállítva",
         "Failed": "Hiba",
@@ -16522,6 +16545,7 @@ enum AorusL10nTable {
     ]
 
     private static let nb: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koden er endret, så programtillegget ble slått av og tillatelsene det hadde ble trukket tilbake.",
         "Running": "Kjører",
         "Stopped": "Stoppet",
         "Failed": "Feil",
@@ -17238,6 +17262,7 @@ enum AorusL10nTable {
     ]
 
     private static let sv: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koden ändrades, så tillägget stängdes av och behörigheterna det hade återkallades.",
         "Running": "Körs",
         "Stopped": "Stoppat",
         "Failed": "Fel",
@@ -17954,6 +17979,7 @@ enum AorusL10nTable {
     ]
 
     private static let vi: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Mã đã thay đổi nên tiện ích bị tắt và các quyền đã cấp bị thu hồi.",
         "Running": "Đang chạy",
         "Stopped": "Đã dừng",
         "Failed": "Lỗi",
@@ -18670,6 +18696,7 @@ enum AorusL10nTable {
     ]
 
     private static let uk: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код змінився, тому плагін вимкнено, а видані дозволи відкликано.",
         "Running": "Працює",
         "Stopped": "Зупинено",
         "Failed": "Збій",
@@ -19395,6 +19422,7 @@ enum AorusL10nTable {
     ]
 
     private static let es: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "El código cambió, así que el complemento se desactivó y se revocaron sus permisos.",
         "Running": "Activo",
         "Stopped": "Detenido",
         "Failed": "Fallo",
@@ -20120,6 +20148,7 @@ enum AorusL10nTable {
     ]
 
     private static let pt: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "O código mudou, então o plugin foi desativado e as permissões dele foram revogadas.",
         "Running": "Em execução",
         "Stopped": "Parado",
         "Failed": "Falha",
@@ -20845,6 +20874,7 @@ enum AorusL10nTable {
     ]
 
     private static let de: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Der Code hat sich geändert, deshalb wurde die Erweiterung abgeschaltet und ihre Berechtigungen entzogen.",
         "Running": "Läuft",
         "Stopped": "Gestoppt",
         "Failed": "Fehler",
@@ -21570,6 +21600,7 @@ enum AorusL10nTable {
     ]
 
     private static let fr: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Le code a changé, l'extension a donc été désactivée et ses autorisations révoquées.",
         "Running": "En cours",
         "Stopped": "Arrêtée",
         "Failed": "Échec",
@@ -22295,6 +22326,7 @@ enum AorusL10nTable {
     ]
 
     private static let tr: [String: String] = [
+        "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod değişti, bu yüzden eklenti kapatıldı ve verilen izinler geri alındı.",
         "Running": "Çalışıyor",
         "Stopped": "Durduruldu",
         "Failed": "Hata",
