@@ -123,11 +123,11 @@ public final class AntiSpoofManager {
             fmt.locale = Locale(identifier: "ru_RU")
             switch self {
             case .online:
-                return "в сети • AORUS"
+                return "в сети - AORUS"
             case .recently(let date, let kind):
-                return "был(а) \(fmt.localizedString(for: date, relativeTo: Date())) (\(kind.description)) • AORUS"
+                return "был(а) \(fmt.localizedString(for: date, relativeTo: Date())) (\(kind.description)) - AORUS"
             case .lastSeen(let date):
-                return "был(а) \(fmt.localizedString(for: date, relativeTo: Date())) • AORUS"
+                return "был(а) \(fmt.localizedString(for: date, relativeTo: Date())) - AORUS"
             case .unknown:
                 return ""
             }

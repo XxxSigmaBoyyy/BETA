@@ -14,7 +14,7 @@ import CryptoKit
 // A message is authenticated-encrypted with ChaCha20-Poly1305 and only then
 // spread across zero-width Unicode characters. Two key tiers:
 //
-//   • App key — a 256-bit key compiled into every AorusGram build. Any AorusGram
+//   - App key — a 256-bit key compiled into every AorusGram build. Any AorusGram
 //     user decrypts automatically; nobody without the app sees anything but the
 //     cover text. HONESTLY: because the key ships in every copy of the app, a
 //     determined reverse-engineer who extracts it from the binary can read app-key
@@ -22,7 +22,7 @@ import CryptoKit
 //     from casual inspection — it is not proof against someone who pulls the key
 //     out of the IPA. That is unavoidable for "any AorusGram user can read it".
 //
-//   • Passphrase — the key is stretched from a passphrase the sender and reader
+//   - Passphrase — the key is stretched from a passphrase the sender and reader
 //     agree on out of band, peppered with the app key, through 210 000 rounds of
 //     PBKDF2-HMAC-SHA256. This tier is genuinely uncrackable: the secret is not in
 //     the app, so extracting the binary buys nothing, and the only attack left is

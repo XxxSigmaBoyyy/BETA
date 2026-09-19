@@ -24,14 +24,14 @@ import CoreMedia
 // AorusGramUI settings screen, so the two modules stay decoupled.
 //
 // Two shifter modes, picked per preset:
-//   • formantMove = false ("anonymous"): FORMANT-PRESERVING LPC vocoder — each
+//   - formantMove = false ("anonymous"): FORMANT-PRESERVING LPC vocoder — each
 //     sample is inverse-filtered to a near-white residual, the residual is pitch-
 //     shifted with the granular delay line, then re-synthesised through the ORIGINAL
 //     all-pole vocal-tract filter, so the timbre/identity stays put while the pitch
 //     moves (a clean disguise, not a chipmunk). LPC is re-estimated every hop with
 //     bandwidth expansion + pre-emphasis; output is AGC-levelled, soft-clipped, and
 //     a stability guard falls back to the dry residual on any non-finite frame.
-//   • formantMove = true (male / female / child): PLAIN granular pitch shift of the
+//   - formantMove = true (male / female / child): PLAIN granular pitch shift of the
 //     full signal, so the formants move WITH the pitch — a real vocal-tract resize,
 //     which is what actually makes a voice sound male/female/child (formant-
 //     preserving only ever sounds like the same person pitched up/down).
@@ -110,9 +110,9 @@ public final class AorusVoiceTwin {
     // Resolve the active preset to a full voice character, not just pitch.
     //
     // Two design fixes vs. the earlier version, both audible:
-    //  • wetMix is 1.0 everywhere — the old <1 values mixed the DRY (original-pitch)
+    //  - wetMix is 1.0 everywhere — the old <1 values mixed the DRY (original-pitch)
     //    signal back in, so you heard two pitches at once (a phasey "double" voice).
-    //  • gender/age presets use formantMove = true (formants follow the pitch), which
+    //  - gender/age presets use formantMove = true (formants follow the pitch), which
     //    is what actually makes a voice sound male/female/child; formant-preserving
     //    only kept the original vocal-tract size, so it sounded like the same person
     //    pitched up/down. "anonymous" keeps formant preservation (pure disguise).

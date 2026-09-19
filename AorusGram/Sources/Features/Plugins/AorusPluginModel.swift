@@ -29,7 +29,9 @@ public enum AorusPluginIcon {
     }
 }
 
-/// Tile colours, as "RRGGBB".
+/// Tile colours, as "RRGGBB". `all` is the quick row on the picker, not the whole range:
+/// any colour that spells six hex digits is kept as it is, so the picker can offer the full
+/// gamut and the tile shows the exact colour that was chosen.
 public enum AorusPluginAccent {
     public static let all: [String] = [
         "5B4DFF", "7C3AED", "BF5AF2", "FF2D92", "FF375F", "FF453A", "FF9F0A", "FFD60A",
@@ -38,7 +40,10 @@ public enum AorusPluginAccent {
     public static let fallback = "5B4DFF"
 
     public static func normalized(_ value: String) -> String {
-        return all.contains(value.uppercased()) ? value.uppercased() : fallback
+        let trimmed = value.hasPrefix("#") ? String(value.dropFirst()) : value
+        let upper = trimmed.uppercased()
+        guard upper.count == 6, upper.allSatisfy({ $0.isHexDigit }) else { return fallback }
+        return upper
     }
 }
 
@@ -133,14 +138,20 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case inAppBrowser
     case artificialIntelligence
 
-    public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {
-        let probes: [(AorusPluginPermission, [String])] = [
+    /// What each permission looks like in a plugin's source. The consent sheet is built
+    /// from this, so a capability with no needle here is one the person is never asked
+    /// about and the plugin is therefore never granted — it is checked against the prelude
+    /// by `AorusPluginCoreTests`, needle by needle.
+    public static let sourceProbes: [(AorusPluginPermission, [String])] = [
             (.network, ["aorus.http"]),
             (.sendMessages, ["aorus.messages.send"]),
             (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get"]),
             (.openChats, ["aorus.chats.open", "aorus.app.openChat"]),
             (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount"]),
-            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share"]),
+            // `toast` is gated on the same permission as the other dialogs and had no
+            // needle, so a plugin whose only visible output is a toast was granted nothing
+            // and every message it showed went nowhere, silently.
+            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
             (.incomingMessages, ["aorus.on('message'", "aorus.on(\"message\"", "aorus.once('message'", "aorus.once(\"message\""]),
@@ -158,8 +169,10 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
                 "type: 'link'", "type: \"link\"", "\"type\":\"link\"", ".link({",
             ]),
             (.artificialIntelligence, ["aorus.ai."]),
-        ]
-        return Set(probes.compactMap { permission, needles in
+    ]
+
+    public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {
+        return Set(sourceProbes.compactMap { permission, needles in
             needles.contains(where: source.contains) ? permission : nil
         })
     }

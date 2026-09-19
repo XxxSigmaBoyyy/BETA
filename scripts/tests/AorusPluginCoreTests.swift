@@ -49,6 +49,43 @@ expect(
     AorusPluginPermission.requestedBySource(appIntegrationSource) == [.accountProfile, .openChats, .dialogs, .inAppBrowser],
     "app integration aliases request their privileged capabilities"
 )
+// The consent sheet is built from the probe table, so a capability with no needle is one
+// nobody is ever asked about and the plugin is therefore never granted — its calls fail
+// silently forever. `aorus.ui.toast` was exactly that.
+for permission in AorusPluginPermission.allCases {
+    expect(
+        AorusPluginPermission.sourceProbes.contains(where: { $0.0 == permission }),
+        "permission \(permission.rawValue) has no way to be requested from a source"
+    )
+}
+// And a needle that names an API the prelude does not publish can never match. The last
+// component has to exist as a member of the public API, and a subscribed event has to be
+// one the prelude accepts.
+for (permission, needles) in AorusPluginPermission.sourceProbes {
+    for needle in needles {
+        if needle.hasPrefix("aorus.on(") || needle.hasPrefix("aorus.once(") {
+            let quoted = needle.drop(while: { $0 != "'" && $0 != "\"" }).dropFirst()
+            let event = String(quoted.prefix(while: { $0 != "'" && $0 != "\"" }))
+            expect(
+                AorusPluginPrelude.events.contains(event),
+                "\(permission.rawValue) watches for an event the prelude does not accept: \(needle)"
+            )
+            continue
+        }
+        guard needle.hasPrefix("aorus.") else { continue }
+        for member in needle.split(separator: ".").dropFirst() {
+            expect(
+                AorusPluginPrelude.source.contains("\(member):"),
+                "\(permission.rawValue) watches for an API the prelude does not publish: \(needle)"
+            )
+        }
+    }
+}
+// Fail-closed is only safe if it never fires on a working system: with the execution limit
+// missing, no plugin starts at all and every screen still looks fine, which reads on a
+// device as the whole feature being dead.
+expect(AorusPluginSandbox.watchdogAvailable, "JavaScriptCore exposes the execution time limit")
+
 // A `url:` key inside an http payload is not a request for the browser. Over-asking on the
 // consent sheet is not the safe direction: it is how a person learns to grant the sheet
 // without reading it.

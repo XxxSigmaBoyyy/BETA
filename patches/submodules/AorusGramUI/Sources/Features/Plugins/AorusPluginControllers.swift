@@ -22,6 +22,8 @@ private enum AorusPluginUIString {
     case plugins, emptyTitle, emptyBody, create, importFile, enabled, autostart, editCode
     case configure, settings, permissions, duplicate, export, delete, save, run, stop, console, documentation
     case name, description, version, author, icon, accent, reviewPermissions, grantAndEnable, noPermissions, syntaxReady
+    case status, running, stopped, failed, diagnostics, commands, events, noCommands
+    case isolation, available, unavailable, granted, outgoingHook, active, inactive, customColor
 
     var text: String {
         switch self {
@@ -54,6 +56,22 @@ private enum AorusPluginUIString {
         case .grantAndEnable: return aorusL("Разрешить и включить", "Allow and Enable")
         case .noPermissions: return aorusL("Дополнительные разрешения не требуются", "No additional permissions are required")
         case .syntaxReady: return aorusL("Ошибок синтаксиса нет", "No syntax errors")
+        case .status: return aorusL("Состояние", "Status")
+        case .running: return aorusL("Работает", "Running")
+        case .stopped: return aorusL("Остановлен", "Stopped")
+        case .failed: return aorusL("Сбой", "Failed")
+        case .diagnostics: return aorusL("Диагностика", "Diagnostics")
+        case .commands: return aorusL("Команды", "Commands")
+        case .events: return aorusL("События", "Events")
+        case .noCommands: return aorusL("Плагин не зарегистрировал команд", "The plugin registered no commands")
+        case .isolation: return aorusL("Изоляция выполнения", "Execution isolation")
+        case .available: return aorusL("Доступна", "Available")
+        case .unavailable: return aorusL("Недоступна", "Unavailable")
+        case .granted: return aorusL("Выдано", "Granted")
+        case .outgoingHook: return aorusL("Перехват исходящих", "Outgoing interception")
+        case .active: return aorusL("Активен", "Active")
+        case .inactive: return aorusL("Неактивен", "Inactive")
+        case .customColor: return aorusL("Свой цвет", "Custom color")
         }
     }
 }
@@ -101,6 +119,12 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
         integrationObserver = NotificationCenter.default.addObserver(forName: Notification.Name("aorusgram.plugins.integrationsChanged"), object: nil, queue: .main) { [weak self] _ in self?.reload() }
         reload()
         displayNodeDidLoad()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // The badges read the runtime, which changes while other screens are open.
+        reload()
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
@@ -181,7 +205,7 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
         }
         let cell = tableView.dequeueReusableCell(withIdentifier: "plugin", for: indexPath) as! AorusPluginCell
         let manifest = manifests[indexPath.row]
-        cell.configure(manifest: manifest, theme: presentationData.theme)
+        cell.configure(manifest: manifest, record: AorusPluginStore.shared.load(id: manifest.id), theme: presentationData.theme)
         cell.onToggle = { [weak self] value in self?.setEnabled(value, manifest: manifest) }
         return cell
     }
@@ -225,7 +249,7 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
     }
 
     private func presentPermissionReview(record: AorusPluginRecord, requested: Set<AorusPluginPermission>) {
-        let lines = requested.sorted { $0.rawValue < $1.rawValue }.map { "• \(permissionTitle($0))" }
+        let lines = requested.sorted { $0.rawValue < $1.rawValue }.map { "- \(permissionTitle($0))" }
         let message = lines.isEmpty ? AorusPluginUIString.noPermissions.text : lines.joined(separator: "\n")
         let alert = UIAlertController(title: AorusPluginUIString.reviewPermissions.text, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel) { _ in self.reload() })
@@ -287,6 +311,11 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
         displayNodeDidLoad()
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        reload()
+    }
+
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         let top = navigationLayout(layout: layout).navigationFrame.maxY
@@ -298,20 +327,77 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
         record = updated; title = updated.manifest.name; tableView.reloadData()
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int { 3 }
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? 2 : (section == 1 ? 5 : 3) }
+    /// The screens this plugin has. Settings is only here when the plugin declared some:
+    /// a row that always opens an empty list teaches people the feature is broken.
+    private enum Screen {
+        case appearance
+        case editor
+        case settings
+        case permissions
+        case documentation
+    }
+
+    private var screens: [Screen] {
+        var result: [Screen] = [.appearance, .editor]
+        if !AorusPluginRuntimeManager.shared.settingsSchema(id: record.manifest.id).isEmpty {
+            result.append(.settings)
+        }
+        result.append(contentsOf: [.permissions, .documentation])
+        return result
+    }
+
+    private func title(for screen: Screen) -> String {
+        switch screen {
+        case .appearance: return AorusPluginUIString.configure.text
+        case .editor: return AorusPluginUIString.editCode.text
+        case .settings: return AorusPluginUIString.settings.text
+        case .permissions: return AorusPluginUIString.permissions.text
+        case .documentation: return AorusPluginUIString.documentation.text
+        }
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int { 4 }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch section {
+        case 0: return 1
+        case 1: return 2
+        case 2: return screens.count
+        default: return 3
+        }
+    }
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        if indexPath.section == 0 {
+            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+            cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
+            cell.textLabel?.text = AorusPluginUIString.status.text
+            cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
+            let state = AorusPluginStatus(pluginId: record.manifest.id, record: record)
+            cell.detailTextLabel?.text = state.detail
+            cell.detailTextLabel?.textColor = state.isFailure
+                ? presentationData.theme.list.itemDestructiveColor
+                : presentationData.theme.list.itemSecondaryTextColor
+            cell.detailTextLabel?.numberOfLines = 0
+            cell.accessoryView = AorusPluginBadgeView(text: state.badge, color: state.color)
+            cell.accessoryType = .none
+            let indicator = UIImageView(image: UIImage(systemName: "circle.fill"))
+            indicator.tintColor = state.color
+            cell.imageView?.image = indicator.image
+            cell.imageView?.tintColor = state.color
+            return cell
+        }
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
         cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
         cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
-        if indexPath.section == 0 {
+        if indexPath.section == 1 {
             let toggle = UISwitch()
             if indexPath.row == 0 { cell.textLabel?.text = AorusPluginUIString.enabled.text; toggle.isOn = record.manifest.isEnabled; toggle.addTarget(self, action: #selector(enabledChanged(_:)), for: .valueChanged) }
             else { cell.textLabel?.text = AorusPluginUIString.autostart.text; toggle.isOn = record.manifest.autostart; toggle.addTarget(self, action: #selector(autostartChanged(_:)), for: .valueChanged) }
             cell.accessoryView = toggle
-        } else if indexPath.section == 1 {
-            let titles = [AorusPluginUIString.configure.text, AorusPluginUIString.editCode.text, AorusPluginUIString.settings.text, AorusPluginUIString.permissions.text, AorusPluginUIString.documentation.text]
-            cell.textLabel?.text = titles[indexPath.row]; cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .none
+        } else if indexPath.section == 2 {
+            cell.textLabel?.text = title(for: screens[indexPath.row]); cell.accessoryType = .disclosureIndicator
         } else {
             let actionTitles = [AorusPluginUIString.duplicate.text, AorusPluginUIString.export.text, AorusPluginUIString.delete.text]
             cell.textLabel?.text = actionTitles[indexPath.row]
@@ -322,14 +408,18 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.section != 0 else { return }
-        if indexPath.section == 1 {
-            switch indexPath.row {
-            case 0: (navigationController as? NavigationController)?.pushViewController(AorusPluginMetadataController(context: context, record: record))
-            case 1: (navigationController as? NavigationController)?.pushViewController(AorusPluginEditorController(context: context, record: record))
-            case 2: (navigationController as? NavigationController)?.pushViewController(AorusPluginSettingsController(context: context, record: record))
-            case 3: (navigationController as? NavigationController)?.pushViewController(AorusPluginPermissionsController(context: context, record: record))
-            default: (navigationController as? NavigationController)?.pushViewController(AorusPluginDocsController(context: context))
+        if indexPath.section == 0 {
+            (navigationController as? NavigationController)?.pushViewController(AorusPluginDiagnosticsController(context: context, record: record))
+            return
+        }
+        guard indexPath.section != 1 else { return }
+        if indexPath.section == 2 {
+            switch screens[indexPath.row] {
+            case .appearance: (navigationController as? NavigationController)?.pushViewController(AorusPluginMetadataController(context: context, record: record))
+            case .editor: (navigationController as? NavigationController)?.pushViewController(AorusPluginEditorController(context: context, record: record))
+            case .settings: (navigationController as? NavigationController)?.pushViewController(AorusPluginSettingsController(context: context, record: record))
+            case .permissions: (navigationController as? NavigationController)?.pushViewController(AorusPluginPermissionsController(context: context, record: record))
+            case .documentation: (navigationController as? NavigationController)?.pushViewController(AorusPluginDocsController(context: context))
             }
         } else {
             switch indexPath.row {
@@ -482,7 +572,7 @@ private final class AorusPluginMetadataController: ViewController, UITableViewDa
         } else {
             (navigationController as? NavigationController)?.pushViewController(AorusPluginVisualPickerController(
                 presentationData: presentationData,
-                mode: .colors,
+                mode: .colors(icon: record.manifest.icon),
                 selected: record.manifest.accent,
                 changed: { [weak self] value in self?.record.manifest.accent = value; self?.persist() }
             ))
@@ -574,7 +664,7 @@ private final class AorusPluginLongTextController: ViewController {
 private final class AorusPluginVisualPickerController: ViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     enum Mode {
         case icons(accent: String)
-        case colors
+        case colors(icon: String)
     }
 
     private let presentationData: PresentationData
@@ -582,6 +672,9 @@ private final class AorusPluginVisualPickerController: ViewController, UICollect
     private var selected: String
     private let changed: (String) -> Void
     private let collectionView: UICollectionView
+    private let preview = UIView()
+    private let previewIcon = UIImageView()
+    private var colorPickerDelegate: AnyObject?
 
     init(presentationData: PresentationData, mode: Mode, selected: String, changed: @escaping (String) -> Void) {
         self.presentationData = presentationData
@@ -596,7 +689,14 @@ private final class AorusPluginVisualPickerController: ViewController, UICollect
         super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: presentationData, style: .glass))
         switch mode {
         case .icons: title = AorusPluginUIString.icon.text
-        case .colors: title = AorusPluginUIString.accent.text
+        case .colors:
+            title = AorusPluginUIString.accent.text
+            navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: AorusPluginUIString.customColor.text,
+                style: .plain,
+                target: self,
+                action: #selector(chooseCustomColor)
+            )
         }
     }
 
@@ -609,14 +709,84 @@ private final class AorusPluginVisualPickerController: ViewController, UICollect
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.register(AorusPluginPickerCell.self, forCellWithReuseIdentifier: "choice")
+        preview.layer.cornerRadius = 22
+        preview.layer.cornerCurve = .continuous
+        previewIcon.contentMode = .center
+        previewIcon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 34, weight: .semibold)
+        preview.addSubview(previewIcon)
+        displayNode.view.addSubview(preview)
         displayNode.view.addSubview(collectionView)
+        updatePreview()
         displayNodeDidLoad()
+    }
+
+    /// The tile as it will look, in the colour and with the glyph being chosen. Choosing a
+    /// colour from a grid of squares tells you nothing about the icon it will carry.
+    private func updatePreview() {
+        let color: UIColor
+        let icon: String
+        switch mode {
+        case let .icons(accent):
+            color = pluginColor(accent)
+            icon = selected
+        case let .colors(current):
+            color = pluginColor(selected)
+            icon = current
+        }
+        preview.backgroundColor = color.withAlphaComponent(0.16)
+        previewIcon.image = UIImage(systemName: AorusPluginIcon.normalized(icon))
+        previewIcon.tintColor = color
     }
 
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         let top = navigationLayout(layout: layout).navigationFrame.maxY
-        transition.updateFrame(view: collectionView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: layout.size.height - top))
+        let previewSide: CGFloat = 84
+        transition.updateFrame(view: preview, frame: CGRect(x: (layout.size.width - previewSide) / 2, y: top + 18, width: previewSide, height: previewSide))
+        previewIcon.frame = preview.bounds
+        let gridTop = top + 18 + previewSide + 18
+        transition.updateFrame(view: collectionView, frame: CGRect(x: 0, y: gridTop, width: layout.size.width, height: max(0, layout.size.height - gridTop)))
+    }
+
+    @objc private func chooseCustomColor() {
+        guard #available(iOS 14.0, *) else {
+            promptHexColor()
+            return
+        }
+        let picker = UIColorPickerViewController()
+        picker.selectedColor = pluginColor(selected)
+        picker.supportsAlpha = false
+        let delegate = AorusPluginColorPickerDelegate { [weak self] color in
+            guard let self else { return }
+            self.apply(AorusPluginAccent.normalized(aorusHexString(color)))
+        }
+        colorPickerDelegate = delegate
+        picker.delegate = delegate
+        present(picker, animated: true)
+    }
+
+    /// iOS 13 has no system colour picker, and a feature that simply vanishes on an older
+    /// phone is not a feature. Six hex digits reach the same place.
+    private func promptHexColor() {
+        let alert = UIAlertController(title: AorusPluginUIString.customColor.text, message: "RRGGBB", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = self.selected
+            field.autocapitalizationType = .allCharacters
+        }
+        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
+        alert.addAction(UIAlertAction(title: AorusPluginUIString.save.text, style: .default) { [weak self, weak alert] _ in
+            guard let self, let value = alert?.textFields?.first?.text else { return }
+            self.apply(AorusPluginAccent.normalized(value))
+        })
+        present(alert, animated: true)
+    }
+
+    private func apply(_ value: String) {
+        selected = value
+        changed(value)
+        collectionView.reloadData()
+        updatePreview()
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { items.count }
@@ -625,16 +795,13 @@ private final class AorusPluginVisualPickerController: ViewController, UICollect
         let value = items[indexPath.item]
         switch mode {
         case let .icons(accent): cell.configure(icon: value, color: pluginColor(accent), selected: value == selected)
-        case .colors: cell.configure(icon: nil, color: pluginColor(value), selected: value == selected)
+        case let .colors(icon): cell.configure(icon: icon, color: pluginColor(value), selected: value == selected, filled: true)
         }
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        selected = items[indexPath.item]
-        changed(selected)
-        collectionView.reloadData()
-        UISelectionFeedbackGenerator().selectionChanged()
+        apply(items[indexPath.item])
     }
 
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
@@ -645,8 +812,12 @@ private final class AorusPluginVisualPickerController: ViewController, UICollect
 
     private var items: [String] {
         switch mode {
-        case .icons: return AorusPluginIcon.all
-        case .colors: return AorusPluginAccent.all
+        case .icons:
+            return AorusPluginIcon.all
+        case .colors:
+            var values = AorusPluginAccent.all
+            if !values.contains(selected) { values.insert(selected, at: 0) }
+            return values
         }
     }
 }
@@ -669,11 +840,11 @@ private final class AorusPluginPickerCell: UICollectionViewCell {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(icon name: String?, color: UIColor, selected: Bool) {
-        background.backgroundColor = name == nil ? color : color.withAlphaComponent(0.16)
+    func configure(icon name: String?, color: UIColor, selected: Bool, filled: Bool = false) {
+        background.backgroundColor = filled ? color : color.withAlphaComponent(0.16)
         // `map` over an optional name would wrap the already-optional image again.
         icon.image = name.flatMap { UIImage(systemName: $0) }
-        icon.tintColor = color
+        icon.tintColor = filled ? .white : color
         check.isHidden = !selected
         contentView.layer.borderWidth = selected ? 2 : 0
         contentView.layer.borderColor = color.cgColor
@@ -1576,11 +1747,229 @@ final class AorusPluginPageController: ViewController, UITableViewDataSource, UI
     }
 }
 
-private final class AorusPluginCell: UITableViewCell {
-    var onToggle: ((Bool) -> Void)?; private let toggle = UISwitch()
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) { super.init(style: .subtitle, reuseIdentifier: reuseIdentifier); accessoryView = toggle; toggle.addTarget(self, action: #selector(changed), for: .valueChanged); selectionStyle = .default }
+/// What a plugin is doing right now, read from the runtime rather than from the manifest.
+/// The manifest says what was asked for; this says what happened.
+private struct AorusPluginStatus {
+    var badge: String
+    var detail: String
+    var color: UIColor
+    var isFailure: Bool
+
+    init(pluginId: String, record: AorusPluginRecord) {
+        let sandbox = AorusPluginRuntimeManager.shared.sandbox(id: pluginId)
+        let granted = AorusPluginStore.shared.permissionState(for: pluginId)
+        let requested = AorusPluginPermission.requestedBySource(record.source)
+        let digestMatches = granted.sourceDigest == AorusPluginStore.sourceDigest(record.source)
+        if let error = sandbox?.lastError, !error.isEmpty {
+            badge = AorusPluginUIString.failed.text
+            detail = error
+            color = .systemRed
+            isFailure = true
+        } else if sandbox?.isHung == true {
+            badge = AorusPluginUIString.failed.text
+            detail = AorusPluginUIString.failed.text
+            color = .systemRed
+            isFailure = true
+        } else if sandbox?.isRunning == true {
+            badge = AorusPluginUIString.running.text
+            detail = AorusPluginUIString.running.text
+            color = .systemGreen
+            isFailure = false
+        } else if !record.manifest.isEnabled {
+            badge = AorusPluginUIString.stopped.text
+            detail = AorusPluginUIString.stopped.text
+            color = .systemGray
+            isFailure = false
+        } else if !digestMatches || !requested.isSubset(of: granted.granted) {
+            badge = AorusPluginUIString.stopped.text
+            detail = AorusPluginUIString.reviewPermissions.text
+            color = .systemOrange
+            isFailure = false
+        } else if !AorusPluginSandbox.watchdogAvailable {
+            badge = AorusPluginUIString.failed.text
+            detail = AorusPluginUIString.isolation.text + ": " + AorusPluginUIString.unavailable.text
+            color = .systemRed
+            isFailure = true
+        } else {
+            badge = AorusPluginUIString.stopped.text
+            detail = AorusPluginUIString.stopped.text
+            color = .systemGray
+            isFailure = false
+        }
+    }
+}
+
+/// A small pill. The list and the card both need one, and a label with a background is not
+/// a badge until it has the padding and the corner to read as one.
+private final class AorusPluginBadgeView: UIView {
+    private let label = UILabel()
+
+    init(text: String, color: UIColor) {
+        super.init(frame: .zero)
+        label.text = text.uppercased()
+        label.font = .systemFont(ofSize: 11, weight: .bold)
+        label.textColor = color
+        addSubview(label)
+        backgroundColor = color.withAlphaComponent(0.16)
+        layer.cornerRadius = 9
+        layer.cornerCurve = .continuous
+        let size = label.sizeThatFits(CGSize(width: 200, height: 40))
+        label.frame = CGRect(x: 9, y: 3, width: min(160, size.width), height: 18)
+        frame = CGRect(x: 0, y: 0, width: label.frame.width + 18, height: 24)
+    }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func configure(manifest: AorusPluginManifest, theme: PresentationTheme) { textLabel?.text = manifest.name; detailTextLabel?.text = manifest.summary.isEmpty ? manifest.version : manifest.summary; textLabel?.textColor = theme.list.itemPrimaryTextColor; detailTextLabel?.textColor = theme.list.itemSecondaryTextColor; imageView?.image = UIImage(systemName: AorusPluginIcon.normalized(manifest.icon)); imageView?.tintColor = pluginColor(manifest.accent); toggle.isOn = manifest.isEnabled }
+}
+
+/// Everything needed to answer "why did nothing happen", on one screen: whether the plugin
+/// is running, what it registered, what it was granted, and whether the system can isolate
+/// its execution at all. Without this the only way to tell a stopped plugin from a working
+/// one that was never granted anything is to read the source and guess.
+private final class AorusPluginDiagnosticsController: ViewController, UITableViewDataSource, UITableViewDelegate {
+    private let record: AorusPluginRecord
+    private let presentationData: PresentationData
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private var rows: [(String, String, Bool)] = []
+
+    init(context: AccountContext, record: AorusPluginRecord) {
+        self.record = record
+        self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: presentationData, style: .glass))
+        title = AorusPluginUIString.diagnostics.text
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadDisplayNode() {
+        displayNode = ViewControllerTracingNode()
+        displayNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
+        tableView.backgroundColor = presentationData.theme.list.blocksBackgroundColor
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.estimatedRowHeight = 52
+        tableView.rowHeight = UITableView.automaticDimension
+        displayNode.view.addSubview(tableView)
+        rebuild()
+        displayNodeDidLoad()
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        let top = navigationLayout(layout: layout).navigationFrame.maxY
+        transition.updateFrame(view: tableView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: layout.size.height - top))
+        tableView.contentInset.bottom = layout.intrinsicInsets.bottom
+    }
+
+    private func rebuild() {
+        let pluginId = record.manifest.id
+        let sandbox = AorusPluginRuntimeManager.shared.sandbox(id: pluginId)
+        let state = AorusPluginStatus(pluginId: pluginId, record: record)
+        let granted = AorusPluginStore.shared.permissionState(for: pluginId).granted
+        let requested = AorusPluginPermission.requestedBySource(record.source)
+        let registration = sandbox?.registration() ?? AorusPluginSandbox.Registration()
+
+        var result: [(String, String, Bool)] = []
+        result.append((AorusPluginUIString.status.text, state.detail, state.isFailure))
+        result.append((
+            AorusPluginUIString.isolation.text,
+            AorusPluginSandbox.watchdogAvailable ? AorusPluginUIString.available.text : AorusPluginUIString.unavailable.text,
+            !AorusPluginSandbox.watchdogAvailable
+        ))
+        result.append((
+            AorusPluginUIString.outgoingHook.text,
+            sandbox?.hasOutgoingHooks == true ? AorusPluginUIString.active.text : AorusPluginUIString.inactive.text,
+            false
+        ))
+        let commands = registration.commands.map { registration.prefix + $0 }
+        result.append((
+            AorusPluginUIString.commands.text,
+            commands.isEmpty ? AorusPluginUIString.noCommands.text : commands.joined(separator: "  "),
+            commands.isEmpty
+        ))
+        result.append((
+            AorusPluginUIString.events.text,
+            registration.events.isEmpty ? "-" : registration.events.joined(separator: "  "),
+            false
+        ))
+        let grantedNames = granted.sorted { $0.rawValue < $1.rawValue }.map { permissionTitle($0) }
+        result.append((
+            AorusPluginUIString.granted.text,
+            grantedNames.isEmpty ? AorusPluginUIString.noPermissions.text : grantedNames.joined(separator: ", "),
+            !requested.isSubset(of: granted)
+        ))
+        // The running plugin's own log. Until now it existed only behind the editor's Run
+        // button, so a plugin that failed while actually installed had nowhere to say so.
+        let log = (sandbox?.recentLog ?? []).suffix(12)
+        if !log.isEmpty {
+            result.append((
+                AorusPluginUIString.console.text,
+                log.map { "[\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n"),
+                log.contains(where: { $0.level == .error })
+            ))
+        }
+        rows = result
+        tableView.reloadData()
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let row = rows[indexPath.row]
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
+        cell.selectionStyle = .none
+        cell.textLabel?.text = row.0
+        cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
+        cell.detailTextLabel?.text = row.1
+        cell.detailTextLabel?.numberOfLines = 0
+        cell.detailTextLabel?.textColor = row.2
+            ? presentationData.theme.list.itemDestructiveColor
+            : presentationData.theme.list.itemSecondaryTextColor
+        return cell
+    }
+}
+
+private final class AorusPluginCell: UITableViewCell {
+    var onToggle: ((Bool) -> Void)?
+    private let toggle = UISwitch()
+    private let accessory = UIStackView()
+    private var badge: AorusPluginBadgeView?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
+        accessory.axis = .horizontal
+        accessory.alignment = .center
+        accessory.spacing = 10
+        accessory.addArrangedSubview(toggle)
+        accessoryView = accessory
+        toggle.addTarget(self, action: #selector(changed), for: .valueChanged)
+        selectionStyle = .default
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The switch says what was asked for. The badge says what is actually happening, which
+    /// is the difference between a plugin that is off and one that was never granted what
+    /// it needs and therefore never ran.
+    func configure(manifest: AorusPluginManifest, record: AorusPluginRecord?, theme: PresentationTheme) {
+        textLabel?.text = manifest.name
+        detailTextLabel?.text = manifest.summary.isEmpty ? manifest.version : manifest.summary
+        textLabel?.textColor = theme.list.itemPrimaryTextColor
+        detailTextLabel?.textColor = theme.list.itemSecondaryTextColor
+        imageView?.image = UIImage(systemName: AorusPluginIcon.normalized(manifest.icon))
+        imageView?.tintColor = pluginColor(manifest.accent)
+        toggle.isOn = manifest.isEnabled
+        badge?.removeFromSuperview()
+        badge = nil
+        if let record {
+            let state = AorusPluginStatus(pluginId: manifest.id, record: record)
+            let view = AorusPluginBadgeView(text: state.badge, color: state.color)
+            accessory.insertArrangedSubview(view, at: 0)
+            badge = view
+        }
+        accessory.frame = CGRect(origin: .zero, size: accessory.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize))
+    }
+
     @objc private func changed() { onToggle?(toggle.isOn) }
 }
 
@@ -1651,6 +2040,34 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
         return marker + aorusL("Разрешает открывать публичные сайты во встроенном браузере.", "Allows public websites in the in-app browser.")
     case .artificialIntelligence:
         return marker + aorusL("Разрешает отправлять запросы AorusAI через защищенный клиентский шлюз.", "Allows AorusAI requests through the protected client gateway.")
+    }
+}
+
+/// The six digits a colour is stored as. The picker hands back a UIColor; the manifest
+/// keeps "RRGGBB", and every tile is drawn from that.
+private func aorusHexString(_ color: UIColor) -> String {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+        return AorusPluginAccent.fallback
+    }
+    let channel: (CGFloat) -> Int = { Int((min(1.0, max(0.0, $0)) * 255.0).rounded()) }
+    return String(format: "%02X%02X%02X", channel(red), channel(green), channel(blue))
+}
+
+@available(iOS 14.0, *)
+private final class AorusPluginColorPickerDelegate: NSObject, UIColorPickerViewControllerDelegate {
+    private let changed: (UIColor) -> Void
+
+    init(changed: @escaping (UIColor) -> Void) {
+        self.changed = changed
+    }
+
+    func colorPickerViewControllerDidSelectColor(_ viewController: UIColorPickerViewController) {
+        changed(viewController.selectedColor)
+    }
+
+    func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+        changed(viewController.selectedColor)
     }
 }
 

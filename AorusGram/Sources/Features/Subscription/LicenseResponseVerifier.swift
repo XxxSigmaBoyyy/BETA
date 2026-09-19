@@ -7,9 +7,9 @@ import CryptoKit
 // PUBLIC key (whose leak is harmless — you cannot forge a signature with it).
 //
 // The signed message binds:
-//   • the client's request nonce  → a captured "paid_active" cannot be replayed
+//   - the client's request nonce  → a captured "paid_active" cannot be replayed
 //     against a different request / device,
-//   • a server timestamp          → stale captures are rejected (freshness window).
+//   - a server timestamp          → stale captures are rejected (freshness window).
 //
 // ROLLOUT SAFETY (this is critical): with no public key provisioned
 // (SubscriptionConfig.responseSigningPublicKeyHex == "") verification is INERT —

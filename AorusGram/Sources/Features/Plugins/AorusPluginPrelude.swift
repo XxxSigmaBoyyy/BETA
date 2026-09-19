@@ -530,6 +530,7 @@ public enum AorusPluginPrelude {
                 return { consumed: true, replacement: null };
             }
             if (typeof result === 'string') { return { consumed: false, replacement: result }; }
+            host.log('debug', 'Command ' + prefix + name + ' handled');
             return { consumed: true, replacement: null };
         }
 
@@ -793,7 +794,18 @@ public enum AorusPluginPrelude {
                 settingsCache = (values && typeof values === 'object' && !Array.isArray(values)) ? values : {};
                 emit('settingsChanged', settings.all());
             },
-            hasHooks: function () { return handlers.send.length > 0 || commandOrder.length > 0; }
+            hasHooks: function () { return handlers.send.length > 0 || commandOrder.length > 0; },
+            // What the plugin actually registered, for the card that answers "why did my
+            // command do nothing". Reading it changes nothing.
+            commandNames: function () { return commandOrder.slice(); },
+            commandPrefix: function () { return prefix; },
+            eventNames: function () {
+                var names = [];
+                for (var i = 0; i < KNOWN_EVENTS.length; i++) {
+                    if (handlers[KNOWN_EVENTS[i]].length > 0) { names.push(KNOWN_EVENTS[i]); }
+                }
+                return names;
+            }
         }));
     })(globalThis.__aorusHost);
     delete globalThis.__aorusHost;

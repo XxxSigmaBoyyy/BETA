@@ -4,11 +4,11 @@ import UIKit
 // Root-level subscription gate.
 //
 // ENFORCEMENT MODEL:
-//  • Production CI requires a provisioned key. A malformed local build fails closed
+//  - Production CI requires a provisioned key. A malformed local build fails closed
 //    for protected features instead of silently becoming an unlocked client.
-//  • The SERVER is the source of truth. The user reaches the chat list only on an
+//  - The SERVER is the source of truth. The user reaches the chat list only on an
 //    active verdict (trial_active / paid_active).
-//  • Offline grace (per spec §12): a cached active license whose active_until has not
+//  - Offline grace (per spec §12): a cached active license whose active_until has not
 //    passed is honoured while offline. Cached-expired → locked. No usable cache and
 //    no network → a connection-error lock screen (NOT free access).
 //
@@ -450,8 +450,8 @@ final class LicenseGate {
     // link protection, aorus-code, phone/device spoof, bypass, the proxy, …) read flat
     // `aorusgram_*` UserDefaults flags and would keep running while the subscription is
     // expired. On every verdict we:
-    //   • publish `a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04` (AorusGramConfig also gates on it), and
-    //   • force EVERY `aorusgram_*` boolean flag OFF while locked — not a hand-written
+    //   - publish `a7f3d9e1-4b82-4c60-9a15-6f8e2d7c1b04` (AorusGramConfig also gates on it), and
+    //   - force EVERY `aorusgram_*` boolean flag OFF while locked — not a hand-written
     //     list (which would silently miss features), but every CFBoolean in the
     //     namespace, so current AND future feature toggles are covered with no holes.
     // The real values are backed up first and restored verbatim on unlock, so a
@@ -738,8 +738,8 @@ final class LicenseGate {
     // AppDelegate (which holds the Telegram context) resolves the bot with Telegram's
     // own internal resolver (openExternalUrl, forceExternal: false), so it never
     // escapes to Safari. Two modes:
-    //   • inMainNav == true  → open as a normal chat in the main navigation (active user)
-    //   • inMainNav == false → present above the lock window so the bot is the only
+    //   - inMainNav == true  → open as a normal chat in the main navigation (active user)
+    //   - inMainNav == false → present above the lock window so the bot is the only
     //     reachable screen while the subscription is expired
     private func openPurchaseBot(inMainNav: Bool = false) {
         NotificationCenter.default.post(

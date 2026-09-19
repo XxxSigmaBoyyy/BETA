@@ -6896,7 +6896,7 @@ private enum AorusAIMarkdown {
                 return line
             }
             let nsLine = line as NSString
-            return nsLine.substring(with: match.range(at: 1)) + "• " + nsLine.substring(with: match.range(at: 2))
+            return nsLine.substring(with: match.range(at: 1)) + "- " + nsLine.substring(with: match.range(at: 2))
         }.joined(separator: "\n")
     }
 
@@ -7019,7 +7019,7 @@ private enum AorusAIMarkdown {
     }
 
     private static func applyListParagraphs(in value: NSMutableAttributedString, scale: CGFloat) {
-        let pattern = #"(?m)^\s*(?:•|☐|☑︎|\d+[.)])\s+.*$"#
+        let pattern = #"(?m)^\s*(?:-|☐|☑︎|\d+[.)])\s+.*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
         for match in regex.matches(in: value.string, range: NSRange(location: 0, length: value.length)) {
             let paragraph = NSMutableParagraphStyle()

@@ -2,11 +2,11 @@ import UIKit
 import Display
 
 // Transient UI for the subscription layer:
-//  • SubscriptionBanner — a small rounded top card (not an alert/modal) that slides
+//  - SubscriptionBanner — a small rounded top card (not an alert/modal) that slides
 //    in, holds a few seconds, can be swiped up, and opens the purchase screen on tap.
 //    It is hosted in its OWN passthrough UIWindow above everything, so it always
 //    renders and reliably receives taps regardless of Telegram's custom main window.
-//  • toast — a bottom pill for one-off confirmations ("Подписка активирована").
+//  - toast — a bottom pill for one-off confirmations ("Подписка активирована").
 final class SubscriptionBanner: UIView {
     // Strong owner for the overlay windows — a programmatically-created UIWindow is
     // only kept alive (and composited) while something retains it.

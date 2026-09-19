@@ -489,6 +489,53 @@ public final class AorusPluginSandbox {
         return box.verdict
     }
 
+    /// What the running plugin registered: the command prefix, the command names and the
+    /// events it listens to. For the card that has to answer "why did my command do
+    /// nothing" without anyone reading the source. Reads only, and gives up rather than
+    /// waiting on a plugin that is busy.
+    public struct Registration: Equatable {
+        public var prefix: String
+        public var commands: [String]
+        public var events: [String]
+
+        public init(prefix: String = ".", commands: [String] = [], events: [String] = []) {
+            self.prefix = prefix
+            self.commands = commands
+            self.events = events
+        }
+    }
+
+    public func registration(timeout: TimeInterval = 0.3) -> Registration {
+        final class Box {
+            let lock = NSLock()
+            var value = Registration()
+        }
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+        queue.async {
+            var value = Registration()
+            if let dispatcher = self.dispatcher, self.context != nil, !self.isHung {
+                self.pendingException = nil
+                if let prefix = dispatcher.invokeMethod("commandPrefix", withArguments: []), prefix.isString {
+                    value.prefix = prefix.toString()
+                }
+                if let commands = dispatcher.invokeMethod("commandNames", withArguments: []), commands.isArray {
+                    value.commands = (commands.toArray() as? [String]) ?? []
+                }
+                if let events = dispatcher.invokeMethod("eventNames", withArguments: []), events.isArray {
+                    value.events = (events.toArray() as? [String]) ?? []
+                }
+            }
+            box.lock.lock()
+            box.value = value
+            box.lock.unlock()
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + timeout)
+        box.lock.lock(); defer { box.lock.unlock() }
+        return box.value
+    }
+
     /// Evaluates a snippet in the running context and describes the result. For the console
     /// in the editor.
     public func runSnippet(_ code: String, completion: @escaping (Result<String, AorusPluginRunError>) -> Void) {

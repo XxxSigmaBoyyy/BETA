@@ -12,14 +12,14 @@ import Foundation
 //
 // The contract's own words, and why each matters here:
 //
-//   • "Один чат → один server turn_id → одно сообщение ассистента."
+//   - "Один чат → один server turn_id → одно сообщение ассистента."
 //     `turn.resume` is metadata, never a second assistant message.
-//   • "Дедуп по (turn_id, seq), не по тексту. seq <= lastAppliedSeq — пропуск."
+//   - "Дедуп по (turn_id, seq), не по тексту. seq <= lastAppliedSeq — пропуск."
 //     Deduplicating on text would drop a delta the model legitimately repeated.
-//   • "Серверные started_at_ms / elapsed_ms авторитетны, не сбрасывать таймер в 0
+//   - "Серверные started_at_ms / elapsed_ms авторитетны, не сбрасывать таймер в 0
 //     после resume." The elapsed time shown to the reader survives the app being
 //     closed, because it is the server's number and not a local stopwatch.
-//   • "disconnect ≠ done ≠ Stop." A dropped socket leaves the turn resumable.
+//   - "disconnect ≠ done ≠ Stop." A dropped socket leaves the turn resumable.
 
 /// The envelope of one SSE frame, carried alongside the event it holds.
 ///

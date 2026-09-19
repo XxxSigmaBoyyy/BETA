@@ -741,9 +741,9 @@ def main() -> int:
     # purchase route made the Buy button call hideLock() and open the bot in the MAIN
     # navigation — which put a fully working, fully unlocked Telegram on screen and only
     # re-locked on the next foreground. These invariants keep that from ever returning:
-    #   • hideLock() must gate on the signed snapshot, so no caller can lift the cover
+    #   - hideLock() must gate on the signed snapshot, so no caller can lift the cover
     #     or re-enable features without a real active license;
-    #   • the locked-purchase route must NOT lift the cover and must NOT reveal the main
+    #   - the locked-purchase route must NOT lift the cover and must NOT reveal the main
     #     navigation (it opens the bot above the lock instead).
     gate_src = (root / "AorusGram/Sources/Features/Subscription/LicenseGate.swift").read_text(encoding="utf-8")
 
@@ -1315,7 +1315,6 @@ _MIRROR_DIVERGENCE_ALLOWED = {
     "AntiSpamManager.swift": "core resolves AorusLicenseAccess directly; the UI mirror imports the core module",
     "AorusPerformanceHUDManager.swift": "two implementations, not one drifted: the UI copy is written against AorusGramManager/AorusL10n",
     "GlassMorphismComponents.swift": "the UI copy imports AorusGram for the shared entitlement authority",
-    "AntiSpoofManager.swift": "status separator differs per module (• / -)",
 }
 
 

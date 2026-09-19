@@ -3855,12 +3855,6 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
         return
     t = path.read_text(encoding="utf-8")
     sentinel = "// AorusGram: anti-spoof presence override"
-    # Earlier builds separated the status from the marker with a bullet. A cached tree is
-    # already patched, so the injection below never runs again there — normalise in place.
-    if " • AORUS" in t:
-        t = t.replace(" • AORUS", " - AORUS")
-        path.write_text(t, encoding="utf-8")
-        print("ChatTitleAntiSpoof: normalised presence separator")
     if sentinel in t:
         import re as _re
         upgraded = _re.sub(
@@ -17501,9 +17495,9 @@ _AORUS_AMOLED_HELPER = (
     "//\n"
     "// Two sources, each deliberately narrow so no unrelated change rebuilds the theme:\n"
     "//\n"
-    "//  • the AMOLED flag, compared against its own last value rather than firing on\n"
+    "//  - the AMOLED flag, compared against its own last value rather than firing on\n"
     "//    every settings write;\n"
-    "//  • the server badge roster, which posts only when the roster actually differs\n"
+    "//  - the server badge roster, which posts only when the roster actually differs\n"
     "//    from the stored one (see AorusBadge.replaceServerBadgeSnapshot).\n"
     "//\n"
     "// The roster matters here because `isVerified` is read during layout: without this\n"
