@@ -1200,7 +1200,21 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            case let .EditMessage(id, message):\n"
                 "                " + edit_sentinel + "\n"
                 "                let aorusPrev = transaction.getMessage(id)\n"
-                "                if let prev = aorusPrev, prev.text != message.text {\n"
+                # A message arrives through this case for reasons that are not edits. A
+                # reaction is delivered as an edited message — `messages.sendReaction`
+                # answers with updateEditMessage carrying the whole message — and
+                # AorusGram's own Edit Locally and Translate rewrite the stored text, so
+                # from then on our text differs from the server's on every delivery and
+                # comparing the two marks the message as edited forever after. The server's
+                # edit date is the only thing that says an edit happened: it advances on
+                # every real edit and never on a reaction.
+                "                let aorusPrevEditDate = (aorusPrev?.attributes.first(where: { $0 is EditedMessageAttribute }) as? EditedMessageAttribute)?.date\n"
+                "                let aorusNewEditDate = (message.attributes.first(where: { $0 is EditedMessageAttribute }) as? EditedMessageAttribute)?.date\n"
+                "                var aorusIsRealEdit = false\n"
+                "                if let aorusNewEditDate = aorusNewEditDate {\n"
+                "                    aorusIsRealEdit = aorusPrevEditDate.map { aorusNewEditDate > $0 } ?? true\n"
+                "                }\n"
+                "                if aorusIsRealEdit, let prev = aorusPrev, prev.text != message.text {\n"
                 "                    NotificationCenter.default.post(\n"
                 "                        name: NSNotification.Name(\"aorusgram.willEditMessage\"),\n"
                 "                        object: nil,\n"
@@ -1235,6 +1249,10 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                }\n"
                 "                // AorusGram: inline original under edited text (own toggle, separate from deleted)\n"
                 "                let __aorusEditEnabled = (UserDefaults.standard.object(forKey: \"aorusgram_feature_edited_messages\") as? Bool) ?? true\n"
+                # Not gated on `aorusIsRealEdit`: Telegram has just replaced the stored
+                # message with the server's, which carries no history, so a delivery that is
+                # not an edit still has to put the history back. What the flag decides is
+                # whether the body that arrived is a NEW version or the one we already had.
                 "                if __aorusEditEnabled, let prev = aorusPrev, prev.flags.contains(.Incoming), prev.text != message.text, !prev.text.isEmpty, ((transaction.getPeer(id.peerId) as? TelegramUser)?.botInfo == nil) {\n"
                 "                    transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
                 "                        // AorusGram: rebuild the FULL edit history with proper labels.\n"
@@ -1266,7 +1284,15 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        } else {\n"
                 "                            aorusFlat = aorusPrevFull\n"
                 "                        }\n"
-                "                        let aorusVersions = aorusFlat.components(separatedBy: \"\\u{0001}\")\n"
+                "                        var aorusVersions = aorusFlat.components(separatedBy: \"\\u{0001}\")\n"
+                # When nothing was edited, the body the server just sent is the body we
+                # already had — a reaction is delivered as the whole message — so it is not
+                # a new version. Only the history under it goes back, unchanged and with the
+                # same numbers. With no history to restore there is nothing to do at all.
+                "                        if !aorusIsRealEdit {\n"
+                "                            guard aorusVersions.count > 1 else { return .skip }\n"
+                "                            aorusVersions.removeFirst()\n"
+                "                        }\n"
                 "                        let aorusCount = aorusVersions.count\n"
                 "                        var newText = currentMessage.text\n"
                 "                        var aorusEntities: [MessageTextEntity] = []\n"
@@ -19350,7 +19376,10 @@ def patch_aorus_code_compose(tg: Path) -> None:
         "              let peerId = chatLocation.peerId else { return }\n"
         "        guard let parentVC = self.interfaceInteraction?.chatController() as? UIViewController else { return }\n"
         "        UIImpactFeedbackGenerator(style: .medium).impactOccurred()\n"
-        "        let compose = AorusCodeComposeViewController(context: context, peerId: peerId)\n"
+        # A supergroup with topics refuses a message that names no topic, so the sheet is
+        # given the one the chat is open on. `chatLocation.threadId` is nil in an ordinary
+        # chat, which is the same as sending without one.
+        "        let compose = AorusCodeComposeViewController(context: context, peerId: peerId, threadId: chatLocation.threadId)\n"
         "        compose.modalPresentationStyle = .pageSheet\n"
         "        if #available(iOS 15.0, *) {\n"
         "            if let sheet = compose.sheetPresentationController {\n"

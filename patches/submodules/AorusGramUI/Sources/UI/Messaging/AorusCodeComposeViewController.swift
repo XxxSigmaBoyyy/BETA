@@ -21,6 +21,10 @@ public final class AorusCodeComposeViewController: UIViewController {
 
     private let context: AccountContext
     private let peerId: PeerId
+    /// The forum topic the compose sheet was opened from. A supergroup with topics rejects a
+    /// message that names no topic, so sending without it is how the message silently never
+    /// arrives; `nil` is an ordinary chat.
+    private let threadId: Int64?
     private let isRu: Bool
     // AorusGram theme so this sheet matches the app (dark + accent) instead of
     // following the system light/dark appearance and a hardcoded orange accent.
@@ -47,9 +51,10 @@ public final class AorusCodeComposeViewController: UIViewController {
 
     // MARK: - Init
 
-    public init(context: AccountContext, peerId: PeerId) {
+    public init(context: AccountContext, peerId: PeerId, threadId: Int64? = nil) {
         self.context = context
         self.peerId = peerId
+        self.threadId = threadId
         self.isRu = AorusLang.current == .ru
         self.theme = context.sharedContext.currentPresentationData.with { $0 }.theme
         super.init(nibName: nil, bundle: nil)
@@ -347,7 +352,7 @@ public final class AorusCodeComposeViewController: UIViewController {
                 attributes: [],
                 inlineStickers: [:],
                 mediaReference: nil,
-                threadId: nil,
+                threadId: threadId,
                 replyToMessageId: nil,
                 replyToStoryId: nil,
                 localGroupingKey: nil,
