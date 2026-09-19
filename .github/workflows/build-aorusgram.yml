@@ -873,6 +873,14 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleName Aorusgram" "$PLIST" 2>/dev/null || true
           python3 aorusgram/scripts/verify_aorus_branding.py telegram-ios
 
+      # A property of ours whose name a Telegram base class already uses is read by Swift
+      # as an attempt to override it, and fails the module compile. It cannot be seen from
+      # our sources alone — it only exists against Telegram's own classes — so it is
+      # checked here, where the tree first holds both sides, rather than 40 minutes into
+      # Bazel.
+      - name: Base class member collision preflight
+        run: python3 aorusgram/scripts/swift_member_collision_check.py telegram-ios
+
       - name: Install Bazel
         run: brew install bazel 2>/dev/null || true
 

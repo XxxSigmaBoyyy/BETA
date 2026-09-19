@@ -274,14 +274,27 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         let id: PeerId?
         if toSelf { id = context.account.peerId } else if let peerId { id = PeerId(peerId) } else { id = nil }
         guard let id else { completion(.failure(AorusPluginRequestError("peerId is required"))); return }
-        DispatchQueue.main.async {
+        // `NavigateToChatControllerParams.Location` is not `ChatLocation`: its `.peer` case
+        // carries the peer itself, not an id. So the chat is loaded first, and a plugin
+        // naming something this account cannot see is told so instead of opening nothing.
+        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: id))
+        |> take(1)
+        |> deliverOnMainQueue).start(next: { [weak self] peer in
+            guard let self else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            guard let peer else {
+                completion(.failure(AorusPluginRequestError("Chat is not available")))
+                return
+            }
             guard let navigation = self.topController()?.navigationController as? NavigationController else {
                 completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
                 return
             }
-            self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigation, context: self.context, chatLocation: .peer(id)))
+            self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigation, context: self.context, chatLocation: .peer(peer)))
             completion(.success(()))
-        }
+        })
     }
 
     func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {

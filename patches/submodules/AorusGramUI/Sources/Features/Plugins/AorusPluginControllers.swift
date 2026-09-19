@@ -495,7 +495,7 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
     private let editor = UITextView()
     private let lineNumbers = UITextView()
     private let console = UITextView()
-    private let toolbar = UIStackView()
+    private let editorTools = UIStackView()
     private var debugSandbox: AorusPluginSandbox?
     private var highlightWork: DispatchWorkItem?
     private var currentLayout: ContainerViewLayout?
@@ -522,9 +522,9 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
         editor.autocorrectionType = .no; editor.autocapitalizationType = .none; editor.smartQuotesType = .no; editor.smartDashesType = .no
         editor.textContainerInset = UIEdgeInsets(top: 14, left: 8, bottom: 80, right: 12); editor.delegate = self; editor.text = record.source
         console.backgroundColor = UIColor.black.withAlphaComponent(0.94); console.textColor = UIColor(red: 0.55, green: 0.95, blue: 0.68, alpha: 1); console.font = .monospacedSystemFont(ofSize: 12, weight: .regular); console.isEditable = false; console.isHidden = true
-        toolbar.axis = .horizontal; toolbar.distribution = .fillEqually; toolbar.backgroundColor = dark ? UIColor(white: 0.12, alpha: 0.94) : UIColor(white: 1, alpha: 0.96)
+        editorTools.axis = .horizontal; editorTools.distribution = .fillEqually; editorTools.backgroundColor = dark ? UIColor(white: 0.12, alpha: 0.94) : UIColor(white: 1, alpha: 0.96)
         addTool(AorusPluginUIString.run.text, "play.fill", #selector(runPlugin)); addTool(AorusPluginUIString.stop.text, "stop.fill", #selector(stopPlugin)); addTool(AorusPluginUIString.console.text, "terminal.fill", #selector(toggleConsole)); addTool(AorusPluginUIString.documentation.text, "book.fill", #selector(openDocs))
-        displayNode.view.addSubview(lineNumbers); displayNode.view.addSubview(editor); displayNode.view.addSubview(console); displayNode.view.addSubview(toolbar)
+        displayNode.view.addSubview(lineNumbers); displayNode.view.addSubview(editor); displayNode.view.addSubview(console); displayNode.view.addSubview(editorTools)
         updateLineNumbers(); highlight(); displayNodeDidLoad()
     }
 
@@ -537,10 +537,10 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
         transition.updateFrame(view: lineNumbers, frame: CGRect(x: 6, y: top + 14, width: 34, height: max(0, layout.size.height - top - toolbarHeight - 14)))
         transition.updateFrame(view: editor, frame: CGRect(x: 40, y: top, width: layout.size.width - 40, height: max(0, layout.size.height - top - toolbarHeight - consoleHeight)))
         transition.updateFrame(view: console, frame: CGRect(x: 0, y: layout.size.height - toolbarHeight - consoleHeight, width: layout.size.width, height: consoleHeight))
-        transition.updateFrame(view: toolbar, frame: CGRect(x: 0, y: layout.size.height - toolbarHeight, width: layout.size.width, height: toolbarHeight))
+        transition.updateFrame(view: editorTools, frame: CGRect(x: 0, y: layout.size.height - toolbarHeight, width: layout.size.width, height: toolbarHeight))
     }
 
-    private func addTool(_ title: String, _ image: String, _ action: Selector) { let button = UIButton(type: .system); button.setImage(UIImage(systemName: image), for: .normal); button.setTitle(" " + title, for: .normal); button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold); button.addTarget(self, action: action, for: .touchUpInside); toolbar.addArrangedSubview(button) }
+    private func addTool(_ title: String, _ image: String, _ action: Selector) { let button = UIButton(type: .system); button.setImage(UIImage(systemName: image), for: .normal); button.setTitle(" " + title, for: .normal); button.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold); button.addTarget(self, action: action, for: .touchUpInside); editorTools.addArrangedSubview(button) }
 
     func textViewDidChange(_ textView: UITextView) { updateLineNumbers(); highlightWork?.cancel(); let work = DispatchWorkItem { [weak self] in self?.highlight() }; highlightWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work) }
 
