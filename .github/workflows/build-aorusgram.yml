@@ -169,6 +169,20 @@ jobs:
             aorusgram/scripts/tests/AorusAITurnResumeTests.swift \
             -o /tmp/aorus-ai-preflight/turn-resume-tests
           /tmp/aorus-ai-preflight/turn-resume-tests
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginModel.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginStore.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginPrelude.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginSyntax.swift \
+            aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginSandbox.swift \
+            aorusgram/scripts/tests/AorusPluginCoreTests.swift \
+            -o /tmp/aorus-ai-preflight/plugin-core-tests
+          /tmp/aorus-ai-preflight/plugin-core-tests
+          for source in aorusgram/patches/submodules/AorusGramUI/Sources/Features/Plugins/*.swift; do
+            echo "parsing $source"
+            swiftc -frontend -parse "$source"
+          done
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusUpdateManifest.swift \

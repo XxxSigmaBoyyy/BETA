@@ -1159,6 +1159,7 @@ def main() -> int:
     check_declaration_attributes(root, errors)
     check_missing_override(root, errors)
     check_corefoundation_casts(root, errors)
+    check_plugin_boundary(root, errors)
 
     if errors:
         print("Release security check failed:")
@@ -1167,6 +1168,45 @@ def main() -> int:
         return 1
     print("Release security check: OK")
     return 0
+
+
+def check_plugin_boundary(root: Path, errors: list[str]) -> None:
+    core = root / "AorusGram/Sources/Features/Plugins"
+    ui = root / "patches/submodules/AorusGramUI/Sources/Features/Plugins"
+    required = (
+        core / "AorusPluginModel.swift",
+        core / "AorusPluginStore.swift",
+        core / "AorusPluginPrelude.swift",
+        core / "AorusPluginSyntax.swift",
+        core / "AorusPluginSandbox.swift",
+        ui / "AorusPluginRuntime.swift",
+        ui / "AorusPluginControllers.swift",
+    )
+    for path in required:
+        if not path.is_file():
+            fail(errors, f"plugin system file is missing: {path.relative_to(root)}")
+    if not core.is_dir():
+        return
+    allowed_imports = {"Foundation", "JavaScriptCore", "CryptoKit", "Darwin"}
+    for path in core.glob("*.swift"):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            match = re.match(r"\s*import\s+([A-Za-z0-9_]+)", line)
+            if match and match.group(1) not in allowed_imports:
+                fail(errors, f"{path.relative_to(root)}:{number}: plugin core imports privileged module {match.group(1)}")
+    sandbox = (core / "AorusPluginSandbox.swift").read_text(encoding="utf-8") if (core / "AorusPluginSandbox.swift").is_file() else ""
+    for marker in (
+        "Permission not granted",
+        "watchdogAvailable else",
+        "hostResolvesPublicly",
+        "blockedHostSuffixes",
+        "requestPayloadLimitBytes",
+    ):
+        if marker not in sandbox:
+            fail(errors, f"plugin sandbox fail-closed invariant is missing: {marker}")
+    store = (core / "AorusPluginStore.swift").read_text(encoding="utf-8") if (core / "AorusPluginStore.swift").is_file() else ""
+    for marker in ("normalizedIdentifier", "sourceLimitBytes", "permissions.json", "sourceDigest"):
+        if marker not in store:
+            fail(errors, f"plugin store security invariant is missing: {marker}")
 
 
 # Files that exist under both `AorusGram/Sources` (the core module) and

@@ -357,6 +357,7 @@ private final class AorusArguments {
     let openSubscription: () -> Void
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
+    let openPlugins: () -> Void
     let openMisc: () -> Void
     let openAntiSpamManage: () -> Void
     let openDeviceSpoof: () -> Void
@@ -375,6 +376,7 @@ private final class AorusArguments {
          openSubscription: @escaping () -> Void,
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
+         openPlugins: @escaping () -> Void,
          openMisc: @escaping () -> Void,
          openAntiSpamManage: @escaping () -> Void,
          openDeviceSpoof: @escaping () -> Void,
@@ -392,6 +394,7 @@ private final class AorusArguments {
         self.openSubscription = openSubscription
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
+        self.openPlugins = openPlugins
         self.openMisc = openMisc
         self.openAntiSpamManage = openAntiSpamManage
         self.openDeviceSpoof = openDeviceSpoof
@@ -486,6 +489,7 @@ private enum AorusEntry: ItemListNodeEntry {
 
     case accountBackupHeader(PresentationTheme, String)
     case accountBackup(PresentationTheme, String)
+    case plugins(PresentationTheme, String)
     case misc(PresentationTheme, String)
 
     case aorusCodeHeader(PresentationTheme, String)
@@ -539,7 +543,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.antiSpoof.rawValue
         case .accountBackupHeader, .accountBackup:
             return AorusSection.accountBackup.rawValue
-        case .misc:
+        case .plugins, .misc:
             return AorusSection.misc.rawValue
         case .aorusCodeHeader, .aorusCodeEnabled:
             return AorusSection.aorusCode.rawValue
@@ -627,9 +631,10 @@ private enum AorusEntry: ItemListNodeEntry {
         case .antiSpoofOnline:      return 94
         case .accountBackupHeader:  return 95
         case .accountBackup:        return 96
-        case .misc:                 return 97
-        case .aorusCodeHeader:      return 100
-        case .aorusCodeEnabled:     return 101
+        case .aorusCodeHeader:      return 97
+        case .aorusCodeEnabled:     return 98
+        case .plugins:              return 99
+        case .misc:                 return 100
         case .subscription:         return 106
         case .officialChannel:      return 107
         case .connectionSettings:   return 116 // AORUS-CONN — above the diagnostics row
@@ -779,6 +784,8 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .accountBackupHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .accountBackup(lt, ls):
             if case let .accountBackup(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .plugins(lt, ls):
+            if case let .plugins(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .misc(lt, ls):
             if case let .misc(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .aorusCodeHeader(lt, ls):
@@ -954,6 +961,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .accountBackup(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openAccountBackup)
+        case let .plugins(_, title):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openPlugins)
         case let .misc(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openMisc)
         case let .aorusCodeHeader(_, text):
@@ -1086,10 +1095,11 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .accountBackupHeader(theme, l10n.accountBackupHeader),
         .accountBackup(theme, l10n.accountBackup),
 
-        .misc(theme, l10n.misc),
-
         .aorusCodeHeader(theme, l10n.aorusCodeHeader),
         .aorusCodeEnabled(theme, l10n.aorusCode, state.aorusCodeEnabled),
+
+        .plugins(theme, aorusPluginsTitle()),
+        .misc(theme, l10n.misc),
 
         .subscription(theme, l10n.subscription),
         .officialChannel(theme, l10n.officialChannel),
@@ -1396,6 +1406,12 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
                 return
             }
             navigationController.pushViewController(accountBackupController(context: context))
+        },
+        openPlugins: {
+            guard let navigationController = weakController?.navigationController as? NavigationController else {
+                return
+            }
+            navigationController.pushViewController(aorusPluginsController(context: context))
         },
         openMisc: {
             guard let controller = weakController,

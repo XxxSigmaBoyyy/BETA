@@ -17620,6 +17620,101 @@ def patch_hide_tabs(tg: Path) -> None:
         print(f"HideTabs: WARNING — matched {n}/{len(edits)} anchors")
 
 
+def patch_plugin_runtime(tg: Path) -> None:
+    """Start the isolated plugin runtime as soon as an authorized account UI exists.
+
+    AppDelegate intentionally cannot import AorusGramUI. TelegramRootController already owns
+    the AccountContext and TelegramUI already carries the AorusGramUI dependency, making this
+    the earliest safe account-scoped integration point.
+    """
+    path = tg / "submodules/TelegramUI/Sources/TelegramRootController.swift"
+    if not path.is_file():
+        print("Plugins: TelegramRootController.swift not found, skip")
+        return
+    source = path.read_text(encoding="utf-8")
+    if "AorusPluginRuntimeManager.shared.configure(context: context)" in source:
+        print("Plugins: runtime bootstrap already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        if "import AccountContext\n" in source:
+            source = source.replace("import AccountContext\n", "import AccountContext\nimport AorusGramUI\n", 1)
+        else:
+            source = "import AorusGramUI\n" + source
+    anchor = "        self.context = context\n"
+    if anchor not in source:
+        raise SystemExit("Plugins: TelegramRootController context anchor not found")
+    replacement = anchor + "        AorusPluginRuntimeManager.shared.configure(context: context) // AorusGram plugins\n"
+    path.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
+    print("Plugins: account-scoped runtime bootstrap installed")
+
+
+def patch_plugin_outgoing_messages(tg: Path) -> None:
+    """Route plain composer messages through enabled plugin command/send handlers.
+
+    The hook stays in ChatController rather than TelegramCore: plugins are UI/account scoped,
+    and media, service messages and background sends must never be delayed by user scripts.
+    A single 100 ms budget is shared by every active plugin in the runtime manager.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ChatController.swift"
+    if not path.is_file():
+        print("Plugins: ChatController.swift not found, skip outgoing hook")
+        return
+    source = path.read_text(encoding="utf-8")
+    if "AorusPluginRuntimeManager.shared.processOutgoing" in source:
+        print("Plugins: outgoing hook already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        if "import AccountContext\n" in source:
+            source = source.replace("import AccountContext\n", "import AccountContext\nimport AorusGramUI\n", 1)
+        else:
+            source = "import AorusGramUI\n" + source
+    anchor = (
+        "        guard let peerId = self.chatLocation.peerId else {\n"
+        "            return\n"
+        "        }\n"
+        "        \n"
+        "        let _ = (self.shouldDivertMessagesToScheduled(messages: messages)\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("Plugins: ChatController sendMessages anchor not found")
+    replacement = (
+        "        guard let peerId = self.chatLocation.peerId else {\n"
+        "            return\n"
+        "        }\n"
+        "\n"
+        "        // AorusGram plugins: only human-authored plain text enters the plugin chain.\n"
+        "        // Media captions, forwards, service messages and background sends bypass it.\n"
+        "        let aorusPluginMessages: [EnqueueMessage] = commit ? messages : messages.compactMap { message in\n"
+        "            guard case let .message(text, attributes, inlineStickers, mediaReference, threadId, replyToMessageId, replyToStoryId, localGroupingKey, correlationId, bubbleUpEmojiOrStickersets) = message,\n"
+        "                  mediaReference == nil, inlineStickers.isEmpty, !text.isEmpty else {\n"
+        "                return message\n"
+        "            }\n"
+        "            let verdict = AorusPluginRuntimeManager.shared.processOutgoing(\n"
+        "                text: text, peerId: peerId.toInt64(), accountId: self.context.account.id.int64\n"
+        "            )\n"
+        "            if verdict.consumed { return nil }\n"
+        "            guard let replacement = verdict.replacement, replacement != text else { return message }\n"
+        "            var updatedAttributes = attributes.filter { !($0 is TextEntitiesMessageAttribute) }\n"
+        "            let updatedEntities = generateTextEntities(replacement, enabledTypes: .all)\n"
+        "            if !updatedEntities.isEmpty { updatedAttributes.append(TextEntitiesMessageAttribute(entities: updatedEntities)) }\n"
+        "            return .message(text: replacement, attributes: updatedAttributes, inlineStickers: [:], mediaReference: nil, threadId: threadId, replyToMessageId: replyToMessageId, replyToStoryId: replyToStoryId, localGroupingKey: localGroupingKey, correlationId: correlationId, bubbleUpEmojiOrStickersets: bubbleUpEmojiOrStickersets)\n"
+        "        }\n"
+        "        guard !aorusPluginMessages.isEmpty else { return }\n"
+        "        \n"
+        "        let _ = (self.shouldDivertMessagesToScheduled(messages: aorusPluginMessages)\n"
+    )
+    source = source.replace(anchor, replacement, 1)
+    # The closure below must continue from the transformed array, not capture the original.
+    closure_anchor = "            var messages = messages\n"
+    start = source.find("AorusPluginRuntimeManager.shared.processOutgoing")
+    position = source.find(closure_anchor, start)
+    if position == -1:
+        raise SystemExit("Plugins: ChatController send closure anchor not found")
+    source = source[:position] + "            var messages = aorusPluginMessages\n" + source[position + len(closure_anchor):]
+    path.write_text(source, encoding="utf-8")
+    print("Plugins: outgoing command/send hook installed")
+
+
 def patch_tab_bar_visibility_controls(tg: Path) -> None:
     """Hide Search / tab titles live while preserving Telegram's native tab bar.
 
@@ -26034,6 +26129,8 @@ def main() -> None:
     patch_chat_lock(tg)
     patch_bypass_story_screenshot(tg)
     patch_amoled_theme(tg)
+    patch_plugin_runtime(tg)
+    patch_plugin_outgoing_messages(tg)
     patch_hide_tabs(tg)
     patch_tab_bar_visibility_controls(tg)
     patch_wall_tab(tg)
