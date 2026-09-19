@@ -14,45 +14,47 @@ public func aorusPluginsTitle() -> String {
     return AorusPluginUIString.plugins.text
 }
 
-private enum AorusPluginUIString: String {
+// Every string this screen shows goes through `aorusL`, the same helper and the same table as
+// the rest of AorusGram's own UI. The release verifier walks those call sites and requires a
+// translation for each one in all 32 further languages, so a plugin screen can never be the
+// one place that falls back to English.
+private enum AorusPluginUIString {
     case plugins, emptyTitle, emptyBody, create, importFile, enabled, autostart, editCode
     case configure, settings, permissions, duplicate, export, delete, save, run, stop, console, documentation
     case name, description, version, author, icon, accent, reviewPermissions, grantAndEnable, noPermissions, syntaxReady
 
     var text: String {
-        if self == .plugins {
-            let titles: [AorusLang: String] = [
-                .en: "Plugins", .ru: "Плагины", .uk: "Плагіни", .es: "Complementos",
-                .pt: "Plugins", .de: "Erweiterungen", .fr: "Extensions", .tr: "Eklentiler",
-                .it: "Plugin", .pl: "Wtyczki", .nl: "Plug-ins", .id: "Plugin",
-                .ms: "Pemalam", .ca: "Complements", .be: "Убудовы", .uz: "Plaginlar",
-                .ko: "플러그인", .ar: "الإضافات", .fa: "افزونه‌ها", .kk: "Плагиндер",
-                .ja: "プラグイン", .fi: "Laajennukset", .he: "תוספים", .hr: "Dodaci",
-                .cs: "Pluginy", .hu: "Bővítmények", .nb: "Programtillegg", .ro: "Pluginuri",
-                .sr: "Додаци", .sk: "Doplnky", .sv: "Tillägg", .vi: "Tiện ích",
-                .zhHans: "插件", .zhHant: "外掛程式"
-            ]
-            return titles[AorusLang.current] ?? "Plugins"
+        switch self {
+        case .plugins: return aorusL("Плагины", "Plugins")
+        case .emptyTitle: return aorusL("Плагинов пока нет", "No plugins yet")
+        case .emptyBody: return aorusL("Создайте свой или импортируйте готовый файл.", "Create your own plugin or import a file.")
+        case .create: return aorusL("Создать плагин", "Create Plugin")
+        case .importFile: return aorusL("Импортировать файл", "Import File")
+        case .enabled: return aorusL("Включен", "Enabled")
+        case .autostart: return aorusL("Автозапуск", "Run at Launch")
+        case .editCode: return aorusL("Редактор", "Editor")
+        case .configure: return aorusL("Оформление", "Appearance")
+        case .settings: return aorusL("Настройки", "Settings")
+        case .permissions: return aorusL("Разрешения", "Permissions")
+        case .duplicate: return aorusL("Дублировать", "Duplicate")
+        case .export: return aorusL("Экспортировать", "Export")
+        case .delete: return aorusL("Удалить", "Delete")
+        case .save: return aorusL("Сохранить", "Save")
+        case .run: return aorusL("Запустить", "Run")
+        case .stop: return aorusL("Остановить", "Stop")
+        case .console: return aorusL("Консоль", "Console")
+        case .documentation: return aorusL("Документация", "Documentation")
+        case .name: return aorusL("Название", "Name")
+        case .description: return aorusL("Описание", "Description")
+        case .version: return aorusL("Версия", "Version")
+        case .author: return aorusL("Автор", "Author")
+        case .icon: return aorusL("Иконка", "Icon")
+        case .accent: return aorusL("Цвет", "Color")
+        case .reviewPermissions: return aorusL("Проверьте разрешения", "Review Permissions")
+        case .grantAndEnable: return aorusL("Разрешить и включить", "Allow and Enable")
+        case .noPermissions: return aorusL("Дополнительные разрешения не требуются", "No additional permissions are required")
+        case .syntaxReady: return aorusL("Ошибок синтаксиса нет", "No syntax errors")
         }
-        let ru: [AorusPluginUIString: String] = [
-            .plugins: "Плагины", .emptyTitle: "Плагинов пока нет", .emptyBody: "Создайте свой или импортируйте готовый файл.",
-            .create: "Создать плагин", .importFile: "Импортировать файл", .enabled: "Включен", .autostart: "Автозапуск",
-            .editCode: "Редактор", .configure: "Оформление", .settings: "Настройки", .permissions: "Разрешения", .duplicate: "Дублировать",
-            .export: "Экспортировать", .delete: "Удалить", .save: "Сохранить", .run: "Запустить", .stop: "Остановить",
-            .console: "Консоль", .documentation: "Документация", .name: "Название", .description: "Описание",
-            .version: "Версия", .author: "Автор", .icon: "Иконка", .accent: "Цвет", .reviewPermissions: "Проверьте разрешения", .grantAndEnable: "Разрешить и включить",
-            .noPermissions: "Дополнительные разрешения не требуются", .syntaxReady: "Ошибок синтаксиса нет"
-        ]
-        let en: [AorusPluginUIString: String] = [
-            .plugins: "Plugins", .emptyTitle: "No plugins yet", .emptyBody: "Create your own plugin or import a file.",
-            .create: "Create Plugin", .importFile: "Import File", .enabled: "Enabled", .autostart: "Run at Launch",
-            .editCode: "Editor", .configure: "Appearance", .settings: "Settings", .permissions: "Permissions", .duplicate: "Duplicate",
-            .export: "Export", .delete: "Delete", .save: "Save", .run: "Run", .stop: "Stop",
-            .console: "Console", .documentation: "Documentation", .name: "Name", .description: "Description",
-            .version: "Version", .author: "Author", .icon: "Icon", .accent: "Color", .reviewPermissions: "Review Permissions", .grantAndEnable: "Allow and Enable",
-            .noPermissions: "No additional permissions are required", .syntaxReady: "No syntax errors"
-        ]
-        return (AorusLang.current == .ru ? ru[self] : en[self]) ?? rawValue
     }
 }
 
@@ -964,64 +966,49 @@ private final class AorusPluginsEmptyView: UIView {
     @objc private func create() { onCreate?() }
 }
 
+// The permission names and what each one lets a plugin do. This is the text someone reads
+// before granting a script access to their account, so it goes through the shared table like
+// everything else: the one screen where an untranslated line would matter most.
 private func permissionTitle(_ permission: AorusPluginPermission) -> String {
-    if AorusLang.current == .ru {
-        switch permission {
-        case .network: return "Доступ к сети"
-        case .sendMessages: return "Отправка сообщений"
-        case .chatMetadata: return "Данные чатов"
-        case .openChats: return "Открытие чатов"
-        case .accountProfile: return "Профиль текущего аккаунта"
-        case .dialogs: return "Диалоги и уведомления"
-        case .clipboardRead: return "Чтение буфера обмена"
-        case .clipboardWrite: return "Запись в буфер обмена"
-        case .incomingMessages: return "События входящих сообщений"
-        case .outgoingMessages: return "Обработка исходящих сообщений"
-        }
-    }
     switch permission {
-    case .network: return "Network"
-    case .sendMessages: return "Send messages"
-    case .chatMetadata: return "Read chat metadata"
-    case .openChats: return "Open chats"
-    case .accountProfile: return "Read current profile"
-    case .dialogs: return "Show dialogs"
-    case .clipboardRead: return "Read clipboard"
-    case .clipboardWrite: return "Write clipboard"
-    case .incomingMessages: return "Receive message events"
-    case .outgoingMessages: return "Process outgoing messages"
+    case .network: return aorusL("Доступ к сети", "Network")
+    case .sendMessages: return aorusL("Отправка сообщений", "Send messages")
+    case .chatMetadata: return aorusL("Данные чатов", "Read chat metadata")
+    case .openChats: return aorusL("Открытие чатов", "Open chats")
+    case .accountProfile: return aorusL("Профиль текущего аккаунта", "Read current profile")
+    case .dialogs: return aorusL("Диалоги и уведомления", "Show dialogs")
+    case .clipboardRead: return aorusL("Чтение буфера обмена", "Read clipboard")
+    case .clipboardWrite: return aorusL("Запись в буфер обмена", "Write clipboard")
+    case .incomingMessages: return aorusL("События входящих сообщений", "Receive message events")
+    case .outgoingMessages: return aorusL("Обработка исходящих сообщений", "Process outgoing messages")
     }
 }
 
 private func permissionDescription(_ permission: AorusPluginPermission, requested: Bool) -> String {
-    let marker: String
-    if AorusLang.current == .ru {
-        marker = requested ? "Используется текущим кодом. " : "Не обнаружено в текущем коде. "
-        switch permission {
-        case .network: return marker + "Разрешает HTTPS-запросы к внешним публичным адресам."
-        case .sendMessages: return marker + "Разрешает отправлять сообщения от текущего аккаунта."
-        case .chatMetadata: return marker + "Разрешает получать название и идентификатор чата."
-        case .openChats: return marker + "Разрешает открывать чаты в интерфейсе приложения."
-        case .accountProfile: return marker + "Разрешает читать имя и идентификатор текущего аккаунта."
-        case .dialogs: return marker + "Разрешает показывать уведомления и запрашивать ввод."
-        case .clipboardRead: return marker + "Разрешает читать содержимое буфера обмена."
-        case .clipboardWrite: return marker + "Разрешает изменять содержимое буфера обмена."
-        case .incomingMessages: return marker + "Разрешает получать события новых сообщений."
-        case .outgoingMessages: return marker + "Разрешает изменять или отменять отправляемый текст."
-        }
-    }
-    marker = requested ? "Used by the current source. " : "Not detected in the current source. "
+    let marker = requested
+        ? aorusL("Используется текущим кодом. ", "Used by the current source. ")
+        : aorusL("Не обнаружено в текущем коде. ", "Not detected in the current source. ")
     switch permission {
-    case .network: return marker + "Allows HTTPS requests to public external hosts."
-    case .sendMessages: return marker + "Allows sending messages from the current account."
-    case .chatMetadata: return marker + "Allows reading a chat title and identifier."
-    case .openChats: return marker + "Allows opening chats in the app."
-    case .accountProfile: return marker + "Allows reading the current account name and identifier."
-    case .dialogs: return marker + "Allows notifications and input prompts."
-    case .clipboardRead: return marker + "Allows reading the clipboard."
-    case .clipboardWrite: return marker + "Allows changing the clipboard."
-    case .incomingMessages: return marker + "Allows receiving new-message events."
-    case .outgoingMessages: return marker + "Allows changing or consuming outgoing text."
+    case .network:
+        return marker + aorusL("Разрешает HTTPS-запросы к внешним публичным адресам.", "Allows HTTPS requests to public external hosts.")
+    case .sendMessages:
+        return marker + aorusL("Разрешает отправлять сообщения от текущего аккаунта.", "Allows sending messages from the current account.")
+    case .chatMetadata:
+        return marker + aorusL("Разрешает получать название и идентификатор чата.", "Allows reading a chat title and identifier.")
+    case .openChats:
+        return marker + aorusL("Разрешает открывать чаты в интерфейсе приложения.", "Allows opening chats in the app.")
+    case .accountProfile:
+        return marker + aorusL("Разрешает читать имя и идентификатор текущего аккаунта.", "Allows reading the current account name and identifier.")
+    case .dialogs:
+        return marker + aorusL("Разрешает показывать уведомления и запрашивать ввод.", "Allows notifications and input prompts.")
+    case .clipboardRead:
+        return marker + aorusL("Разрешает читать содержимое буфера обмена.", "Allows reading the clipboard.")
+    case .clipboardWrite:
+        return marker + aorusL("Разрешает изменять содержимое буфера обмена.", "Allows changing the clipboard.")
+    case .incomingMessages:
+        return marker + aorusL("Разрешает получать события новых сообщений.", "Allows receiving new-message events.")
+    case .outgoingMessages:
+        return marker + aorusL("Разрешает изменять или отменять отправляемый текст.", "Allows changing or consuming outgoing text.")
     }
 }
 

@@ -126,6 +126,14 @@ public final class AorusPluginRuntimeManager {
     }
 
     private func start(record: AorusPluginRecord, host: AorusPluginTelegramHost, permissions: Set<AorusPluginPermission>, completion: ((AorusPluginRunError?) -> Void)? = nil) {
+        // Every path that runs a plugin comes through here, so the entitlement is checked
+        // once, at the moment a script would start executing. The settings screen already
+        // routes a locked licence to the subscription flow; this covers autostart, which
+        // runs before anyone opens a screen at all.
+        guard AorusLicenseAccess.isAllowed else {
+            completion?(.notRunning)
+            return
+        }
         let sandbox = AorusPluginSandbox(
             manifest: record.manifest,
             source: record.source,
@@ -230,10 +238,26 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
 
     func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         let clean = username.trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
-        guard clean.count <= 64 else { completion(.failure(AorusPluginRequestError("Invalid username"))); return }
-        let _ = (context.engine.peers.resolvePeerByName(name: clean, referrer: nil) |> take(1)).start(next: { result in
-            guard case let .result(peer) = result, let peer else { completion(.success(nil)); return }
-            completion(.success(["id": String(peer.id.toInt64()), "title": peer.compactDisplayTitle]))
+        guard !clean.isEmpty, clean.count <= 64 else { completion(.failure(AorusPluginRequestError("Invalid username"))); return }
+        // resolvePeerByName emits .progress before it emits an answer, so taking the first
+        // value would report "not found" for every name that is not already cached. The
+        // progress values are dropped, and the flag makes the promise settle exactly once
+        // whether the signal ends with an answer or with nothing at all.
+        let answered = Atomic<Bool>(value: false)
+        let answer: ([String: Any]?) -> Void = { value in
+            if !answered.swap(true) {
+                completion(.success(value))
+            }
+        }
+        let _ = (context.engine.peers.resolvePeerByName(name: clean, referrer: nil)
+        |> mapToSignal { result -> Signal<EnginePeer?, NoError> in
+            guard case let .result(peer) = result else { return .complete() }
+            return .single(peer)
+        }
+        |> take(1)).start(next: { peer in
+            answer(peer.map { ["id": String($0.id.toInt64()), "title": $0.compactDisplayTitle] })
+        }, completed: {
+            answer(nil)
         })
     }
 

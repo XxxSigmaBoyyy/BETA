@@ -1928,7 +1928,13 @@ def main() -> None:
     for swift_file in sorted((tg / "submodules").rglob("*.swift")):
         if "AorusGramUI" in swift_file.parts:
             continue
-        if "aorusL(" in swift_file.read_text(encoding="utf-8", errors="replace"):
+        body = swift_file.read_text(encoding="utf-8", errors="replace")
+        # Only real call sites pull a file into the table scan. Files outside AorusGramUI
+        # mention the helper by name in comments — the plugin core documents that it stays
+        # out of the table precisely because the scan exists — and a comment must not drag
+        # the file in and then have its own unrelated literals reported as missing.
+        code = "\n".join(line.split("//")[0] for line in body.split("\n"))
+        if "aorusL(" in code:
             aorusgram_ui_sources.append(swift_file)
     subscription_sources = [subscription_dir / "SubscriptionL10n.swift"]
     if aorus_module.is_dir():
@@ -2002,17 +2008,24 @@ def main() -> None:
         english_literals = set()
         for src_path in present:
             src_body = src_path.read_text(encoding="utf-8")
-            for pattern in (
+            patterns = [
                 # t(ru, en) on the per-screen helpers, the free aorusL(ru, en), SubL10n.t()
                 # in the AorusGram module and title(ru, en, isRu) in the metadata screen all
                 # resolve through one table. AccountBackupManager's localized() deliberately
                 # does not: that file must stay byte-identical across two modules, so it
                 # carries its own table and is excluded here.
                 r'\b(?:t|aorusL|title)\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"',
-                # AorusLinkProtection carries its risk texts as ru:/en: template pairs and
-                # feeds them to aorusL() at display time.
-                r'\bru:\s*"((?:[^"\\]|\\.)*)"\s*,\s*\n?\s*en:\s*"((?:[^"\\]|\\.)*)"',
-            ):
+            ]
+            # AorusLinkProtection carries its risk texts as ru:/en: template pairs and
+            # feeds them to aorusL() at display time. The shape is not a translation call
+            # by itself — a `ru:`/`en:` label pair is ordinary Swift that any type may use
+            # for two unrelated fields — so the pattern stays scoped to that one file
+            # rather than making every such pair a translation key.
+            if src_path.name == "AorusLinkProtection.swift":
+                patterns.append(
+                    r'\bru:\s*"((?:[^"\\]|\\.)*)"\s*,\s*\n?\s*en:\s*"((?:[^"\\]|\\.)*)"'
+                )
+            for pattern in patterns:
                 english_literals |= {
                     match.group(2) for match in re.finditer(pattern, src_body, re.S)
                 }

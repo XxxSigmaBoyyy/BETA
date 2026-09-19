@@ -4,25 +4,9 @@ import Foundation
 // runtime loads. Nothing here touches the sandbox or the UI; the file compiles on its own
 // with Foundation, which is how the preflight tests build it.
 
-/// A Russian/English pair for text the core module has to show or hand to the UI.
-///
-/// Deliberately not named like the UI module's translation helpers: the release verifier
-/// scans `t(ru, en)` and `aorusL(ru, en)` and requires a translation in every language
-/// for each. The plugin documentation and the starter templates are technical prose kept in
-/// the two primary languages, and any other language reads the English.
-public struct AorusPluginText: Equatable {
-    public let ru: String
-    public let en: String
-
-    public init(ru: String, en: String) {
-        self.ru = ru
-        self.en = en
-    }
-
-    public func resolved(isRussian: Bool) -> String {
-        return isRussian ? ru : en
-    }
-}
+// Nothing here holds display text. Every string the plugin screens show is written at the
+// call site in the UI module through `aorusL(ru, en)`, so it goes through the one table the
+// release verifier walks and is present in all 32 further languages.
 
 /// The glyphs a plugin may pick for its tile. SF Symbol names; a name the running iOS does
 /// not know falls back to `fallback` at draw time, so the list can hold newer symbols.
@@ -482,42 +466,7 @@ public struct AorusPluginExport: Codable, Equatable {
     }
 }
 
-/// What a plugin reaches for, read off its source without running it. Shown on the plugin's
-/// card so the person installing something they did not write can see what it does before
-/// switching it on.
-public struct AorusPluginCapability: Equatable {
-    public let id: String
-    public let title: AorusPluginText
-
-    public static let network = AorusPluginCapability(id: "network", title: AorusPluginText(ru: "Сеть", en: "Network"))
-    public static let sendsMessages = AorusPluginCapability(id: "send", title: AorusPluginText(ru: "Отправка сообщений", en: "Sends messages"))
-    public static let clipboard = AorusPluginCapability(id: "clipboard", title: AorusPluginText(ru: "Буфер обмена", en: "Clipboard"))
-    public static let opensChats = AorusPluginCapability(id: "openChats", title: AorusPluginText(ru: "Открытие чатов", en: "Opens chats"))
-    public static let dialogs = AorusPluginCapability(id: "ui", title: AorusPluginText(ru: "Диалоги и уведомления", en: "Alerts and toasts"))
-    public static let storage = AorusPluginCapability(id: "storage", title: AorusPluginText(ru: "Хранилище", en: "Storage"))
-    public static let commands = AorusPluginCapability(id: "commands", title: AorusPluginText(ru: "Команды в чате", en: "Chat commands"))
-    public static let outgoing = AorusPluginCapability(id: "outgoing", title: AorusPluginText(ru: "Исходящие сообщения", en: "Outgoing messages"))
-    public static let incoming = AorusPluginCapability(id: "incoming", title: AorusPluginText(ru: "Входящие сообщения", en: "Incoming messages"))
-
-    private static let probes: [(AorusPluginCapability, [String])] = [
-        (.network, ["aorus.http"]),
-        (.sendsMessages, ["aorus.messages.send"]),
-        (.clipboard, ["aorus.clipboard"]),
-        (.opensChats, ["aorus.chats.open"]),
-        (.dialogs, ["aorus.ui"]),
-        (.storage, ["aorus.storage"]),
-        (.commands, ["aorus.commands.register"]),
-        (.outgoing, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\""]),
-        (.incoming, ["aorus.on('message'", "aorus.on(\"message\"", "aorus.once('message'", "aorus.once(\"message\""]),
-    ]
-
-    public static func scan(_ source: String) -> [AorusPluginCapability] {
-        var found: [AorusPluginCapability] = []
-        for (capability, needles) in probes {
-            if needles.contains(where: { source.contains($0) }) {
-                found.append(capability)
-            }
-        }
-        return found
-    }
-}
+// What a plugin reaches for is read off its source by `AorusPluginPermission.requestedBySource`
+// and shown on the permission sheet. An earlier, coarser scanner lived here as well; it was
+// never called, and keeping a second list of needles next to the one the consent sheet uses
+// is how a later edit ends up asking for less than the plugin actually does.
