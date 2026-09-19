@@ -148,10 +148,14 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.customUI, ["aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage"]),
             (.settingsIntegration, ["aorus.integrations.settings.register"]),
             (.contextMenu, ["aorus.integrations.contextMenu.register"]),
+            // The call sites and the two ways a page declares a link row. A bare `url:`
+            // is not one of them: it appears in an http options object, in a share, in a
+            // comment — and asking for the browser on every plugin that writes those
+            // characters is how a person learns to grant the sheet without reading it.
+            // A needle this misses is denied at the call itself, with a message saying so.
             (.inAppBrowser, [
                 "aorus.browser.open", "aorus.ui.openURL", "aorus.app.openURL",
-                "type: 'link'", "type: \"link\"", "\"type\":\"link\"",
-                "url:", "url :", ".link({",
+                "type: 'link'", "type: \"link\"", "\"type\":\"link\"", ".link({",
             ]),
             (.artificialIntelligence, ["aorus.ai."]),
         ]

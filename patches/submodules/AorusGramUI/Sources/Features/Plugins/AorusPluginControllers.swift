@@ -841,7 +841,7 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
     override func loadDisplayNode() {
         displayNode = ViewControllerTracingNode(); displayNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
         tableView.backgroundColor = presentationData.theme.list.blocksBackgroundColor; tableView.dataSource = self; tableView.delegate = self
-        emptyLabel.text = AorusLang.current == .ru ? "У этого плагина нет настраиваемых параметров." : "This plugin has no configurable settings."
+        emptyLabel.text = aorusL("У этого плагина нет настраиваемых параметров.", "This plugin has no configurable settings.")
         emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
         emptyLabel.font = .systemFont(ofSize: 15)
         emptyLabel.textAlignment = .center
@@ -1353,7 +1353,13 @@ final class AorusPluginPageController: ViewController, UITableViewDataSource, UI
     }
 
     @objc private func closeModal() {
-        dismiss(animated: true)
+        // A modal page is a controller on Telegram's own stack with a modal presentation,
+        // so it leaves the way it arrived.
+        if let navigation = navigationController as? NavigationController, navigation.viewControllers.count > 1 {
+            _ = navigation.popViewController(animated: true)
+        } else {
+            dismiss(animated: true)
+        }
     }
 
     deinit {
@@ -1373,11 +1379,8 @@ final class AorusPluginPageController: ViewController, UITableViewDataSource, UI
         integrationObserver = NotificationCenter.default.addObserver(forName: Notification.Name("aorusgram.plugins.integrationsChanged"), object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             guard let updated = AorusPluginRuntimeManager.shared.page(pluginId: self.pluginId, pageId: self.page.id) else {
-                if self.navigationController?.presentingViewController != nil {
-                    self.dismiss(animated: true)
-                } else {
-                    _ = self.navigationController?.popViewController(animated: true)
-                }
+                // The plugin withdrew the page or stopped. It leaves the same way it came.
+                self.closeModal()
                 return
             }
             self.page = updated
@@ -1604,10 +1607,10 @@ private func permissionTitle(_ permission: AorusPluginPermission) -> String {
     case .clipboardWrite: return aorusL("Запись в буфер обмена", "Write clipboard")
     case .incomingMessages: return aorusL("События входящих сообщений", "Receive message events")
     case .outgoingMessages: return aorusL("Обработка исходящих сообщений", "Process outgoing messages")
-    case .customUI: return AorusLang.current == .ru ? "Собственные экраны" : "Custom screens"
+    case .customUI: return aorusL("Собственные экраны", "Custom screens")
     case .settingsIntegration: return AorusPluginUIString.settings.text
-    case .contextMenu: return AorusLang.current == .ru ? "Контекстное меню" : "Context menu"
-    case .inAppBrowser: return AorusLang.current == .ru ? "Встроенный браузер" : "In-app browser"
+    case .contextMenu: return aorusL("Контекстное меню", "Context menu")
+    case .inAppBrowser: return aorusL("Встроенный браузер", "In-app browser")
     case .artificialIntelligence: return "AorusAI"
     }
 }
@@ -1638,15 +1641,15 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
     case .outgoingMessages:
         return marker + aorusL("Разрешает изменять или отменять отправляемый текст.", "Allows changing or consuming outgoing text.")
     case .customUI:
-        return marker + (AorusLang.current == .ru ? "Разрешает создавать нативные страницы из проверенных элементов." : "Allows native pages made from validated controls.")
+        return marker + aorusL("Разрешает создавать нативные страницы из проверенных элементов.", "Allows native pages made from validated controls.")
     case .settingsIntegration:
-        return marker + (AorusLang.current == .ru ? "Разрешает добавлять ярлыки в раздел плагинов." : "Allows shortcuts in the Plugins section.")
+        return marker + aorusL("Разрешает добавлять ярлыки в раздел плагинов.", "Allows shortcuts in the Plugins section.")
     case .contextMenu:
-        return marker + (AorusLang.current == .ru ? "Разрешает добавлять действия в меню сообщения без доступа к его содержимому." : "Allows message-menu actions without implicit access to message contents.")
+        return marker + aorusL("Разрешает добавлять действия в меню сообщения без доступа к его содержимому.", "Allows message-menu actions without implicit access to message contents.")
     case .inAppBrowser:
-        return marker + (AorusLang.current == .ru ? "Разрешает открывать публичные сайты во встроенном браузере." : "Allows public websites in the in-app browser.")
+        return marker + aorusL("Разрешает открывать публичные сайты во встроенном браузере.", "Allows public websites in the in-app browser.")
     case .artificialIntelligence:
-        return marker + (AorusLang.current == .ru ? "Разрешает отправлять запросы AorusAI через защищенный клиентский шлюз." : "Allows AorusAI requests through the protected client gateway.")
+        return marker + aorusL("Разрешает отправлять запросы AorusAI через защищенный клиентский шлюз.", "Allows AorusAI requests through the protected client gateway.")
     }
 }
 

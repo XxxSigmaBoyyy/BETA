@@ -423,18 +423,26 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 return
             }
             let controller = AorusPluginPageController(context: self.context, pluginId: pluginId, page: page)
-            if style == "push" {
-                guard let navigation = presenter.navigationController as? NavigationController else {
-                    completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
-                    return
-                }
-                navigation.pushViewController(controller)
-            } else {
-                controller.installModalCloseButton()
-                let navigation = UINavigationController(rootViewController: controller)
-                navigation.modalPresentationStyle = style == "fullScreen" ? .fullScreen : .pageSheet
-                presenter.present(navigation, animated: true)
+            // All three styles go onto Telegram's own navigation stack. A Display
+            // `ViewController` is laid out by `containerLayoutUpdated`, which only Telegram's
+            // containers call — inside a plain `UINavigationController` presented by UIKit it
+            // is never called at all and the page comes up blank. `navigationPresentation`
+            // is what makes the same stack render a controller as a card or full screen.
+            guard let navigation = presenter.navigationController as? NavigationController else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
             }
+            switch style {
+            case "sheet":
+                controller.navigationPresentation = .modal
+                controller.installModalCloseButton()
+            case "fullScreen":
+                controller.navigationPresentation = .flatModal
+                controller.installModalCloseButton()
+            default:
+                break
+            }
+            navigation.pushViewController(controller)
             completion(.success(()))
         }
     }

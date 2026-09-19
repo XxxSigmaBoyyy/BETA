@@ -53,6 +53,15 @@ enum AorusL10nTable {
     ]
 
     private static let it: [String: String] = [
+        "Custom screens": "Schermate personalizzate",
+        "Context menu": "Menu contestuale",
+        "In-app browser": "Browser integrato",
+        "Allows native pages made from validated controls.": "Consente schermate native create con elementi verificati.",
+        "Allows shortcuts in the Plugins section.": "Consente scorciatoie nella sezione Plugin.",
+        "Allows message-menu actions without implicit access to message contents.": "Consente azioni nel menu del messaggio senza accedere al suo contenuto.",
+        "Allows public websites in the in-app browser.": "Consente di aprire siti pubblici nel browser integrato.",
+        "Allows AorusAI requests through the protected client gateway.": "Consente richieste ad AorusAI tramite il gateway client protetto.",
+        "This plugin has no configurable settings.": "Questo plugin non ha impostazioni configurabili.",
         "Plugins": "Plugin",
         "No plugins yet": "Ancora nessun plugin",
         "Create your own plugin or import a file.": "Creane uno o importa un file.",
@@ -746,6 +755,15 @@ enum AorusL10nTable {
     ]
 
     private static let pl: [String: String] = [
+        "Custom screens": "Własne ekrany",
+        "Context menu": "Menu kontekstowe",
+        "In-app browser": "Wbudowana przeglądarka",
+        "Allows native pages made from validated controls.": "Zezwala na tworzenie natywnych ekranów ze sprawdzonych elementów.",
+        "Allows shortcuts in the Plugins section.": "Zezwala na dodawanie skrótów w sekcji wtyczek.",
+        "Allows message-menu actions without implicit access to message contents.": "Zezwala na dodawanie akcji w menu wiadomości bez dostępu do jej treści.",
+        "Allows public websites in the in-app browser.": "Zezwala na otwieranie publicznych stron we wbudowanej przeglądarce.",
+        "Allows AorusAI requests through the protected client gateway.": "Zezwala na żądania do AorusAI przez chronioną bramę klienta.",
+        "This plugin has no configurable settings.": "Ta wtyczka nie ma konfigurowalnych ustawień.",
         "Plugins": "Wtyczki",
         "No plugins yet": "Nie ma jeszcze wtyczek",
         "Create your own plugin or import a file.": "Utwórz własną lub zaimportuj plik.",
@@ -1439,6 +1457,15 @@ enum AorusL10nTable {
     ]
 
     private static let nl: [String: String] = [
+        "Custom screens": "Eigen schermen",
+        "Context menu": "Contextmenu",
+        "In-app browser": "Ingebouwde browser",
+        "Allows native pages made from validated controls.": "Staat eigen schermen van gecontroleerde elementen toe.",
+        "Allows shortcuts in the Plugins section.": "Staat snelkoppelingen in het onderdeel Plug-ins toe.",
+        "Allows message-menu actions without implicit access to message contents.": "Staat acties in het berichtmenu toe zonder toegang tot de inhoud ervan.",
+        "Allows public websites in the in-app browser.": "Staat openbare websites in de ingebouwde browser toe.",
+        "Allows AorusAI requests through the protected client gateway.": "Staat AorusAI-verzoeken via de beveiligde client-gateway toe.",
+        "This plugin has no configurable settings.": "Deze plug-in heeft geen instelbare opties.",
         "Plugins": "Plug-ins",
         "No plugins yet": "Nog geen plug-ins",
         "Create your own plugin or import a file.": "Maak er zelf een of importeer een bestand.",
@@ -2132,6 +2159,15 @@ enum AorusL10nTable {
     ]
 
     private static let ca: [String: String] = [
+        "Custom screens": "Pantalles pròpies",
+        "Context menu": "Menú contextual",
+        "In-app browser": "Navegador integrat",
+        "Allows native pages made from validated controls.": "Permet crear pantalles natives amb elements verificats.",
+        "Allows shortcuts in the Plugins section.": "Permet afegir dreceres a la secció de complements.",
+        "Allows message-menu actions without implicit access to message contents.": "Permet afegir accions al menú del missatge sense accedir al seu contingut.",
+        "Allows public websites in the in-app browser.": "Permet obrir llocs públics al navegador integrat.",
+        "Allows AorusAI requests through the protected client gateway.": "Permet enviar peticions a AorusAI a través de la passarel·la protegida del client.",
+        "This plugin has no configurable settings.": "Aquest complement no té opcions configurables.",
         "Plugins": "Complements",
         "No plugins yet": "Encara no hi ha complements",
         "Create your own plugin or import a file.": "Crea'n un o importa un fitxer.",
@@ -2825,6 +2861,15 @@ enum AorusL10nTable {
     ]
 
     private static let id: [String: String] = [
+        "Custom screens": "Layar sendiri",
+        "Context menu": "Menu konteks",
+        "In-app browser": "Peramban bawaan",
+        "Allows native pages made from validated controls.": "Mengizinkan membuat layar asli dari elemen yang diverifikasi.",
+        "Allows shortcuts in the Plugins section.": "Mengizinkan menambah pintasan di bagian plugin.",
+        "Allows message-menu actions without implicit access to message contents.": "Mengizinkan menambah tindakan di menu pesan tanpa akses ke isinya.",
+        "Allows public websites in the in-app browser.": "Mengizinkan membuka situs publik di peramban bawaan.",
+        "Allows AorusAI requests through the protected client gateway.": "Mengizinkan permintaan AorusAI melalui gerbang klien terlindungi.",
+        "This plugin has no configurable settings.": "Plugin ini tidak punya pengaturan yang bisa diubah.",
         "Plugins": "Plugin",
         "No plugins yet": "Belum ada plugin",
         "Create your own plugin or import a file.": "Buat sendiri atau impor file.",
@@ -3518,6 +3563,15 @@ enum AorusL10nTable {
     ]
 
     private static let ms: [String: String] = [
+        "Custom screens": "Skrin sendiri",
+        "Context menu": "Menu konteks",
+        "In-app browser": "Pelayar terbina",
+        "Allows native pages made from validated controls.": "Membenarkan skrin asli daripada elemen yang disahkan.",
+        "Allows shortcuts in the Plugins section.": "Membenarkan pintasan dalam bahagian pemalam.",
+        "Allows message-menu actions without implicit access to message contents.": "Membenarkan tindakan dalam menu mesej tanpa akses kepada kandungannya.",
+        "Allows public websites in the in-app browser.": "Membenarkan membuka tapak awam dalam pelayar terbina.",
+        "Allows AorusAI requests through the protected client gateway.": "Membenarkan permintaan AorusAI melalui get klien terlindung.",
+        "This plugin has no configurable settings.": "Pemalam ini tiada tetapan yang boleh diubah.",
         "Plugins": "Pemalam",
         "No plugins yet": "Belum ada pemalam",
         "Create your own plugin or import a file.": "Cipta sendiri atau import fail.",
@@ -4211,6 +4265,15 @@ enum AorusL10nTable {
     ]
 
     private static let be: [String: String] = [
+        "Custom screens": "Уласныя экраны",
+        "Context menu": "Кантэкстнае меню",
+        "In-app browser": "Убудаваны браўзер",
+        "Allows native pages made from validated controls.": "Дазваляе ствараць натыўныя старонкі з правераных элементаў.",
+        "Allows shortcuts in the Plugins section.": "Дазваляе дадаваць цэтлікі ў раздзел убудоў.",
+        "Allows message-menu actions without implicit access to message contents.": "Дазваляе дадаваць дзеянні ў меню паведамлення без доступу да яго змесціва.",
+        "Allows public websites in the in-app browser.": "Дазваляе адкрываць публічныя сайты ва ўбудаваным браўзеры.",
+        "Allows AorusAI requests through the protected client gateway.": "Дазваляе адпраўляць запыты AorusAI праз абаронены кліенцкі шлюз.",
+        "This plugin has no configurable settings.": "У гэтай убудовы няма наладжвальных параметраў.",
         "Plugins": "Убудовы",
         "No plugins yet": "Убудоў пакуль няма",
         "Create your own plugin or import a file.": "Стварыце сваю або імпартуйце файл.",
@@ -4904,6 +4967,15 @@ enum AorusL10nTable {
     ]
 
     private static let uz: [String: String] = [
+        "Custom screens": "O'z ekranlari",
+        "Context menu": "Kontekst menyusi",
+        "In-app browser": "Ichki brauzer",
+        "Allows native pages made from validated controls.": "Tasdiqlangan elementlardan nativ sahifalar yaratishga ruxsat beradi.",
+        "Allows shortcuts in the Plugins section.": "Plaginlar bo'limiga yorliq qo'shishga ruxsat beradi.",
+        "Allows message-menu actions without implicit access to message contents.": "Xabar menyusiga uning matniga kirmasdan amallar qo'shishga ruxsat beradi.",
+        "Allows public websites in the in-app browser.": "Ichki brauzerda ommaviy saytlarni ochishga ruxsat beradi.",
+        "Allows AorusAI requests through the protected client gateway.": "Himoyalangan mijoz shlyuzi orqali AorusAI so'rovlariga ruxsat beradi.",
+        "This plugin has no configurable settings.": "Bu plaginda sozlanadigan parametrlar yo'q.",
         "Plugins": "Plaginlar",
         "No plugins yet": "Hozircha plagin yo'q",
         "Create your own plugin or import a file.": "O'zingiznikini yarating yoki fayl import qiling.",
@@ -5597,6 +5669,15 @@ enum AorusL10nTable {
     ]
 
     private static let ko: [String: String] = [
+        "Custom screens": "자체 화면",
+        "Context menu": "컨텍스트 메뉴",
+        "In-app browser": "내장 브라우저",
+        "Allows native pages made from validated controls.": "검증된 요소로 만든 네이티브 화면을 허용합니다.",
+        "Allows shortcuts in the Plugins section.": "플러그인 섹션에 바로가기 추가를 허용합니다.",
+        "Allows message-menu actions without implicit access to message contents.": "메시지 내용에 접근하지 않고 메시지 메뉴에 동작 추가를 허용합니다.",
+        "Allows public websites in the in-app browser.": "내장 브라우저에서 공개 사이트 열기를 허용합니다.",
+        "Allows AorusAI requests through the protected client gateway.": "보호된 클라이언트 게이트웨이를 통한 AorusAI 요청을 허용합니다.",
+        "This plugin has no configurable settings.": "이 플러그인에는 설정할 수 있는 항목이 없습니다.",
         "Plugins": "플러그인",
         "No plugins yet": "아직 플러그인이 없습니다",
         "Create your own plugin or import a file.": "직접 만들거나 파일을 가져오세요.",
@@ -6290,6 +6371,15 @@ enum AorusL10nTable {
     ]
 
     private static let ar: [String: String] = [
+        "Custom screens": "شاشات خاصة",
+        "Context menu": "قائمة السياق",
+        "In-app browser": "المتصفح المدمج",
+        "Allows native pages made from validated controls.": "يسمح بإنشاء شاشات أصلية من عناصر موثوقة.",
+        "Allows shortcuts in the Plugins section.": "يسمح بإضافة اختصارات في قسم الإضافات.",
+        "Allows message-menu actions without implicit access to message contents.": "يسمح بإضافة إجراءات في قائمة الرسالة دون الوصول إلى محتواها.",
+        "Allows public websites in the in-app browser.": "يسمح بفتح المواقع العامة في المتصفح المدمج.",
+        "Allows AorusAI requests through the protected client gateway.": "يسمح بإرسال طلبات AorusAI عبر بوابة العميل المحمية.",
+        "This plugin has no configurable settings.": "لا تحتوي هذه الإضافة على إعدادات قابلة للتغيير.",
         "Plugins": "الإضافات",
         "No plugins yet": "لا توجد إضافات بعد",
         "Create your own plugin or import a file.": "أنشئ إضافتك أو استورد ملفًا.",
@@ -6983,6 +7073,15 @@ enum AorusL10nTable {
     ]
 
     private static let fa: [String: String] = [
+        "Custom screens": "صفحه‌های اختصاصی",
+        "Context menu": "منوی زمینه",
+        "In-app browser": "مرورگر درون‌برنامه‌ای",
+        "Allows native pages made from validated controls.": "اجازه ساخت صفحه‌های بومی از عناصر تاییدشده را می‌دهد.",
+        "Allows shortcuts in the Plugins section.": "اجازه افزودن میان‌بر به بخش افزونه‌ها را می‌دهد.",
+        "Allows message-menu actions without implicit access to message contents.": "اجازه افزودن کنش به منوی پیام بدون دسترسی به محتوای آن را می‌دهد.",
+        "Allows public websites in the in-app browser.": "اجازه باز کردن سایت‌های عمومی در مرورگر درون‌برنامه‌ای را می‌دهد.",
+        "Allows AorusAI requests through the protected client gateway.": "اجازه ارسال درخواست AorusAI از طریق دروازه امن کلاینت را می‌دهد.",
+        "This plugin has no configurable settings.": "این افزونه تنظیمات قابل تغییری ندارد.",
         "Plugins": "افزونه‌ها",
         "No plugins yet": "هنوز افزونه‌ای نیست",
         "Create your own plugin or import a file.": "افزونه خود را بسازید یا فایلی وارد کنید.",
@@ -7676,6 +7775,15 @@ enum AorusL10nTable {
     ]
 
     private static let kk: [String: String] = [
+        "Custom screens": "Жеке экрандар",
+        "Context menu": "Контекст мәзірі",
+        "In-app browser": "Кірістірілген браузер",
+        "Allows native pages made from validated controls.": "Тексерілген элементтерден нативті беттер жасауға рұқсат береді.",
+        "Allows shortcuts in the Plugins section.": "Плагиндер бөліміне таңбашалар қосуға рұқсат береді.",
+        "Allows message-menu actions without implicit access to message contents.": "Хабар мәзіріне оның мазмұнына қатынамай әрекеттер қосуға рұқсат береді.",
+        "Allows public websites in the in-app browser.": "Кірістірілген браузерде жалпыға ортақ сайттарды ашуға рұқсат береді.",
+        "Allows AorusAI requests through the protected client gateway.": "Қорғалған клиент шлюзі арқылы AorusAI сұрауларына рұқсат береді.",
+        "This plugin has no configurable settings.": "Бұл плагинде бапталатын параметрлер жоқ.",
         "Plugins": "Плагиндер",
         "No plugins yet": "Әзірге плагин жоқ",
         "Create your own plugin or import a file.": "Өзіңіздікін жасаңыз немесе файл импорттаңыз.",
@@ -8369,6 +8477,15 @@ enum AorusL10nTable {
     ]
 
     private static let zhHans: [String: String] = [
+        "Custom screens": "自定义界面",
+        "Context menu": "上下文菜单",
+        "In-app browser": "内置浏览器",
+        "Allows native pages made from validated controls.": "允许使用经过校验的元素创建原生页面。",
+        "Allows shortcuts in the Plugins section.": "允许在插件板块添加快捷入口。",
+        "Allows message-menu actions without implicit access to message contents.": "允许在消息菜单添加操作，且不访问消息内容。",
+        "Allows public websites in the in-app browser.": "允许在内置浏览器中打开公共网站。",
+        "Allows AorusAI requests through the protected client gateway.": "允许通过受保护的客户端网关发送 AorusAI 请求。",
+        "This plugin has no configurable settings.": "该插件没有可配置的选项。",
         "Plugins": "插件",
         "No plugins yet": "还没有插件",
         "Create your own plugin or import a file.": "创建你自己的插件或导入文件。",
@@ -9063,6 +9180,15 @@ enum AorusL10nTable {
 
 
     private static let zhHant: [String: String] = [
+        "Custom screens": "自訂畫面",
+        "Context menu": "內容選單",
+        "In-app browser": "內建瀏覽器",
+        "Allows native pages made from validated controls.": "允許使用通過驗證的元件建立原生頁面。",
+        "Allows shortcuts in the Plugins section.": "允許在外掛程式區塊加入捷徑。",
+        "Allows message-menu actions without implicit access to message contents.": "允許在訊息選單加入動作，且不存取訊息內容。",
+        "Allows public websites in the in-app browser.": "允許在內建瀏覽器中開啟公開網站。",
+        "Allows AorusAI requests through the protected client gateway.": "允許透過受保護的用戶端閘道發送 AorusAI 請求。",
+        "This plugin has no configurable settings.": "這個外掛程式沒有可設定的選項。",
         "Plugins": "外掛程式",
         "No plugins yet": "還沒有外掛程式",
         "Create your own plugin or import a file.": "建立你自己的外掛程式或匯入檔案。",
@@ -9756,6 +9882,15 @@ enum AorusL10nTable {
     ]
 
     private static let ja: [String: String] = [
+        "Custom screens": "独自の画面",
+        "Context menu": "コンテキストメニュー",
+        "In-app browser": "内蔵ブラウザ",
+        "Allows native pages made from validated controls.": "検証済みの部品から作られたネイティブ画面を許可します。",
+        "Allows shortcuts in the Plugins section.": "プラグインの欄にショートカットを追加できます。",
+        "Allows message-menu actions without implicit access to message contents.": "メッセージの内容にアクセスせずにメッセージメニューへ操作を追加できます。",
+        "Allows public websites in the in-app browser.": "内蔵ブラウザで公開サイトを開けます。",
+        "Allows AorusAI requests through the protected client gateway.": "保護されたクライアントゲートウェイ経由の AorusAI リクエストを許可します。",
+        "This plugin has no configurable settings.": "このプラグインに設定できる項目はありません。",
         "Plugins": "プラグイン",
         "No plugins yet": "プラグインはまだありません",
         "Create your own plugin or import a file.": "自分で作成するか、ファイルを読み込んでください。",
@@ -10449,6 +10584,15 @@ enum AorusL10nTable {
     ]
 
     private static let fi: [String: String] = [
+        "Custom screens": "Omat näkymät",
+        "Context menu": "Kontekstivalikko",
+        "In-app browser": "Sisäinen selain",
+        "Allows native pages made from validated controls.": "Sallii omat näkymät tarkistetuista osista.",
+        "Allows shortcuts in the Plugins section.": "Sallii pikakuvakkeet laajennusten osiossa.",
+        "Allows message-menu actions without implicit access to message contents.": "Sallii toiminnot viestivalikossa ilman pääsyä viestin sisältöön.",
+        "Allows public websites in the in-app browser.": "Sallii julkisten sivustojen avaamisen sisäisessä selaimessa.",
+        "Allows AorusAI requests through the protected client gateway.": "Sallii AorusAI-pyynnöt suojatun asiakasyhdyskäytävän kautta.",
+        "This plugin has no configurable settings.": "Tällä laajennuksella ei ole muokattavia asetuksia.",
         "Plugins": "Laajennukset",
         "No plugins yet": "Ei vielä laajennuksia",
         "Create your own plugin or import a file.": "Luo oma tai tuo tiedosto.",
@@ -11142,6 +11286,15 @@ enum AorusL10nTable {
     ]
 
     private static let he: [String: String] = [
+        "Custom screens": "מסכים משלו",
+        "Context menu": "תפריט הקשר",
+        "In-app browser": "דפדפן מובנה",
+        "Allows native pages made from validated controls.": "מאפשר מסכים מובנים שנבנים מרכיבים מאומתים.",
+        "Allows shortcuts in the Plugins section.": "מאפשר קיצורי דרך בחלק התוספים.",
+        "Allows message-menu actions without implicit access to message contents.": "מאפשר פעולות בתפריט ההודעה בלי גישה לתוכן שלה.",
+        "Allows public websites in the in-app browser.": "מאפשר לפתוח אתרים ציבוריים בדפדפן המובנה.",
+        "Allows AorusAI requests through the protected client gateway.": "מאפשר בקשות AorusAI דרך שער הלקוח המוגן.",
+        "This plugin has no configurable settings.": "לתוסף הזה אין הגדרות שניתן לשנות.",
         "Plugins": "תוספים",
         "No plugins yet": "אין עדיין תוספים",
         "Create your own plugin or import a file.": "צרו תוסף משלכם או ייבאו קובץ.",
@@ -11835,6 +11988,15 @@ enum AorusL10nTable {
     ]
 
     private static let hr: [String: String] = [
+        "Custom screens": "Vlastiti zasloni",
+        "Context menu": "Kontekstni izbornik",
+        "In-app browser": "Ugrađeni preglednik",
+        "Allows native pages made from validated controls.": "Dopušta izradu nativnih zaslona od provjerenih elemenata.",
+        "Allows shortcuts in the Plugins section.": "Dopušta prečace u odjeljku dodataka.",
+        "Allows message-menu actions without implicit access to message contents.": "Dopušta radnje u izborniku poruke bez pristupa njezinu sadržaju.",
+        "Allows public websites in the in-app browser.": "Dopušta otvaranje javnih stranica u ugrađenom pregledniku.",
+        "Allows AorusAI requests through the protected client gateway.": "Dopušta AorusAI zahtjeve preko zaštićenog klijentskog pristupnika.",
+        "This plugin has no configurable settings.": "Ovaj dodatak nema postavki koje se mogu mijenjati.",
         "Plugins": "Dodaci",
         "No plugins yet": "Još nema dodataka",
         "Create your own plugin or import a file.": "Izradi vlastiti ili uvezi datoteku.",
@@ -12528,6 +12690,15 @@ enum AorusL10nTable {
     ]
 
     private static let sr: [String: String] = [
+        "Custom screens": "Сопствени екрани",
+        "Context menu": "Контекстни мени",
+        "In-app browser": "Уграђени прегледач",
+        "Allows native pages made from validated controls.": "Дозвољава прављење нативних екрана од проверених елемената.",
+        "Allows shortcuts in the Plugins section.": "Дозвољава пречице у одељку додатака.",
+        "Allows message-menu actions without implicit access to message contents.": "Дозвољава радње у менију поруке без приступа њеном садржају.",
+        "Allows public websites in the in-app browser.": "Дозвољава отварање јавних сајтова у уграђеном прегледачу.",
+        "Allows AorusAI requests through the protected client gateway.": "Дозвољава AorusAI захтеве преко заштићеног клијентског пролаза.",
+        "This plugin has no configurable settings.": "Овај додатак нема подешавања која се могу мењати.",
         "Plugins": "Додаци",
         "No plugins yet": "Још нема додатака",
         "Create your own plugin or import a file.": "Направите свој или увезите датотеку.",
@@ -13221,6 +13392,15 @@ enum AorusL10nTable {
     ]
 
     private static let cs: [String: String] = [
+        "Custom screens": "Vlastní obrazovky",
+        "Context menu": "Kontextová nabídka",
+        "In-app browser": "Vestavěný prohlížeč",
+        "Allows native pages made from validated controls.": "Povoluje vlastní obrazovky z ověřených prvků.",
+        "Allows shortcuts in the Plugins section.": "Povoluje zkratky v sekci pluginů.",
+        "Allows message-menu actions without implicit access to message contents.": "Povoluje akce v nabídce zprávy bez přístupu k jejímu obsahu.",
+        "Allows public websites in the in-app browser.": "Povoluje otevírat veřejné weby ve vestavěném prohlížeči.",
+        "Allows AorusAI requests through the protected client gateway.": "Povoluje požadavky na AorusAI přes chráněnou klientskou bránu.",
+        "This plugin has no configurable settings.": "Tento plugin nemá nastavitelné možnosti.",
         "Plugins": "Pluginy",
         "No plugins yet": "Zatím žádné pluginy",
         "Create your own plugin or import a file.": "Vytvořte vlastní nebo importujte soubor.",
@@ -13914,6 +14094,15 @@ enum AorusL10nTable {
     ]
 
     private static let sk: [String: String] = [
+        "Custom screens": "Vlastné obrazovky",
+        "Context menu": "Kontextová ponuka",
+        "In-app browser": "Vstavaný prehliadač",
+        "Allows native pages made from validated controls.": "Povoľuje vlastné obrazovky z overených prvkov.",
+        "Allows shortcuts in the Plugins section.": "Povoľuje skratky v sekcii doplnkov.",
+        "Allows message-menu actions without implicit access to message contents.": "Povoľuje akcie v ponuke správy bez prístupu k jej obsahu.",
+        "Allows public websites in the in-app browser.": "Povoľuje otvárať verejné weby vo vstavanom prehliadači.",
+        "Allows AorusAI requests through the protected client gateway.": "Povoľuje požiadavky na AorusAI cez chránenú klientsku bránu.",
+        "This plugin has no configurable settings.": "Tento doplnok nemá nastaviteľné možnosti.",
         "Plugins": "Doplnky",
         "No plugins yet": "Zatiaľ žiadne doplnky",
         "Create your own plugin or import a file.": "Vytvorte vlastný alebo importujte súbor.",
@@ -14607,6 +14796,15 @@ enum AorusL10nTable {
     ]
 
     private static let ro: [String: String] = [
+        "Custom screens": "Ecrane proprii",
+        "Context menu": "Meniu contextual",
+        "In-app browser": "Browser integrat",
+        "Allows native pages made from validated controls.": "Permite ecrane native create din elemente verificate.",
+        "Allows shortcuts in the Plugins section.": "Permite scurtături în secțiunea pluginuri.",
+        "Allows message-menu actions without implicit access to message contents.": "Permite acțiuni în meniul mesajului fără acces la conținutul lui.",
+        "Allows public websites in the in-app browser.": "Permite deschiderea site-urilor publice în browserul integrat.",
+        "Allows AorusAI requests through the protected client gateway.": "Permite cereri AorusAI prin poarta protejată a clientului.",
+        "This plugin has no configurable settings.": "Acest plugin nu are setări configurabile.",
         "Plugins": "Pluginuri",
         "No plugins yet": "Încă nu există pluginuri",
         "Create your own plugin or import a file.": "Creează-ți propriul plugin sau importă un fișier.",
@@ -15300,6 +15498,15 @@ enum AorusL10nTable {
     ]
 
     private static let hu: [String: String] = [
+        "Custom screens": "Saját képernyők",
+        "Context menu": "Helyi menü",
+        "In-app browser": "Beépített böngésző",
+        "Allows native pages made from validated controls.": "Engedélyezi az ellenőrzött elemekből épülő saját képernyőket.",
+        "Allows shortcuts in the Plugins section.": "Engedélyezi a parancsikonokat a bővítmények szakaszban.",
+        "Allows message-menu actions without implicit access to message contents.": "Engedélyezi a műveleteket az üzenet menüjében, a tartalmához való hozzáférés nélkül.",
+        "Allows public websites in the in-app browser.": "Engedélyezi a nyilvános webhelyek megnyitását a beépített böngészőben.",
+        "Allows AorusAI requests through the protected client gateway.": "Engedélyezi az AorusAI-kéréseket a védett kliensátjárón keresztül.",
+        "This plugin has no configurable settings.": "Ennek a bővítménynek nincs állítható beállítása.",
         "Plugins": "Bővítmények",
         "No plugins yet": "Még nincsenek bővítmények",
         "Create your own plugin or import a file.": "Készíts sajátot, vagy importálj egy fájlt.",
@@ -15993,6 +16200,15 @@ enum AorusL10nTable {
     ]
 
     private static let nb: [String: String] = [
+        "Custom screens": "Egne skjermer",
+        "Context menu": "Kontekstmeny",
+        "In-app browser": "Innebygd nettleser",
+        "Allows native pages made from validated controls.": "Tillater egne skjermer satt sammen av kontrollerte elementer.",
+        "Allows shortcuts in the Plugins section.": "Tillater snarveier i programtillegg-delen.",
+        "Allows message-menu actions without implicit access to message contents.": "Tillater handlinger i meldingsmenyen uten tilgang til innholdet.",
+        "Allows public websites in the in-app browser.": "Tillater åpning av offentlige nettsteder i den innebygde nettleseren.",
+        "Allows AorusAI requests through the protected client gateway.": "Tillater AorusAI-forespørsler gjennom den beskyttede klientgatewayen.",
+        "This plugin has no configurable settings.": "Dette programtillegget har ingen innstillinger som kan endres.",
         "Plugins": "Programtillegg",
         "No plugins yet": "Ingen programtillegg ennå",
         "Create your own plugin or import a file.": "Lag ditt eget eller importer en fil.",
@@ -16686,6 +16902,15 @@ enum AorusL10nTable {
     ]
 
     private static let sv: [String: String] = [
+        "Custom screens": "Egna skärmar",
+        "Context menu": "Snabbmeny",
+        "In-app browser": "Inbyggd webbläsare",
+        "Allows native pages made from validated controls.": "Tillåter egna skärmar byggda av kontrollerade element.",
+        "Allows shortcuts in the Plugins section.": "Tillåter genvägar i tilläggsavsnittet.",
+        "Allows message-menu actions without implicit access to message contents.": "Tillåter åtgärder i meddelandemenyn utan åtkomst till innehållet.",
+        "Allows public websites in the in-app browser.": "Tillåter att offentliga webbplatser öppnas i den inbyggda webbläsaren.",
+        "Allows AorusAI requests through the protected client gateway.": "Tillåter AorusAI-förfrågningar via den skyddade klientgatewayen.",
+        "This plugin has no configurable settings.": "Det här tillägget har inga inställningar som kan ändras.",
         "Plugins": "Tillägg",
         "No plugins yet": "Inga tillägg ännu",
         "Create your own plugin or import a file.": "Skapa ett eget eller importera en fil.",
@@ -17379,6 +17604,15 @@ enum AorusL10nTable {
     ]
 
     private static let vi: [String: String] = [
+        "Custom screens": "Màn hình riêng",
+        "Context menu": "Menu ngữ cảnh",
+        "In-app browser": "Trình duyệt tích hợp",
+        "Allows native pages made from validated controls.": "Cho phép tạo màn hình gốc từ các thành phần đã kiểm tra.",
+        "Allows shortcuts in the Plugins section.": "Cho phép thêm lối tắt vào mục tiện ích.",
+        "Allows message-menu actions without implicit access to message contents.": "Cho phép thêm hành động vào menu tin nhắn mà không truy cập nội dung.",
+        "Allows public websites in the in-app browser.": "Cho phép mở các trang công khai trong trình duyệt tích hợp.",
+        "Allows AorusAI requests through the protected client gateway.": "Cho phép gửi yêu cầu AorusAI qua cổng máy khách được bảo vệ.",
+        "This plugin has no configurable settings.": "Tiện ích này không có tuỳ chọn nào để thiết lập.",
         "Plugins": "Tiện ích",
         "No plugins yet": "Chưa có tiện ích nào",
         "Create your own plugin or import a file.": "Tạo tiện ích của bạn hoặc nhập một tệp.",
@@ -18072,6 +18306,15 @@ enum AorusL10nTable {
     ]
 
     private static let uk: [String: String] = [
+        "Custom screens": "Власні екрани",
+        "Context menu": "Контекстне меню",
+        "In-app browser": "Вбудований браузер",
+        "Allows native pages made from validated controls.": "Дозволяє створювати нативні сторінки з перевірених елементів.",
+        "Allows shortcuts in the Plugins section.": "Дозволяє додавати ярлики в розділ плагінів.",
+        "Allows message-menu actions without implicit access to message contents.": "Дозволяє додавати дії в меню повідомлення без доступу до його вмісту.",
+        "Allows public websites in the in-app browser.": "Дозволяє відкривати публічні сайти у вбудованому браузері.",
+        "Allows AorusAI requests through the protected client gateway.": "Дозволяє надсилати запити AorusAI через захищений клієнтський шлюз.",
+        "This plugin has no configurable settings.": "У цього плагіна немає налаштовуваних параметрів.",
         "Plugins": "Плагіни",
         "No plugins yet": "Плагінів поки немає",
         "Create your own plugin or import a file.": "Створіть власний або імпортуйте готовий файл.",
@@ -18774,6 +19017,15 @@ enum AorusL10nTable {
     ]
 
     private static let es: [String: String] = [
+        "Custom screens": "Pantallas propias",
+        "Context menu": "Menú contextual",
+        "In-app browser": "Navegador integrado",
+        "Allows native pages made from validated controls.": "Permite crear pantallas nativas con elementos verificados.",
+        "Allows shortcuts in the Plugins section.": "Permite añadir accesos directos a la sección de complementos.",
+        "Allows message-menu actions without implicit access to message contents.": "Permite añadir acciones al menú del mensaje sin acceso a su contenido.",
+        "Allows public websites in the in-app browser.": "Permite abrir sitios públicos en el navegador integrado.",
+        "Allows AorusAI requests through the protected client gateway.": "Permite enviar solicitudes a AorusAI a través de la pasarela protegida del cliente.",
+        "This plugin has no configurable settings.": "Este complemento no tiene ajustes configurables.",
         "Plugins": "Complementos",
         "No plugins yet": "Aún no hay complementos",
         "Create your own plugin or import a file.": "Crea el tuyo o importa un archivo.",
@@ -19476,6 +19728,15 @@ enum AorusL10nTable {
     ]
 
     private static let pt: [String: String] = [
+        "Custom screens": "Telas próprias",
+        "Context menu": "Menu de contexto",
+        "In-app browser": "Navegador integrado",
+        "Allows native pages made from validated controls.": "Permite criar telas nativas com elementos verificados.",
+        "Allows shortcuts in the Plugins section.": "Permite adicionar atalhos à seção de plugins.",
+        "Allows message-menu actions without implicit access to message contents.": "Permite adicionar ações ao menu da mensagem sem acesso ao conteúdo dela.",
+        "Allows public websites in the in-app browser.": "Permite abrir sites públicos no navegador integrado.",
+        "Allows AorusAI requests through the protected client gateway.": "Permite enviar solicitações ao AorusAI pelo gateway protegido do cliente.",
+        "This plugin has no configurable settings.": "Este plugin não tem opções configuráveis.",
         "Plugins": "Plugins",
         "No plugins yet": "Ainda não há plugins",
         "Create your own plugin or import a file.": "Crie o seu ou importe um arquivo.",
@@ -20178,6 +20439,15 @@ enum AorusL10nTable {
     ]
 
     private static let de: [String: String] = [
+        "Custom screens": "Eigene Seiten",
+        "Context menu": "Kontextmenü",
+        "In-app browser": "Integrierter Browser",
+        "Allows native pages made from validated controls.": "Erlaubt eigene Seiten aus geprüften Elementen.",
+        "Allows shortcuts in the Plugins section.": "Erlaubt Verknüpfungen im Bereich Erweiterungen.",
+        "Allows message-menu actions without implicit access to message contents.": "Erlaubt Aktionen im Nachrichtenmenü ohne Zugriff auf deren Inhalt.",
+        "Allows public websites in the in-app browser.": "Erlaubt öffentliche Websites im integrierten Browser.",
+        "Allows AorusAI requests through the protected client gateway.": "Erlaubt AorusAI-Anfragen über das geschützte Client-Gateway.",
+        "This plugin has no configurable settings.": "Diese Erweiterung hat keine einstellbaren Optionen.",
         "Plugins": "Erweiterungen",
         "No plugins yet": "Noch keine Erweiterungen",
         "Create your own plugin or import a file.": "Erstelle eine eigene oder importiere eine Datei.",
@@ -20880,6 +21150,15 @@ enum AorusL10nTable {
     ]
 
     private static let fr: [String: String] = [
+        "Custom screens": "Écrans personnalisés",
+        "Context menu": "Menu contextuel",
+        "In-app browser": "Navigateur intégré",
+        "Allows native pages made from validated controls.": "Autorise des écrans natifs composés d'éléments vérifiés.",
+        "Allows shortcuts in the Plugins section.": "Autorise des raccourcis dans la section Extensions.",
+        "Allows message-menu actions without implicit access to message contents.": "Autorise des actions dans le menu du message sans accès à son contenu.",
+        "Allows public websites in the in-app browser.": "Autorise l'ouverture de sites publics dans le navigateur intégré.",
+        "Allows AorusAI requests through the protected client gateway.": "Autorise les requêtes AorusAI via la passerelle client protégée.",
+        "This plugin has no configurable settings.": "Cette extension n'a aucun réglage configurable.",
         "Plugins": "Extensions",
         "No plugins yet": "Aucune extension pour l'instant",
         "Create your own plugin or import a file.": "Créez la vôtre ou importez un fichier.",
@@ -21582,6 +21861,15 @@ enum AorusL10nTable {
     ]
 
     private static let tr: [String: String] = [
+        "Custom screens": "Özel ekranlar",
+        "Context menu": "Bağlam menüsü",
+        "In-app browser": "Yerleşik tarayıcı",
+        "Allows native pages made from validated controls.": "Doğrulanmış öğelerden yerel ekranlar oluşturmaya izin verir.",
+        "Allows shortcuts in the Plugins section.": "Eklentiler bölümüne kısayol eklemeye izin verir.",
+        "Allows message-menu actions without implicit access to message contents.": "Mesaj menüsüne, içeriğine erişmeden eylem eklemeye izin verir.",
+        "Allows public websites in the in-app browser.": "Yerleşik tarayıcıda genel siteleri açmaya izin verir.",
+        "Allows AorusAI requests through the protected client gateway.": "Korumalı istemci ağ geçidi üzerinden AorusAI isteklerine izin verir.",
+        "This plugin has no configurable settings.": "Bu eklentinin ayarlanabilir seçeneği yok.",
         "Plugins": "Eklentiler",
         "No plugins yet": "Henüz eklenti yok",
         "Create your own plugin or import a file.": "Kendi eklentini oluştur veya bir dosya içe aktar.",

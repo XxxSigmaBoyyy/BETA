@@ -49,6 +49,14 @@ expect(
     AorusPluginPermission.requestedBySource(appIntegrationSource) == [.accountProfile, .openChats, .dialogs, .inAppBrowser],
     "app integration aliases request their privileged capabilities"
 )
+// A `url:` key inside an http payload is not a request for the browser. Over-asking on the
+// consent sheet is not the safe direction: it is how a person learns to grant the sheet
+// without reading it.
+let httpPayloadSource = "aorus.http.fetch('https://example.com', { method: 'POST', body: { url: 'https://example.com/callback' } });"
+expect(
+    AorusPluginPermission.requestedBySource(httpPayloadSource) == [.network],
+    "a url named inside an http payload does not request the in-app browser"
+)
 
 let pageJSON = Data("""
 [{"id":"main","title":"Main","sections":[{"rows":[{"id":"enabled","type":"toggle","title":"Enabled","value":true},{"id":"run","type":"button","title":"Run"}]}]}]
