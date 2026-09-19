@@ -2,7 +2,7 @@ name: Build AorusGram IPA
 
 on:
   push:
-    branches: [ main, "claude/**", "cursor/**" ]
+    branches: [ main, "claude/**", "cursor/**", "codex/**" ]
   workflow_dispatch:
 
 # Do not cancel in-progress Bazel runs: a new push or manual dispatch must not kill a 40–60m build.
