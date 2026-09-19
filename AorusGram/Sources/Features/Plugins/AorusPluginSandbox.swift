@@ -19,6 +19,7 @@ import Darwin
 /// What the sandbox asks the app for. Every call names the plugin so the implementation can
 /// attribute it, and every asynchronous one completes exactly once.
 public protocol AorusPluginHostServices: AnyObject {
+    var pluginExecutionAllowed: Bool { get }
     func pluginLog(_ pluginId: String, level: AorusPluginLogEntry.Level, text: String)
     func pluginStorageChanged(_ pluginId: String, values: [String: AorusPluginJSONValue])
     func pluginSettingsSchemaChanged(_ pluginId: String, fields: [AorusPluginSettingField])
@@ -32,6 +33,14 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void)
     func pluginConfirm(_ pluginId: String, title: String, text: String?, ok: String?, cancel: String?, completion: @escaping (Bool) -> Void)
     func pluginPrompt(_ pluginId: String, title: String, text: String?, placeholder: String?, defaultValue: String?, ok: String?, cancel: String?, completion: @escaping (String?) -> Void)
+    func pluginShare(_ pluginId: String, text: String?, url: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage])
+    func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut])
+    func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction])
+    func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginOpenURL(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginHaptic(_ pluginId: String, kind: String)
     func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void)
     func pluginClipboardWrite(_ pluginId: String, text: String)
@@ -49,9 +58,19 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onSettingsChanged: ((String, [String: AorusPluginJSONValue]) -> Void)?
     public var onSendMessage: ((String, Int64?, Bool, Int64?, String, Int32?) -> Void)?
     public var onToast: ((String, String) -> Void)?
+    public var onShare: ((String, String?, String?) -> Void)?
+    public var onPagesChanged: ((String, [AorusPluginUIPage]) -> Void)?
+    public var onSettingsShortcutsChanged: ((String, [AorusPluginSettingsShortcut]) -> Void)?
+    public var onContextActionsChanged: ((String, [AorusPluginContextAction]) -> Void)?
+    public var onOpenPage: ((String, String, String) -> Void)?
+    public var onOpenURL: ((String, String) -> Void)?
+    public var onAIAsk: ((String, String, [[String: String]]) -> [String: Any])?
+    public var onAIOpenArtifact: ((String, String) -> Void)?
     public var language = "en"
 
     public init() {}
+
+    open var pluginExecutionAllowed: Bool { true }
 
     open func pluginLog(_ pluginId: String, level: AorusPluginLogEntry.Level, text: String) { onLog?(pluginId, level, text) }
     open func pluginStorageChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) { onStorageChanged?(pluginId, values) }
@@ -71,6 +90,28 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     open func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void) { completion() }
     open func pluginConfirm(_ pluginId: String, title: String, text: String?, ok: String?, cancel: String?, completion: @escaping (Bool) -> Void) { completion(false) }
     open func pluginPrompt(_ pluginId: String, title: String, text: String?, placeholder: String?, defaultValue: String?, ok: String?, cancel: String?, completion: @escaping (String?) -> Void) { completion(nil) }
+    open func pluginShare(_ pluginId: String, text: String?, url: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        onShare?(pluginId, text, url)
+        completion(.success(()))
+    }
+    open func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage]) { onPagesChanged?(pluginId, pages) }
+    open func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut]) { onSettingsShortcutsChanged?(pluginId, shortcuts) }
+    open func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction]) { onContextActionsChanged?(pluginId, actions) }
+    open func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        onOpenPage?(pluginId, pageId, style)
+        completion(.success(()))
+    }
+    open func pluginOpenURL(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        onOpenURL?(pluginId, url)
+        completion(.success(()))
+    }
+    open func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        completion(.success(onAIAsk?(pluginId, prompt, history) ?? ["text": "", "artifacts": []]))
+    }
+    open func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        onAIOpenArtifact?(pluginId, artifactId)
+        completion(.success(()))
+    }
     open func pluginHaptic(_ pluginId: String, kind: String) {}
     open func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void) { completion(nil) }
     open func pluginClipboardWrite(_ pluginId: String, text: String) {}
@@ -542,7 +583,7 @@ public final class AorusPluginSandbox {
         hostObject.setObject(storageInitial, forKeyedSubscript: "storageInitial" as NSString)
 
         let storageWrite: @convention(block) (String, JSValue?) -> Bool = { [weak self] key, json in
-            guard let self = self else { return false }
+            guard let self = self, self.hostServices.pluginExecutionAllowed else { return false }
             return self.writeStorage(key: key, json: json)
         }
         hostObject.setObject(storageWrite, forKeyedSubscript: "storageWrite" as NSString)
@@ -555,7 +596,7 @@ public final class AorusPluginSandbox {
         hostObject.setObject(settingsInitial, forKeyedSubscript: "settingsInitial" as NSString)
 
         let settingsDefine: @convention(block) (String) -> Void = { [weak self] json in
-            guard let self = self else { return }
+            guard let self = self, self.hostServices.pluginExecutionAllowed else { return }
             let data = Data(json.utf8)
             guard data.count <= AorusPluginSandbox.requestPayloadLimitBytes,
                   let object = try? JSONSerialization.jsonObject(with: data),
@@ -570,7 +611,8 @@ public final class AorusPluginSandbox {
 
         let settingsWrite: @convention(block) (String, String) -> Void = { [weak self] key, json in
             let data = Data(json.utf8)
-            guard let self = self, key.count <= 64, data.count <= AorusPluginStore.storageLimitBytes,
+            guard let self = self, self.hostServices.pluginExecutionAllowed,
+                  key.count <= 64, data.count <= AorusPluginStore.storageLimitBytes,
                   let value = AorusPluginJSONValue.parse(data) else { return }
             self.stateLock.lock()
             let previous = self.settingsValues
@@ -585,6 +627,36 @@ public final class AorusPluginSandbox {
             self.hostServices.pluginSettingsChanged(pluginId, values: snapshot)
         }
         hostObject.setObject(settingsWrite, forKeyedSubscript: "settingsWrite" as NSString)
+
+        let pagesDefine: @convention(block) (String) -> Bool = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.customUI) else { return false }
+            let data = Data(json.utf8)
+            guard let pages = AorusPluginUIPage.validated(from: data) else { return false }
+            if pages.contains(where: { page in page.sections.contains(where: { section in section.rows.contains(where: { $0.kind == .link }) }) }),
+               !self.permissions.contains(.inAppBrowser) { return false }
+            self.hostServices.pluginPagesChanged(pluginId, pages: pages)
+            return true
+        }
+        hostObject.setObject(pagesDefine, forKeyedSubscript: "pagesDefine" as NSString)
+
+        let settingsShortcutsDefine: @convention(block) (String) -> Bool = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.settingsIntegration) else { return false }
+            let data = Data(json.utf8)
+            guard let shortcuts = AorusPluginSettingsShortcut.validated(from: data) else { return false }
+            if shortcuts.contains(where: { $0.url != nil }), !self.permissions.contains(.inAppBrowser) { return false }
+            self.hostServices.pluginSettingsShortcutsChanged(pluginId, shortcuts: shortcuts)
+            return true
+        }
+        hostObject.setObject(settingsShortcutsDefine, forKeyedSubscript: "settingsShortcutsDefine" as NSString)
+
+        let contextActionsDefine: @convention(block) (String) -> Bool = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.contextMenu) else { return false }
+            let data = Data(json.utf8)
+            guard let actions = AorusPluginContextAction.validated(from: data) else { return false }
+            self.hostServices.pluginContextActionsChanged(pluginId, actions: actions)
+            return true
+        }
+        hostObject.setObject(contextActionsDefine, forKeyedSubscript: "contextActionsDefine" as NSString)
 
         let timerSchedule: @convention(block) (Int32, Double, Bool) -> Void = { [weak self] id, milliseconds, repeats in
             self?.scheduleTimer(id: id, milliseconds: milliseconds, repeats: repeats)
@@ -611,6 +683,7 @@ public final class AorusPluginSandbox {
 
         let crypto: @convention(block) (String, String, String) -> JSValue = { [weak self] operation, first, second in
             let context = self?.context ?? JSContext()!
+            guard self?.hostServices.pluginExecutionAllowed == true else { return JSValue(nullIn: context) }
             if let result = AorusPluginSandbox.crypto(operation: operation, first: first, second: second) {
                 return JSValue(object: result, in: context)
             }
@@ -619,18 +692,19 @@ public final class AorusPluginSandbox {
         hostObject.setObject(crypto, forKeyedSubscript: "crypto" as NSString)
 
         let toast: @convention(block) (String, Double) -> Void = { [weak self] text, duration in
-            guard let self = self, self.permissions.contains(.dialogs) else { return }
+            guard let self = self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.dialogs) else { return }
             self.hostServices.pluginShowToast(pluginId, text: String(text.prefix(2_000)), duration: duration > 0 ? duration : nil)
         }
         hostObject.setObject(toast, forKeyedSubscript: "toast" as NSString)
 
         let haptic: @convention(block) (String) -> Void = { [weak self] kind in
-            self?.hostServices.pluginHaptic(pluginId, kind: kind)
+            guard let self, self.hostServices.pluginExecutionAllowed else { return }
+            self.hostServices.pluginHaptic(pluginId, kind: kind)
         }
         hostObject.setObject(haptic, forKeyedSubscript: "haptic" as NSString)
 
         let clipboardWrite: @convention(block) (String) -> Void = { [weak self] text in
-            guard let self = self, self.permissions.contains(.clipboardWrite) else { return }
+            guard let self = self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.clipboardWrite) else { return }
             self.hostServices.pluginClipboardWrite(pluginId, text: String(text.prefix(100_000)))
         }
         hostObject.setObject(clipboardWrite, forKeyedSubscript: "clipboardWrite" as NSString)
@@ -673,7 +747,8 @@ public final class AorusPluginSandbox {
         let bounded = min(86_400_000, max(repeats ? 50 : 1, milliseconds))
         let delay = bounded / 1000.0
         let item = DispatchWorkItem { [weak self] in
-            guard let self = self, let dispatcher = self.dispatcher, self.context != nil, self.timers[id] != nil else { return }
+            guard let self = self, self.hostServices.pluginExecutionAllowed,
+                  let dispatcher = self.dispatcher, self.context != nil, self.timers[id] != nil else { return }
             if repeats {
                 self.scheduleTimer(id: id, milliseconds: bounded, repeats: true)
             } else {
@@ -731,6 +806,10 @@ public final class AorusPluginSandbox {
     }
 
     private func handleRequest(kind: String, payload: [String: Any], id: Int32) {
+        guard hostServices.pluginExecutionAllowed else {
+            rejectImmediately(id, message: "Plugin execution is unavailable")
+            return
+        }
         guard !pendingRequestIds.contains(id), pendingRequestIds.count < AorusPluginSandbox.pendingRequestLimit else {
             rejectImmediately(id, message: "Too many pending requests")
             return
@@ -803,6 +882,64 @@ public final class AorusPluginSandbox {
             guard require(.dialogs, id: id) else { return }
             host.pluginPrompt(pluginId, title: string("title") ?? "", text: string("text"), placeholder: string("placeholder"), defaultValue: string("defaultValue"), ok: string("ok"), cancel: string("cancel")) { [weak self] answer in
                 self?.settle(id, with: .success(answer.map { $0 as Any }))
+            }
+        case "ui.share":
+            guard require(.dialogs, id: id) else { return }
+            let text = string("text").map { String($0.prefix(100_000)) }
+            let url = string("url").map { String($0.prefix(2_048)) }
+            guard text != nil || url != nil else {
+                settle(id, with: .failure(AorusPluginRequestError("text or url is required")))
+                return
+            }
+            host.pluginShare(pluginId, text: text, url: url) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "ui.openPage":
+            guard require(.customUI, id: id) else { return }
+            guard let pageId = string("pageId"), !pageId.isEmpty, pageId.count <= 64 else {
+                settle(id, with: .failure(AorusPluginRequestError("pageId is required")))
+                return
+            }
+            let style = string("style") ?? "push"
+            guard ["push", "sheet", "fullScreen"].contains(style) else {
+                settle(id, with: .failure(AorusPluginRequestError("Unsupported page presentation style")))
+                return
+            }
+            host.pluginOpenPage(pluginId, pageId: pageId, style: style) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "browser.open":
+            guard require(.inAppBrowser, id: id) else { return }
+            guard let url = string("url"), !url.isEmpty, url.count <= 2_048 else {
+                settle(id, with: .failure(AorusPluginRequestError("url is required")))
+                return
+            }
+            host.pluginOpenURL(pluginId, url: url) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "ai.ask":
+            guard require(.artificialIntelligence, id: id) else { return }
+            guard let prompt = string("prompt")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !prompt.isEmpty, prompt.count <= 16_000 else {
+                settle(id, with: .failure(AorusPluginRequestError("prompt is empty or too long")))
+                return
+            }
+            let history = (payload["history"] as? [[String: Any]] ?? []).prefix(20).compactMap { item -> [String: String]? in
+                guard let role = item["role"] as? String, ["user", "assistant"].contains(role),
+                      let content = item["content"] as? String, !content.isEmpty else { return nil }
+                return ["role": role, "content": String(content.prefix(8_000))]
+            }
+            host.pluginAIAsk(pluginId, prompt: prompt, history: Array(history)) { [weak self] result in
+                self?.settle(id, with: result.map { $0 as Any })
+            }
+        case "ai.openArtifact":
+            guard require(.artificialIntelligence, id: id) else { return }
+            guard let artifactId = string("artifactId"), !artifactId.isEmpty, artifactId.count <= 128 else {
+                settle(id, with: .failure(AorusPluginRequestError("artifactId is required")))
+                return
+            }
+            host.pluginAIOpenArtifact(pluginId, artifactId: artifactId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
             }
         case "clipboard.read":
             guard require(.clipboardRead, id: id) else { return }
@@ -916,7 +1053,7 @@ public final class AorusPluginSandbox {
         return false
     }
 
-    static func hostResolvesPublicly(_ host: String) -> Bool {
+    public static func hostResolvesPublicly(_ host: String) -> Bool {
         if isBlocked(host: host) { return false }
         var hints = addrinfo(ai_flags: AI_ADDRCONFIG, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: IPPROTO_TCP, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
         var result: UnsafeMutablePointer<addrinfo>?

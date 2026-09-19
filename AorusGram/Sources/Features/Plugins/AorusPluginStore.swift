@@ -69,6 +69,7 @@ public final class AorusPluginStore {
     private func settingsURL(for id: String) -> URL { directory(for: id).appendingPathComponent("settings.json") }
     private func storageURL(for id: String) -> URL { directory(for: id).appendingPathComponent("storage.json") }
     private func permissionsURL(for id: String) -> URL { directory(for: id).appendingPathComponent("permissions.json") }
+    private func schemaURL(for id: String) -> URL { directory(for: id).appendingPathComponent("schema.json") }
 
     public static func normalizedIdentifier(_ id: String) -> String? {
         guard let uuid = UUID(uuidString: id), uuid.uuidString.caseInsensitiveCompare(id) == .orderedSame else {
@@ -93,7 +94,7 @@ public final class AorusPluginStore {
         var copy = record
         copy.manifest.id = id
         copy.manifest.name = String(copy.manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        copy.manifest.summary = String(copy.manifest.summary.prefix(300))
+        copy.manifest.summary = String(copy.manifest.summary.prefix(2_000))
         copy.manifest.version = String(copy.manifest.version.prefix(32))
         copy.manifest.author = String(copy.manifest.author.prefix(80))
         copy.manifest.icon = AorusPluginIcon.normalized(copy.manifest.icon)
@@ -188,9 +189,15 @@ public final class AorusPluginStore {
         try queue.sync {
             try ensureDirectory(for: record.manifest.id)
             let digest = AorusPluginStore.sourceDigest(record.source)
-            if let permissionData = try? Data(contentsOf: permissionsURL(for: record.manifest.id)),
-               let permissionState = try? decoder.decode(AorusPluginPermissionState.self, from: permissionData),
-               permissionState.sourceDigest != digest {
+            let previousSource = try? Data(contentsOf: sourceURL(for: record.manifest.id))
+            let sourceChanged = previousSource.map { $0 != Data(record.source.utf8) } ?? false
+            if sourceChanged {
+                try? FileManager.default.removeItem(at: permissionsURL(for: record.manifest.id))
+                try? FileManager.default.removeItem(at: schemaURL(for: record.manifest.id))
+                record.manifest.isEnabled = false
+            } else if let permissionData = try? Data(contentsOf: permissionsURL(for: record.manifest.id)),
+                      let permissionState = try? decoder.decode(AorusPluginPermissionState.self, from: permissionData),
+                      permissionState.sourceDigest != digest {
                 try? FileManager.default.removeItem(at: permissionsURL(for: record.manifest.id))
                 record.manifest.isEnabled = false
             }
@@ -215,7 +222,7 @@ public final class AorusPluginStore {
         manifest.accent = AorusPluginAccent.normalized(manifest.accent)
         guard !manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               manifest.name.count <= 80,
-              manifest.summary.count <= 300,
+              manifest.summary.count <= 2_000,
               manifest.author.count <= 80,
               manifest.version.count <= 32,
               manifest.apiVersion == AorusPluginManifest.currentApiVersion else {
@@ -281,7 +288,10 @@ public final class AorusPluginStore {
 
     public func export(id: String) -> Data? {
         guard let record = load(id: id) else { return nil }
-        let bundle = AorusPluginExport(record: record, settings: settings(for: id))
+        // A setting can be an API token or another private value chosen by the user.
+        // Share code and presentation metadata only; local duplication still preserves
+        // settings, but an exported file must never carry installation-owned state.
+        let bundle = AorusPluginExport(record: record, settings: [:])
         return try? encoder.encode(bundle)
     }
 
@@ -401,5 +411,30 @@ public final class AorusPluginStore {
         guard let id = AorusPluginStore.normalizedIdentifier(id) else { return }
         queue.sync { try? FileManager.default.removeItem(at: permissionsURL(for: id)) }
         notifyChanged()
+    }
+
+    // MARK: - Persisted settings schema
+
+    public func schema(for id: String, source: String) -> [AorusPluginSettingField] {
+        guard let id = AorusPluginStore.normalizedIdentifier(id) else { return [] }
+        let digest = AorusPluginStore.sourceDigest(source)
+        return queue.sync {
+            guard let data = try? Data(contentsOf: schemaURL(for: id)),
+                  let state = try? decoder.decode(AorusPluginSchemaState.self, from: data),
+                  state.sourceDigest == digest else { return [] }
+            return Array(state.fields.prefix(64))
+        }
+    }
+
+    public func setSchema(_ fields: [AorusPluginSettingField], sourceDigest: String, for id: String) throws {
+        let id = try validatedIdentifier(id)
+        let state = AorusPluginSchemaState(sourceDigest: sourceDigest, fields: fields)
+        try queue.sync {
+            guard FileManager.default.fileExists(atPath: manifestURL(for: id).path) else {
+                throw AorusPluginStoreError.notFound
+            }
+            try ensureDirectory(for: id)
+            try write(try encoder.encode(state), to: schemaURL(for: id))
+        }
     }
 }

@@ -5,6 +5,8 @@ import TelegramCore
 import AccountContext
 import SwiftSignalKit
 import Display
+import ContextUI
+import QuickLook
 import AorusGram
 
 public final class AorusPluginRuntimeManager {
@@ -15,6 +17,9 @@ public final class AorusPluginRuntimeManager {
     private var host: AorusPluginTelegramHost?
     private var sandboxes: [String: AorusPluginSandbox] = [:]
     private var schemas: [String: [AorusPluginSettingField]] = [:]
+    private var pages: [String: [AorusPluginUIPage]] = [:]
+    private var settingsShortcuts: [String: [AorusPluginSettingsShortcut]] = [:]
+    private var contextActions: [String: [AorusPluginContextAction]] = [:]
     private var observers: [NSObjectProtocol] = []
 
     private init() {}
@@ -23,30 +28,53 @@ public final class AorusPluginRuntimeManager {
         lock.lock()
         let unchanged = self.context === context
         let previous = unchanged ? [] : Array(sandboxes.values)
+        let previousHost = unchanged ? nil : self.host
         if !unchanged {
             sandboxes.removeAll()
             schemas.removeAll()
+            pages.removeAll()
+            settingsShortcuts.removeAll()
+            contextActions.removeAll()
             self.context = context
             self.host = AorusPluginTelegramHost(context: context, manager: self)
         }
         lock.unlock()
         guard !unchanged else { return }
-        previous.forEach { $0.stop() }
+        previous.forEach { sandbox in
+            previousHost?.clearPluginState(sandbox.manifest.id)
+            sandbox.stop()
+        }
+        publishIntegrationsChanged()
         installObservers()
         reloadAutostart()
     }
 
     public func reloadAutostart() {
         guard let host = currentHost() else { return }
+        guard AorusLicenseAccess.isAllowed else {
+            stopAll()
+            return
+        }
         let records = AorusPluginStore.shared.list().compactMap { AorusPluginStore.shared.load(id: $0.id) }
         let desired = records.filter { $0.manifest.isEnabled && $0.manifest.autostart }
-        let desiredIds = Set(desired.map { $0.manifest.id })
+        // Autostart decides what is launched when the account runtime appears. It must not
+        // stop an enabled plugin that the person started manually during this session.
+        let enabledIds = Set(records.filter { $0.manifest.isEnabled }.map { $0.manifest.id })
 
         lock.lock()
-        let stale = sandboxes.filter { !desiredIds.contains($0.key) }.map { $0.value }
-        for sandbox in stale { sandboxes[sandbox.manifest.id] = nil }
+        let stale = sandboxes.filter { !enabledIds.contains($0.key) }.map { $0.value }
+        for sandbox in stale {
+            sandboxes[sandbox.manifest.id] = nil
+            pages[sandbox.manifest.id] = nil
+            settingsShortcuts[sandbox.manifest.id] = nil
+            contextActions[sandbox.manifest.id] = nil
+        }
         lock.unlock()
-        stale.forEach { $0.stop() }
+        if !stale.isEmpty { publishIntegrationsChanged() }
+        stale.forEach { sandbox in
+            host.clearPluginState(sandbox.manifest.id)
+            sandbox.stop()
+        }
 
         for record in desired {
             let state = AorusPluginStore.shared.permissionState(for: record.manifest.id)
@@ -61,7 +89,7 @@ public final class AorusPluginRuntimeManager {
     }
 
     public func start(id: String, completion: ((AorusPluginRunError?) -> Void)? = nil) {
-        guard let host = currentHost(), let record = AorusPluginStore.shared.load(id: id) else {
+        guard let host = currentHost(), let record = AorusPluginStore.shared.load(id: id), record.manifest.isEnabled else {
             completion?(.notRunning)
             return
         }
@@ -78,7 +106,12 @@ public final class AorusPluginRuntimeManager {
     public func stop(id: String, completion: (() -> Void)? = nil) {
         lock.lock()
         let sandbox = sandboxes.removeValue(forKey: id)
+        pages[id] = nil
+        settingsShortcuts[id] = nil
+        contextActions[id] = nil
         lock.unlock()
+        publishIntegrationsChanged()
+        currentHost()?.clearPluginState(id)
         sandbox?.stop(completion: completion)
         if sandbox == nil { completion?() }
     }
@@ -93,11 +126,16 @@ public final class AorusPluginRuntimeManager {
     }
 
     public func settingsSchema(id: String) -> [AorusPluginSettingField] {
-        lock.lock(); defer { lock.unlock() }
-        return schemas[id] ?? []
+        lock.lock()
+        let cached = schemas[id]
+        lock.unlock()
+        if let cached { return cached }
+        guard let record = AorusPluginStore.shared.load(id: id) else { return [] }
+        return AorusPluginStore.shared.schema(for: id, source: record.source)
     }
 
     public func processOutgoing(text: String, peerId: Int64, accountId: Int64) -> AorusPluginOutgoingVerdict {
+        guard AorusLicenseAccess.isAllowed else { return .passThrough }
         lock.lock()
         let active = Array(sandboxes.values)
         lock.unlock()
@@ -113,16 +151,131 @@ public final class AorusPluginRuntimeManager {
         return replacement == text ? .passThrough : AorusPluginOutgoingVerdict(replacement: replacement)
     }
 
+    public func page(pluginId: String, pageId: String) -> AorusPluginUIPage? {
+        lock.lock(); defer { lock.unlock() }
+        return pages[pluginId]?.first(where: { $0.id == pageId })
+    }
+
+    public func pluginSettingsShortcuts() -> [(pluginId: String, shortcut: AorusPluginSettingsShortcut)] {
+        lock.lock(); defer { lock.unlock() }
+        return settingsShortcuts.keys.sorted().flatMap { pluginId in
+            (settingsShortcuts[pluginId] ?? []).map { (pluginId, $0) }
+        }
+    }
+
+    public func pluginContextActions() -> [(pluginId: String, action: AorusPluginContextAction)] {
+        lock.lock(); defer { lock.unlock() }
+        return Array(contextActions.keys.sorted().flatMap { pluginId in
+            (contextActions[pluginId] ?? []).map { (pluginId, $0) }
+        }.prefix(4))
+    }
+
+    public func performSettingsShortcut(pluginId: String, id: String) {
+        lock.lock()
+        let shortcut = settingsShortcuts[pluginId]?.first(where: { $0.id == id })
+        let host = self.host
+        lock.unlock()
+        guard let shortcut, let host else { return }
+        if let pageId = shortcut.pageId {
+            guard isPermissionGranted(.customUI, pluginId: pluginId) else { return }
+            host.pluginOpenPage(pluginId, pageId: pageId, style: "push") { _ in }
+        } else if let url = shortcut.url {
+            guard isPermissionGranted(.inAppBrowser, pluginId: pluginId) else { return }
+            host.pluginOpenURL(pluginId, url: url) { _ in }
+        }
+    }
+
+    public func openURL(pluginId: String, url: String, completion: ((Error?) -> Void)? = nil) {
+        guard isPermissionGranted(.inAppBrowser, pluginId: pluginId) else {
+            completion?(AorusPluginRequestError("In-app browser permission is not granted"))
+            return
+        }
+        lock.lock(); let host = self.host; lock.unlock()
+        guard let host else { completion?(AorusPluginRequestError("Plugin runtime is unavailable")); return }
+        host.pluginOpenURL(pluginId, url: url) { result in
+            switch result {
+            case .success: completion?(nil)
+            case let .failure(error): completion?(error)
+            }
+        }
+    }
+
+    public func dispatchUIAction(pluginId: String, pageId: String, rowId: String, value: AorusPluginJSONValue?) {
+        lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
+        var payload: [String: Any] = ["pageId": pageId, "rowId": rowId]
+        if let value { payload["value"] = value.anyValue }
+        sandbox?.dispatch(event: "uiAction", payload: payload)
+    }
+
+    public func dispatchContextAction(pluginId: String, actionId: String, payload: [String: Any]) {
+        lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
+        var value = payload
+        value["actionId"] = actionId
+        sandbox?.dispatch(event: "contextAction", payload: value)
+    }
+
     fileprivate func setSchema(_ fields: [AorusPluginSettingField], id: String) {
+        let fields = Array(fields.prefix(64))
         lock.lock(); schemas[id] = fields; lock.unlock()
+        if let record = AorusPluginStore.shared.load(id: id) {
+            try? AorusPluginStore.shared.setSchema(fields, sourceDigest: AorusPluginStore.sourceDigest(record.source), for: id)
+        }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: Notification.Name("aorusgram.plugins.schemaChanged"), object: id)
+        }
+    }
+
+    fileprivate func publishSettingsChanged(_ id: String) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Notification.Name("aorusgram.plugins.settingsChanged"), object: id)
+        }
+    }
+
+    fileprivate func setPages(_ value: [AorusPluginUIPage], id: String) {
+        lock.lock(); pages[id] = value; lock.unlock()
+        publishIntegrationsChanged()
+    }
+
+    fileprivate func setSettingsShortcuts(_ value: [AorusPluginSettingsShortcut], id: String) {
+        lock.lock(); settingsShortcuts[id] = value; lock.unlock()
+        publishIntegrationsChanged()
+    }
+
+    fileprivate func setContextActions(_ value: [AorusPluginContextAction], id: String) {
+        lock.lock(); contextActions[id] = value; lock.unlock()
+        publishIntegrationsChanged()
+    }
+
+    private func publishIntegrationsChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Notification.Name("aorusgram.plugins.integrationsChanged"), object: nil)
         }
     }
 
     private func currentHost() -> AorusPluginTelegramHost? {
         lock.lock(); defer { lock.unlock() }
         return host
+    }
+
+    fileprivate func isPermissionGranted(_ permission: AorusPluginPermission, pluginId: String) -> Bool {
+        guard AorusLicenseAccess.isAllowed,
+              let record = AorusPluginStore.shared.load(id: pluginId), record.manifest.isEnabled else { return false }
+        let state = AorusPluginStore.shared.permissionState(for: pluginId)
+        return state.sourceDigest == AorusPluginStore.sourceDigest(record.source) && state.granted.contains(permission)
+    }
+
+    private func stopAll() {
+        lock.lock()
+        let active = Array(sandboxes.values)
+        sandboxes.removeAll()
+        schemas.removeAll()
+        pages.removeAll()
+        settingsShortcuts.removeAll()
+        contextActions.removeAll()
+        lock.unlock()
+        publishIntegrationsChanged()
+        if let host = currentHost() { active.forEach { host.clearPluginState($0.manifest.id) } }
+        active.forEach { $0.stop() }
     }
 
     private func start(record: AorusPluginRecord, host: AorusPluginTelegramHost, permissions: Set<AorusPluginPermission>, completion: ((AorusPluginRunError?) -> Void)? = nil) {
@@ -145,13 +298,21 @@ public final class AorusPluginRuntimeManager {
         )
         lock.lock()
         let previous = sandboxes.updateValue(sandbox, forKey: record.manifest.id)
+        pages[record.manifest.id] = nil
+        settingsShortcuts[record.manifest.id] = nil
+        contextActions[record.manifest.id] = nil
         lock.unlock()
+        publishIntegrationsChanged()
         previous?.stop()
         sandbox.start { [weak self, weak sandbox] error in
             if error != nil {
                 self?.lock.lock()
                 if self?.sandboxes[record.manifest.id] === sandbox { self?.sandboxes[record.manifest.id] = nil }
+                self?.pages[record.manifest.id] = nil
+                self?.settingsShortcuts[record.manifest.id] = nil
+                self?.contextActions[record.manifest.id] = nil
                 self?.lock.unlock()
+                self?.publishIntegrationsChanged()
             }
             completion?(error)
         }
@@ -162,6 +323,9 @@ public final class AorusPluginRuntimeManager {
         observers.removeAll()
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AorusPluginStore.changedNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.reloadAutostart()
+        })
+        observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.licenseLockChanged"), object: nil, queue: nil) { [weak self] _ in
             self?.reloadAutostart()
         })
         observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.didReceiveMessage"), object: nil, queue: nil) { [weak self] note in
@@ -196,10 +360,28 @@ public final class AorusPluginRuntimeManager {
 private final class AorusPluginTelegramHost: AorusPluginHostServices {
     private let context: AccountContext
     private weak var manager: AorusPluginRuntimeManager?
+    private let aiLock = NSLock()
+    private var aiStreams: [String: AorusAIStreamHandle] = [:]
+    private var aiReservations = Set<String>()
+    private var aiArtifacts: [String: [String: AorusAIArtifact]] = [:]
+    private var aiTurnIds: [String: String] = [:]
 
     init(context: AccountContext, manager: AorusPluginRuntimeManager) {
         self.context = context
         self.manager = manager
+    }
+
+    var pluginExecutionAllowed: Bool { AorusLicenseAccess.isAllowed }
+
+    func clearPluginState(_ pluginId: String) {
+        aiLock.lock()
+        let stream = aiStreams.removeValue(forKey: pluginId)
+        let turnId = aiTurnIds.removeValue(forKey: pluginId)
+        aiReservations.remove(pluginId)
+        aiArtifacts[pluginId] = nil
+        aiLock.unlock()
+        stream?.cancelTransport()
+        if let turnId { AorusAIClient.shared.cancelTurn(turnId) { _ in } }
     }
 
     func pluginLog(_ pluginId: String, level: AorusPluginLogEntry.Level, text: String) {}
@@ -214,6 +396,239 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
 
     func pluginSettingsChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) {
         try? AorusPluginStore.shared.setSettings(values, for: pluginId)
+        manager?.publishSettingsChanged(pluginId)
+    }
+
+    func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage]) {
+        manager?.setPages(pages, id: pluginId)
+    }
+
+    func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut]) {
+        manager?.setSettingsShortcuts(shortcuts, id: pluginId)
+    }
+
+    func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction]) {
+        manager?.setContextActions(actions, id: pluginId)
+    }
+
+    func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Custom UI permission is not granted")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard let page = self.manager?.page(pluginId: pluginId, pageId: pageId),
+                  let presenter = self.topController() else {
+                completion(.failure(AorusPluginRequestError("Plugin page is not available")))
+                return
+            }
+            let controller = AorusPluginPageController(context: self.context, pluginId: pluginId, page: page)
+            if style == "push" {
+                guard let navigation = presenter.navigationController as? NavigationController else {
+                    completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                    return
+                }
+                navigation.pushViewController(controller)
+            } else {
+                controller.installModalCloseButton()
+                let navigation = UINavigationController(rootViewController: controller)
+                navigation.modalPresentationStyle = style == "fullScreen" ? .fullScreen : .pageSheet
+                presenter.present(navigation, animated: true)
+            }
+            completion(.success(()))
+        }
+    }
+
+    func pluginOpenURL(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.inAppBrowser, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("In-app browser permission is not granted")))
+            return
+        }
+        guard let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased(),
+              let host = parsed.host, (scheme == "http" || scheme == "https"),
+              !AorusPluginSandbox.isBlocked(host: host) else {
+            completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            guard AorusPluginSandbox.hostResolvesPublicly(host) else {
+                completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
+                return
+            }
+            DispatchQueue.main.async {
+                guard self.pluginExecutionAllowed,
+                      let navigation = self.topController()?.navigationController as? NavigationController else {
+                    completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                    return
+                }
+                let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+                self.context.sharedContext.openExternalUrl(
+                    context: self.context,
+                    urlContext: .generic,
+                    url: url,
+                    forceExternal: false,
+                    presentationData: presentationData,
+                    navigationController: navigation,
+                    dismissInput: {}
+                )
+                completion(.success(()))
+            }
+        }
+    }
+
+    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.artificialIntelligence, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("AorusAI is unavailable")))
+            return
+        }
+        aiLock.lock()
+        guard aiStreams[pluginId] == nil, !aiReservations.contains(pluginId) else {
+            aiLock.unlock()
+            completion(.failure(AorusPluginRequestError("This plugin already has an AorusAI request in progress")))
+            return
+        }
+        aiReservations.insert(pluginId)
+        aiLock.unlock()
+
+        var messages = history.compactMap { item -> AorusAIAgentPayload.Message? in
+            guard let role = item["role"], let content = item["content"], ["user", "assistant"].contains(role) else { return nil }
+            return AorusAIAgentPayload.Message(role: role, content: content)
+        }
+        messages.append(AorusAIAgentPayload.Message(role: "user", content: prompt))
+        let payload = AorusAIAgentPayload(messages: messages)
+        let stateLock = NSLock()
+        var text = ""
+        var artifacts: [AorusAIArtifact] = []
+        var finished = false
+        func finish(_ result: Result<[String: Any], Error>) {
+            stateLock.lock()
+            guard !finished else { stateLock.unlock(); return }
+            finished = true
+            stateLock.unlock()
+            self.aiLock.lock()
+            self.aiReservations.remove(pluginId)
+            self.aiStreams[pluginId] = nil
+            self.aiTurnIds[pluginId] = nil
+            self.aiLock.unlock()
+            completion(result)
+        }
+
+        let handle = AorusAIClient.shared.start(payload: payload, event: { event, _ in
+            stateLock.lock()
+            switch event {
+            case let .agentStarted(turnId, _):
+                self.aiLock.lock()
+                let active = self.aiReservations.contains(pluginId) || self.aiStreams[pluginId] != nil
+                if active { self.aiTurnIds[pluginId] = turnId }
+                self.aiLock.unlock()
+                if !active { AorusAIClient.shared.cancelTurn(turnId) { _ in } }
+            case let .responseDelta(delta):
+                let room = max(0, AorusAIRequestLimits.responseCharacters - text.count)
+                if room > 0 { text.append(room >= delta.count ? delta : String(delta.prefix(room))) }
+            case let .completion(value, ready):
+                if let value, !value.isEmpty { text = String(value.prefix(AorusAIRequestLimits.responseCharacters)) }
+                for artifact in ready where !artifacts.contains(where: { $0.artifactId == artifact.artifactId }) {
+                    if artifacts.count < AorusAIRequestLimits.responseArtifactCount { artifacts.append(artifact) }
+                }
+            case let .artifactReady(artifact):
+                if artifacts.count < AorusAIRequestLimits.responseArtifactCount,
+                   !artifacts.contains(where: { $0.artifactId == artifact.artifactId }) { artifacts.append(artifact) }
+            case .toolRequest, .permissionRequest:
+                stateLock.unlock()
+                self.cancelAIStream(pluginId)
+                finish(.failure(AorusPluginRequestError("This AorusAI request needs an interaction in the full AorusAI chat")))
+                return
+            case let .done(ok, _):
+                let finalText = text
+                let finalArtifacts = artifacts
+                stateLock.unlock()
+                if ok {
+                    self.rememberArtifacts(finalArtifacts, pluginId: pluginId)
+                    let files: [[String: Any]] = finalArtifacts.map {
+                        ["id": $0.artifactId, "filename": $0.filename, "mime": $0.mime, "size": $0.size, "format": $0.format]
+                    }
+                    finish(.success(["text": finalText, "artifacts": files]))
+                } else {
+                    finish(.failure(AorusPluginRequestError("AorusAI could not complete the request")))
+                }
+                return
+            default:
+                break
+            }
+            stateLock.unlock()
+        }, completion: { result in
+            switch result {
+            case .success:
+                stateLock.lock(); let finalText = text; let finalArtifacts = artifacts; stateLock.unlock()
+                self.rememberArtifacts(finalArtifacts, pluginId: pluginId)
+                let files: [[String: Any]] = finalArtifacts.map {
+                    ["id": $0.artifactId, "filename": $0.filename, "mime": $0.mime, "size": $0.size, "format": $0.format]
+                }
+                finish(.success(["text": finalText, "artifacts": files]))
+            case let .failure(error):
+                finish(.failure(error))
+            }
+        })
+        guard let handle else {
+            finish(.failure(AorusPluginRequestError("AorusAI is unavailable")))
+            return
+        }
+        aiLock.lock()
+        if aiStreams[pluginId] == nil, aiReservations.contains(pluginId) {
+            aiReservations.remove(pluginId)
+            aiStreams[pluginId] = handle
+            aiLock.unlock()
+        } else {
+            aiReservations.remove(pluginId)
+            aiLock.unlock()
+            handle.cancelTransport()
+            finish(.failure(AorusPluginRequestError("This plugin already has an AorusAI request in progress")))
+        }
+    }
+
+    func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.artificialIntelligence, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("AorusAI is unavailable")))
+            return
+        }
+        aiLock.lock(); let artifact = aiArtifacts[pluginId]?[artifactId]; aiLock.unlock()
+        guard let artifact else {
+            completion(.failure(AorusPluginRequestError("Artifact is not available to this plugin")))
+            return
+        }
+        _ = AorusAIClient.shared.downloadArtifact(artifact) { result in
+            switch result {
+            case let .success(url):
+                DispatchQueue.main.async {
+                    guard let presenter = self.topController() else {
+                        completion(.failure(AorusPluginRequestError("Preview is unavailable")))
+                        return
+                    }
+                    let preview = AorusPluginArtifactPreviewController(url: url)
+                    presenter.present(preview, animated: true)
+                    completion(.success(()))
+                }
+            case let .failure(error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func rememberArtifacts(_ artifacts: [AorusAIArtifact], pluginId: String) {
+        aiLock.lock()
+        var known = aiArtifacts[pluginId] ?? [:]
+        for artifact in artifacts.prefix(AorusAIRequestLimits.responseArtifactCount) {
+            known[artifact.artifactId] = artifact
+        }
+        aiArtifacts[pluginId] = known
+        aiLock.unlock()
+    }
+
+    private func cancelAIStream(_ pluginId: String) {
+        aiLock.lock(); let stream = aiStreams[pluginId]; aiLock.unlock()
+        stream?.cancelTransport()
     }
 
     func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -255,7 +670,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             return .single(peer)
         }
         |> take(1)).start(next: { peer in
-            answer(peer.map { ["id": String($0.id.toInt64()), "title": $0.compactDisplayTitle] })
+            answer(peer.map(self.pluginPeerDictionary))
         }, completed: {
             answer(nil)
         })
@@ -266,7 +681,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         if toSelf { id = context.account.peerId } else if let peerId { id = PeerId(peerId) } else { id = nil }
         guard let id else { completion(.failure(AorusPluginRequestError("peerId is required"))); return }
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: id)) |> take(1)).start(next: { peer in
-            completion(.success(peer.map { ["id": String($0.id.toInt64()), "title": $0.compactDisplayTitle] }))
+            completion(.success(peer.map(self.pluginPeerDictionary)))
         })
     }
 
@@ -379,6 +794,52 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         }
     }
 
+    func pluginShare(_ pluginId: String, text: String?, url: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        var items: [Any] = []
+        if let text, !text.isEmpty { items.append(text) }
+        if let url, !url.isEmpty {
+            guard let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased(),
+                  let host = parsed.host, (scheme == "http" || scheme == "https"),
+                  !AorusPluginSandbox.isBlocked(host: host) else {
+                completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
+                return
+            }
+            DispatchQueue.global(qos: .utility).async {
+                guard AorusPluginSandbox.hostResolvesPublicly(host) else {
+                    completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
+                    return
+                }
+                self.presentShare(items: items + [parsed], completion: completion)
+            }
+            return
+        }
+        guard !items.isEmpty else {
+            completion(.failure(AorusPluginRequestError("Nothing to share")))
+            return
+        }
+        presentShare(items: items, completion: completion)
+    }
+
+    private func presentShare(items: [Any], completion: @escaping (Result<Void, Error>) -> Void) {
+        DispatchQueue.main.async {
+            guard self.pluginExecutionAllowed else {
+                completion(.failure(AorusPluginRequestError("Plugin execution is unavailable")))
+                return
+            }
+            guard let presenter = self.topController() else {
+                completion(.failure(AorusPluginRequestError("Share sheet is unavailable")))
+                return
+            }
+            let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+            if let popover = controller.popoverPresentationController {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.maxY - 1, width: 1, height: 1)
+            }
+            presenter.present(controller, animated: true)
+            completion(.success(()))
+        }
+    }
+
     func pluginHaptic(_ pluginId: String, kind: String) {
         DispatchQueue.main.async { UIImpactFeedbackGenerator(style: kind == "heavy" ? .heavy : .light).impactOccurred() }
     }
@@ -404,6 +865,29 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         return context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode
     }
 
+    private func pluginPeerDictionary(_ peer: EnginePeer) -> [String: Any] {
+        let kind: String
+        if case let .channel(channel) = peer {
+            if case .broadcast = channel.info { kind = "channel" } else { kind = "group" }
+        } else if peer.id.namespace == Namespaces.Peer.CloudGroup {
+            kind = "group"
+        } else if peer.id.namespace == Namespaces.Peer.SecretChat {
+            kind = "secretChat"
+        } else {
+            kind = "user"
+        }
+        var result: [String: Any] = [
+            "id": String(peer.id.toInt64()),
+            "title": peer.compactDisplayTitle,
+            "kind": kind,
+            "verified": peer.isVerified,
+            "premium": peer.isPremium,
+            "scam": peer.isScam
+        ]
+        if let username = peer.addressName { result["username"] = username }
+        return result
+    }
+
     private func topController() -> UIViewController? {
         var controller = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
         while let presented = controller?.presentedViewController { controller = presented }
@@ -417,4 +901,33 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         for action in actions { alert.addAction(UIAlertAction(title: action.0, style: action.1) { _ in action.2() }) }
         presenter.present(alert, animated: true)
     }
+}
+
+/// Native message-menu contributions from running plugins. Selecting one reports only the
+/// plugin-owned action id. Message contents and Telegram identifiers are not implicitly
+/// disclosed by a UI integration; a plugin that needs message events must request that
+/// separate permission explicitly.
+public func aorusPluginMessageContextMenuItems() -> [ContextMenuItem] {
+    return AorusPluginRuntimeManager.shared.pluginContextActions().map { entry in
+        .action(ContextMenuActionItem(text: entry.action.title, icon: { theme in
+            UIImage(systemName: AorusPluginIcon.normalized(entry.action.icon ?? AorusPluginIcon.fallback))?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
+        }, action: { _, complete in
+            complete(.default)
+            AorusPluginRuntimeManager.shared.dispatchContextAction(pluginId: entry.pluginId, actionId: entry.action.id, payload: ["source": "message"])
+        }))
+    }
+}
+
+private final class AorusPluginArtifactPreviewController: QLPreviewController, QLPreviewControllerDataSource {
+    private let fileURL: URL
+
+    init(url: URL) {
+        self.fileURL = url
+        super.init(nibName: nil, bundle: nil)
+        self.dataSource = self
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+    func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { fileURL as NSURL }
 }

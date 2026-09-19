@@ -285,6 +285,7 @@ private enum AorusSection: Int32 {
     case videoMessages
     case calls
     case wall
+    case plugins
     case misc
 }
 
@@ -358,6 +359,7 @@ private final class AorusArguments {
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
     let openPlugins: () -> Void
+    let openPluginShortcut: (String, String) -> Void
     let openMisc: () -> Void
     let openAntiSpamManage: () -> Void
     let openDeviceSpoof: () -> Void
@@ -377,6 +379,7 @@ private final class AorusArguments {
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
          openPlugins: @escaping () -> Void,
+         openPluginShortcut: @escaping (String, String) -> Void,
          openMisc: @escaping () -> Void,
          openAntiSpamManage: @escaping () -> Void,
          openDeviceSpoof: @escaping () -> Void,
@@ -395,6 +398,7 @@ private final class AorusArguments {
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
         self.openPlugins = openPlugins
+        self.openPluginShortcut = openPluginShortcut
         self.openMisc = openMisc
         self.openAntiSpamManage = openAntiSpamManage
         self.openDeviceSpoof = openDeviceSpoof
@@ -490,6 +494,7 @@ private enum AorusEntry: ItemListNodeEntry {
     case accountBackupHeader(PresentationTheme, String)
     case accountBackup(PresentationTheme, String)
     case plugins(PresentationTheme, String)
+    case pluginShortcut(PresentationTheme, String, String, String, String, Int32)
     case misc(PresentationTheme, String)
 
     case aorusCodeHeader(PresentationTheme, String)
@@ -543,7 +548,9 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.antiSpoof.rawValue
         case .accountBackupHeader, .accountBackup:
             return AorusSection.accountBackup.rawValue
-        case .plugins, .misc:
+        case .plugins, .pluginShortcut:
+            return AorusSection.plugins.rawValue
+        case .misc:
             return AorusSection.misc.rawValue
         case .aorusCodeHeader, .aorusCodeEnabled:
             return AorusSection.aorusCode.rawValue
@@ -634,11 +641,12 @@ private enum AorusEntry: ItemListNodeEntry {
         case .aorusCodeHeader:      return 97
         case .aorusCodeEnabled:     return 98
         case .plugins:              return 99
-        case .misc:                 return 100
-        case .subscription:         return 106
-        case .officialChannel:      return 107
-        case .connectionSettings:   return 116 // AORUS-CONN — above the diagnostics row
-        case .proxyDiagnostics:     return 117 // AORUS-DIAG
+        case let .pluginShortcut(_, _, _, _, _, stableId): return stableId
+        case .misc:                 return 130
+        case .subscription:         return 136
+        case .officialChannel:      return 137
+        case .connectionSettings:   return 146 // AORUS-CONN — above the diagnostics row
+        case .proxyDiagnostics:     return 147 // AORUS-DIAG
         }
     }
 
@@ -786,6 +794,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .accountBackup(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .plugins(lt, ls):
             if case let .plugins(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .pluginShortcut(lt, ltitle, lsubtitle, lplugin, lid, lstable):
+            if case let .pluginShortcut(rt, rtitle, rsubtitle, rplugin, rid, rstable) = rhs {
+                return lt === rt && ltitle == rtitle && lsubtitle == rsubtitle && lplugin == rplugin && lid == rid && lstable == rstable
+            }
         case let .misc(lt, ls):
             if case let .misc(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .aorusCodeHeader(lt, ls):
@@ -963,6 +975,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openAccountBackup)
         case let .plugins(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openPlugins)
+        case let .pluginShortcut(_, title, subtitle, pluginId, id, _):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: subtitle, sectionId: section, style: .blocks, action: { args.openPluginShortcut(pluginId, id) })
         case let .misc(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openMisc)
         case let .aorusCodeHeader(_, text):
@@ -1106,6 +1120,13 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .connectionSettings(theme, l10n.connectionSettings), // AORUS-CONN
         .proxyDiagnostics(theme, l10n.proxyDiagnostics), // AORUS-DIAG
     ]
+
+    if let pluginIndex = entries.firstIndex(where: { if case .plugins = $0 { return true }; return false }) {
+        let shortcuts = AorusPluginRuntimeManager.shared.pluginSettingsShortcuts().prefix(24)
+        entries.insert(contentsOf: shortcuts.enumerated().map { offset, item in
+            .pluginShortcut(theme, item.shortcut.title, item.shortcut.subtitle ?? "", item.pluginId, item.shortcut.id, Int32(100 + offset))
+        }, at: pluginIndex + 1)
+    }
 
     if state.antiSpamEnabled, let idx = entries.firstIndex(where: {
         if case .antiSpam = $0 { return true }; return false
@@ -1413,6 +1434,9 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
             }
             navigationController.pushViewController(aorusPluginsController(context: context))
         },
+        openPluginShortcut: { pluginId, id in
+            AorusPluginRuntimeManager.shared.performSettingsShortcut(pluginId: pluginId, id: id)
+        },
         openMisc: {
             guard let controller = weakController,
                   let navigationController = controller.navigationController as? NavigationController else {
@@ -1566,9 +1590,22 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
     // snapshot) so the screen re-themes the instant the theme changes — e.g. when AMOLED is
     // toggled, aorusAmoledTrigger re-emits presentationData and this screen goes true-black
     // immediately, with no need to leave and re-enter.
-    let signal = combineLatest(statePromise.get(), context.sharedContext.presentationData)
+    let pluginIntegrationSignal = Signal<Int, NoError> { subscriber in
+        var revision = 0
+        subscriber.putNext(revision)
+        let token = NotificationCenter.default.addObserver(
+            forName: Notification.Name("aorusgram.plugins.integrationsChanged"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            revision += 1
+            subscriber.putNext(revision)
+        }
+        return ActionDisposable { NotificationCenter.default.removeObserver(token) }
+    }
+    let signal = combineLatest(statePromise.get(), context.sharedContext.presentationData, pluginIntegrationSignal)
         |> deliverOnMainQueue
-        |> map { state, presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
+        |> map { state, presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let l10n = AorusL10n(presentationData.strings.baseLanguageCode)
             // The derived theme, not the raw one. Every row Telegram itself draws reaches it
             // through ItemListPresentationData's convenience init; the rows in this file are our

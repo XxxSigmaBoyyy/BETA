@@ -1196,10 +1196,18 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
     sandbox = (core / "AorusPluginSandbox.swift").read_text(encoding="utf-8") if (core / "AorusPluginSandbox.swift").is_file() else ""
     for marker in (
         "Permission not granted",
+        "pluginExecutionAllowed",
         "watchdogAvailable else",
         "hostResolvesPublicly",
         "blockedHostSuffixes",
         "requestPayloadLimitBytes",
+        "require(.customUI",
+        "case \"ui.share\"",
+        "require(.dialogs",
+        "permissions.contains(.settingsIntegration)",
+        "permissions.contains(.contextMenu)",
+        "require(.inAppBrowser",
+        "require(.artificialIntelligence",
     ):
         if marker not in sandbox:
             fail(errors, f"plugin sandbox fail-closed invariant is missing: {marker}")
@@ -1207,6 +1215,32 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
     for marker in ("normalizedIdentifier", "sourceLimitBytes", "permissions.json", "sourceDigest"):
         if marker not in store:
             fail(errors, f"plugin store security invariant is missing: {marker}")
+    prelude = (core / "AorusPluginPrelude.swift").read_text(encoding="utf-8") if (core / "AorusPluginPrelude.swift").is_file() else ""
+    for forbidden in (
+        "JSExport", "unsafeBitCast", "dlopen(", "NSClassFromString", "UIApplication.shared",
+        "LicenseKeyProvider", "AorusLicenseAccess", "VLESS",
+    ):
+        if forbidden in prelude:
+            fail(errors, f"plugin public API exposes forbidden implementation surface: {forbidden}")
+    runtime = (ui / "AorusPluginRuntime.swift").read_text(encoding="utf-8") if (ui / "AorusPluginRuntime.swift").is_file() else ""
+    for marker in (
+        "forceExternal: false",
+        "AorusPluginSandbox.isBlocked(host:",
+        "Artifact is not available to this plugin",
+        "AorusLicenseAccess.isAllowed",
+        "var pluginExecutionAllowed: Bool",
+        "isPermissionGranted(.inAppBrowser",
+        "isPermissionGranted(.artificialIntelligence",
+        "aiTurnIds",
+        "clearPluginState",
+    ):
+        if marker not in runtime:
+            fail(errors, f"plugin host security invariant is missing: {marker}")
+    controllers = (ui / "AorusPluginControllers.swift").read_text(encoding="utf-8") if (ui / "AorusPluginControllers.swift").is_file() else ""
+    if "AorusPluginLicenseBoundDebugHost" not in controllers:
+        fail(errors, "plugin editor debug runtime is not bound to the license gate")
+    if "AorusPluginExport(record: record, settings: [:])" not in store:
+        fail(errors, "plugin exports may include installation-owned settings")
 
 
 # Files that exist under both `AorusGram/Sources` (the core module) and

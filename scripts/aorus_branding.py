@@ -17715,6 +17715,34 @@ def patch_plugin_outgoing_messages(tg: Path) -> None:
     print("Plugins: outgoing command/send hook installed")
 
 
+def patch_plugin_context_menu(tg: Path) -> None:
+    """Append bounded declarative plugin actions to the native message menu."""
+    path = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
+    if not path.is_file():
+        print("Plugins: context-menu source not found, skip")
+        return
+    source = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram plugins: declarative context actions"
+    if sentinel in source:
+        print("Plugins: context-menu actions already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        if "import AccountContext\n" in source:
+            source = source.replace("import AccountContext\n", "import AccountContext\nimport AorusGramUI\n", 1)
+        else:
+            source = "import AorusGramUI\n" + source
+    anchor = "        if !isPinnedMessages, !isReplyThreadHead, data.canReply {"
+    if source.count(anchor) != 1:
+        raise SystemExit("Plugins: context-menu reply anchor not found")
+    injection = (
+        "        " + sentinel + "\n"
+        "        actions.append(contentsOf: aorusPluginMessageContextMenuItems())\n"
+        "\n"
+    )
+    path.write_text(source.replace(anchor, injection + anchor, 1), encoding="utf-8")
+    print("Plugins: native context-menu actions installed")
+
+
 def patch_tab_bar_visibility_controls(tg: Path) -> None:
     """Hide Search / tab titles live while preserving Telegram's native tab bar.
 
@@ -26131,6 +26159,7 @@ def main() -> None:
     patch_amoled_theme(tg)
     patch_plugin_runtime(tg)
     patch_plugin_outgoing_messages(tg)
+    patch_plugin_context_menu(tg)
     patch_hide_tabs(tg)
     patch_tab_bar_visibility_controls(tg)
     patch_wall_tab(tg)

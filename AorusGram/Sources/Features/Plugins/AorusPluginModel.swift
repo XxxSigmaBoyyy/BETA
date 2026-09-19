@@ -15,7 +15,12 @@ public enum AorusPluginIcon {
         "puzzlepiece.extension", "bolt.fill", "sparkles", "message.fill", "shield.fill",
         "globe", "terminal.fill", "clock.fill", "wand.and.stars", "heart.fill", "star.fill",
         "bell.fill", "text.bubble.fill", "arrow.triangle.2.circlepath", "lock.fill",
-        "paperplane.fill",
+        "paperplane.fill", "brain.head.profile", "camera.fill", "mic.fill", "play.fill",
+        "music.note", "doc.fill", "folder.fill", "link", "bookmark.fill", "person.fill",
+        "person.2.fill", "gearshape.fill", "slider.horizontal.3", "checkmark.circle.fill",
+        "square.and.pencil", "command", "curlybraces", "network", "photo.fill", "calendar",
+        "location.fill", "map.fill", "cart.fill", "creditcard.fill", "gamecontroller.fill",
+        "hammer.fill", "wrench.and.screwdriver.fill", "lightbulb.fill", "flame.fill",
     ]
     public static let fallback = "puzzlepiece.extension"
 
@@ -27,7 +32,8 @@ public enum AorusPluginIcon {
 /// Tile colours, as "RRGGBB".
 public enum AorusPluginAccent {
     public static let all: [String] = [
-        "5B4DFF", "0A84FF", "30D158", "FF9F0A", "FF375F", "BF5AF2", "64D2FF", "FFD60A",
+        "5B4DFF", "7C3AED", "BF5AF2", "FF2D92", "FF375F", "FF453A", "FF9F0A", "FFD60A",
+        "30D158", "34C759", "00C7BE", "64D2FF", "0A84FF", "007AFF", "5E5CE6", "8E8E93",
     ]
     public static let fallback = "5B4DFF"
 
@@ -121,23 +127,286 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case clipboardWrite
     case incomingMessages
     case outgoingMessages
+    case customUI
+    case settingsIntegration
+    case contextMenu
+    case inAppBrowser
+    case artificialIntelligence
 
     public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {
         let probes: [(AorusPluginPermission, [String])] = [
             (.network, ["aorus.http"]),
             (.sendMessages, ["aorus.messages.send"]),
             (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get"]),
-            (.openChats, ["aorus.chats.open"]),
-            (.accountProfile, ["aorus.account.current"]),
-            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt"]),
+            (.openChats, ["aorus.chats.open", "aorus.app.openChat"]),
+            (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount"]),
+            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
             (.incomingMessages, ["aorus.on('message'", "aorus.on(\"message\"", "aorus.once('message'", "aorus.once(\"message\""]),
             (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands.register"]),
+            (.customUI, ["aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage"]),
+            (.settingsIntegration, ["aorus.integrations.settings.register"]),
+            (.contextMenu, ["aorus.integrations.contextMenu.register"]),
+            (.inAppBrowser, [
+                "aorus.browser.open", "aorus.ui.openURL", "aorus.app.openURL",
+                "type: 'link'", "type: \"link\"", "\"type\":\"link\"",
+                "url:", "url :", ".link({",
+            ]),
+            (.artificialIntelligence, ["aorus.ai."]),
         ]
         return Set(probes.compactMap { permission, needles in
             needles.contains(where: source.contains) ? permission : nil
         })
+    }
+}
+
+/// Native plugin UI is declarative. JavaScript supplies this bounded data and the app owns
+/// every view and interaction; no UIKit object or selector ever crosses the sandbox boundary.
+public struct AorusPluginUIPage: Codable, Equatable {
+    public struct Section: Codable, Equatable {
+        public var title: String?
+        public var footer: String?
+        public var rows: [Row]
+
+        public init(title: String? = nil, footer: String? = nil, rows: [Row]) {
+            self.title = title
+            self.footer = footer
+            self.rows = rows
+        }
+    }
+
+    public struct Row: Codable, Equatable {
+        public enum Kind: String, Codable {
+            case text
+            case button
+            case toggle
+            case input
+            case multiline
+            case number
+            case select
+            case link
+            case slider
+            case stepper
+        }
+
+        public var id: String
+        public var kind: Kind
+        public var title: String
+        public var subtitle: String?
+        public var icon: String?
+        public var value: AorusPluginJSONValue?
+        public var options: [AorusPluginSettingField.Option]?
+        public var url: String?
+        public var minimum: Double?
+        public var maximum: Double?
+        public var step: Double?
+        public var destructive: Bool
+
+        public init(id: String, kind: Kind, title: String, subtitle: String? = nil, icon: String? = nil, value: AorusPluginJSONValue? = nil, options: [AorusPluginSettingField.Option]? = nil, url: String? = nil, minimum: Double? = nil, maximum: Double? = nil, step: Double? = nil, destructive: Bool = false) {
+            self.id = id
+            self.kind = kind
+            self.title = title
+            self.subtitle = subtitle
+            self.icon = icon
+            self.value = value
+            self.options = options
+            self.url = url
+            self.minimum = minimum
+            self.maximum = maximum
+            self.step = step
+            self.destructive = destructive
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case kind = "type"
+            case title
+            case subtitle
+            case icon
+            case value
+            case options
+            case url
+            case minimum = "min"
+            case maximum = "max"
+            case step
+            case destructive
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            kind = try container.decode(Kind.self, forKey: .kind)
+            title = try container.decode(String.self, forKey: .title)
+            subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
+            icon = try container.decodeIfPresent(String.self, forKey: .icon)
+            value = try container.decodeIfPresent(AorusPluginJSONValue.self, forKey: .value)
+            options = try container.decodeIfPresent([AorusPluginSettingField.Option].self, forKey: .options)
+            url = try container.decodeIfPresent(String.self, forKey: .url)
+            minimum = try container.decodeIfPresent(Double.self, forKey: .minimum)
+            maximum = try container.decodeIfPresent(Double.self, forKey: .maximum)
+            step = try container.decodeIfPresent(Double.self, forKey: .step)
+            destructive = try container.decodeIfPresent(Bool.self, forKey: .destructive) ?? false
+        }
+    }
+
+    public var id: String
+    public var title: String
+    public var sections: [Section]
+
+    public init(id: String, title: String, sections: [Section]) {
+        self.id = id
+        self.title = title
+        self.sections = sections
+    }
+
+    public static func validated(from data: Data) -> [AorusPluginUIPage]? {
+        guard data.count <= 128 * 1024,
+              var pages = try? JSONDecoder().decode([AorusPluginUIPage].self, from: data),
+              pages.count <= 12 else {
+            return nil
+        }
+        let identifier = try? NSRegularExpression(pattern: "^[A-Za-z0-9_.-]{1,64}$")
+        var pageIds = Set<String>()
+        for pageIndex in pages.indices {
+            var page = pages[pageIndex]
+            guard identifier?.firstMatch(in: page.id, range: NSRange(location: 0, length: page.id.utf16.count)) != nil,
+                  pageIds.insert(page.id).inserted,
+                  !page.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            page.title = String(page.title.prefix(80))
+            page.sections = Array(page.sections.prefix(16))
+            var rowIds = Set<String>()
+            var rowCount = 0
+            for sectionIndex in page.sections.indices {
+                var section = page.sections[sectionIndex]
+                section.title = section.title.map { String($0.prefix(80)) }
+                section.footer = section.footer.map { String($0.prefix(500)) }
+                section.rows = Array(section.rows.prefix(32))
+                rowCount += section.rows.count
+                guard rowCount <= 128 else { return nil }
+                for rowIndex in section.rows.indices {
+                    var row = section.rows[rowIndex]
+                    guard identifier?.firstMatch(in: row.id, range: NSRange(location: 0, length: row.id.utf16.count)) != nil,
+                          rowIds.insert(row.id).inserted,
+                          !row.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        return nil
+                    }
+                    row.title = String(row.title.prefix(120))
+                    row.subtitle = row.subtitle.map { String($0.prefix(300)) }
+                    row.icon = row.icon.map { AorusPluginIcon.normalized($0) }
+                    row.url = row.url.map { String($0.prefix(2_048)) }
+                    row.options = row.options.map { Array($0.prefix(64)).map { option in
+                        AorusPluginSettingField.Option(value: String(option.value.prefix(256)), title: String(option.title.prefix(120)))
+                    } }
+                    if case let .string(value)? = row.value {
+                        row.value = .string(String(value.prefix(16_384)))
+                    } else if case .array? = row.value {
+                        return nil
+                    } else if case .object? = row.value {
+                        return nil
+                    }
+                    if row.kind == .link {
+                        guard let value = row.url, let url = URL(string: value),
+                              let scheme = url.scheme?.lowercased(), (scheme == "http" || scheme == "https"),
+                              url.host?.isEmpty == false else { return nil }
+                    }
+                    if row.kind == .slider || row.kind == .stepper {
+                        let minimum = row.minimum ?? 0
+                        let maximum = row.maximum ?? 100
+                        let step = row.step ?? 1
+                        guard minimum.isFinite, maximum.isFinite, step.isFinite,
+                              abs(minimum) <= 1_000_000_000, abs(maximum) <= 1_000_000_000,
+                              minimum < maximum, step > 0, step <= maximum - minimum else { return nil }
+                        row.minimum = minimum
+                        row.maximum = maximum
+                        row.step = step
+                        let current = row.value?.doubleValue ?? minimum
+                        row.value = .number(min(maximum, max(minimum, current)))
+                    }
+                    section.rows[rowIndex] = row
+                }
+                page.sections[sectionIndex] = section
+            }
+            pages[pageIndex] = page
+        }
+        return pages
+    }
+}
+
+public struct AorusPluginSettingsShortcut: Codable, Equatable {
+    public var id: String
+    public var title: String
+    public var subtitle: String?
+    public var icon: String?
+    public var pageId: String?
+    public var url: String?
+
+    public init(id: String, title: String, subtitle: String? = nil, icon: String? = nil, pageId: String? = nil, url: String? = nil) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self.pageId = pageId
+        self.url = url
+    }
+
+    public static func validated(from data: Data) -> [AorusPluginSettingsShortcut]? {
+        guard data.count <= 64 * 1024,
+              var items = try? JSONDecoder().decode([AorusPluginSettingsShortcut].self, from: data),
+              items.count <= 24 else { return nil }
+        let identifier = try? NSRegularExpression(pattern: "^[A-Za-z0-9_.-]{1,64}$")
+        var ids = Set<String>()
+        for index in items.indices {
+            var item = items[index]
+            guard identifier?.firstMatch(in: item.id, range: NSRange(location: 0, length: item.id.utf16.count)) != nil,
+                  ids.insert(item.id).inserted,
+                  !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  (item.pageId != nil) != (item.url != nil) else { return nil }
+            if let pageId = item.pageId,
+               identifier?.firstMatch(in: pageId, range: NSRange(location: 0, length: pageId.utf16.count)) == nil { return nil }
+            item.title = String(item.title.prefix(120))
+            item.subtitle = item.subtitle.map { String($0.prefix(240)) }
+            item.icon = item.icon.map { AorusPluginIcon.normalized($0) }
+            item.url = item.url.map { String($0.prefix(2_048)) }
+            if let value = item.url {
+                guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+                      (scheme == "http" || scheme == "https"), url.host?.isEmpty == false else { return nil }
+            }
+            items[index] = item
+        }
+        return items
+    }
+}
+
+public struct AorusPluginContextAction: Codable, Equatable {
+    public var id: String
+    public var title: String
+    public var icon: String?
+
+    public init(id: String, title: String, icon: String? = nil) {
+        self.id = id
+        self.title = title
+        self.icon = icon
+    }
+
+    public static func validated(from data: Data) -> [AorusPluginContextAction]? {
+        guard data.count <= 32 * 1024,
+              var items = try? JSONDecoder().decode([AorusPluginContextAction].self, from: data),
+              items.count <= 8 else { return nil }
+        let identifier = try? NSRegularExpression(pattern: "^[A-Za-z0-9_.-]{1,64}$")
+        var ids = Set<String>()
+        for index in items.indices {
+            var item = items[index]
+            guard identifier?.firstMatch(in: item.id, range: NSRange(location: 0, length: item.id.utf16.count)) != nil,
+                  ids.insert(item.id).inserted,
+                  !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            item.title = String(item.title.prefix(80))
+            item.icon = item.icon.map { AorusPluginIcon.normalized($0) }
+            items[index] = item
+        }
+        return items
     }
 }
 
@@ -151,8 +420,21 @@ public struct AorusPluginPermissionState: Codable, Equatable {
     }
 }
 
-/// Any JSON value. The plugin storage, the plugin settings and the export bundle are all
-/// JSON, and a typed representation keeps `Any` out of Codable paths.
+/// A settings schema belongs to the exact source revision that declared it. Keeping the
+/// digest beside the fields prevents a stale form from surviving a source edit.
+public struct AorusPluginSchemaState: Codable, Equatable {
+    public var sourceDigest: String
+    public var fields: [AorusPluginSettingField]
+
+    public init(sourceDigest: String, fields: [AorusPluginSettingField]) {
+        self.sourceDigest = sourceDigest
+        self.fields = Array(fields.prefix(64))
+    }
+}
+
+/// Any JSON value. Plugin storage and settings are JSON, and a typed representation keeps
+/// `Any` out of Codable paths. Export decoding retains the field for compatibility, but new
+/// exports deliberately leave installation-owned settings empty.
 public enum AorusPluginJSONValue: Equatable {
     case string(String)
     case number(Double)

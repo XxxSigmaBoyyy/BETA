@@ -19,7 +19,7 @@ public enum AorusPluginPrelude {
     /// Events a plugin may subscribe to. Anything else is rejected at `aorus.on`.
     public static let events: [String] = [
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
-        "foreground", "background", "settingsChanged",
+        "foreground", "background", "settingsChanged", "uiAction", "contextAction",
     ]
 
     public static let source: String = """
@@ -326,6 +326,135 @@ public enum AorusPluginPrelude {
             }
         });
 
+        // ---- native UI and integrations -------------------------------------------------
+
+        var settingsShortcuts = [];
+        var contextActions = [];
+        var builderPages = [];
+
+        function registerIntegration(target, definition, publish) {
+            var value = optionalObject(definition, 'definition');
+            if (typeof value.id !== 'string' || typeof value.title !== 'string') {
+                throw typeError('integration id and title must be strings');
+            }
+            var clean = JSON.parse(JSON.stringify(value));
+            for (var i = 0; i < target.length; i++) {
+                if (target[i].id === clean.id) { target.splice(i, 1); break; }
+            }
+            target.push(clean);
+            if (!publish(JSON.stringify(target))) { target.pop(); throw new Error('Invalid integration definition or permission not granted'); }
+            return function () {
+                for (var j = target.length - 1; j >= 0; j--) {
+                    if (target[j].id === clean.id) { target.splice(j, 1); }
+                }
+                publish(JSON.stringify(target));
+            };
+        }
+
+        function pageStyle(options) {
+            var opts = optionalObject(options, 'options');
+            var style = typeof opts.style === 'string' ? opts.style : 'push';
+            if (['push', 'sheet', 'fullScreen'].indexOf(style) === -1) { throw new Error('style must be push, sheet or fullScreen'); }
+            return style;
+        }
+
+        function publishBuilderPage(page) {
+            var snapshot = JSON.parse(JSON.stringify(page));
+            for (var i = 0; i < builderPages.length; i++) {
+                if (builderPages[i].id === snapshot.id) { builderPages.splice(i, 1); break; }
+            }
+            builderPages.push(snapshot);
+            if (!host.pagesDefine(JSON.stringify(builderPages))) { throw new Error('Invalid page definition or permission not granted'); }
+        }
+
+        function createPage(definition) {
+            var opts = optionalObject(definition, 'definition');
+            var id = requireString(opts.id, 'page id');
+            var title = requireString(opts.title, 'page title');
+            var page = { id: id, title: title, sections: [] };
+
+            function addSection(definition) {
+                var sectionOptions = optionalObject(definition, 'section');
+                var section = { rows: [] };
+                if (typeof sectionOptions.title === 'string') { section.title = sectionOptions.title; }
+                if (typeof sectionOptions.footer === 'string') { section.footer = sectionOptions.footer; }
+                page.sections.push(section);
+
+                function addRow(type, definition) {
+                    var rowOptions = optionalObject(definition, 'row');
+                    var row = {};
+                    var keys = Object.keys(rowOptions);
+                    for (var i = 0; i < keys.length; i++) { row[keys[i]] = rowOptions[keys[i]]; }
+                    row.id = requireString(row.id, 'row id');
+                    row.title = requireString(row.title, 'row title');
+                    row.type = type;
+                    section.rows.push(row);
+                    return sectionApi;
+                }
+
+                var sectionApi = freeze({
+                    text: function (row) { return addRow('text', row); },
+                    button: function (row) { return addRow('button', row); },
+                    toggle: function (row) { return addRow('toggle', row); },
+                    input: function (row) { return addRow('input', row); },
+                    multiline: function (row) { return addRow('multiline', row); },
+                    number: function (row) { return addRow('number', row); },
+                    select: function (row) { return addRow('select', row); },
+                    link: function (row) { return addRow('link', row); },
+                    slider: function (row) { return addRow('slider', row); },
+                    stepper: function (row) { return addRow('stepper', row); },
+                    end: function () { return pageApi; }
+                });
+                return sectionApi;
+            }
+
+            function update(rowId, value) {
+                requireString(rowId, 'rowId');
+                for (var i = 0; i < page.sections.length; i++) {
+                    for (var j = 0; j < page.sections[i].rows.length; j++) {
+                        if (page.sections[i].rows[j].id === rowId) {
+                            page.sections[i].rows[j].value = value;
+                            publishBuilderPage(page);
+                            return pageApi;
+                        }
+                    }
+                }
+                throw new Error('Unknown row: ' + rowId);
+            }
+
+            var pageApi = freeze({
+                section: addSection,
+                publish: function () { publishBuilderPage(page); return pageApi; },
+                open: function (options) {
+                    publishBuilderPage(page);
+                    return request('ui.openPage', { pageId: id, style: pageStyle(options) });
+                },
+                update: update,
+                snapshot: function () { return JSON.parse(JSON.stringify(page)); }
+            });
+            return pageApi;
+        }
+
+        function createAIChat(options) {
+            var opts = optionalObject(options, 'options');
+            var history = Array.isArray(opts.history) ? JSON.parse(JSON.stringify(opts.history)) : [];
+            return freeze({
+                ask: function (prompt) {
+                    var text = requireString(prompt, 'prompt');
+                    return request('ai.ask', { prompt: text, history: history }).then(function (answer) {
+                        history.push({ role: 'user', content: text });
+                        if (answer && typeof answer.text === 'string' && answer.text.length > 0) {
+                            history.push({ role: 'assistant', content: answer.text });
+                        }
+                        if (history.length > 20) { history = history.slice(history.length - 20); }
+                        return answer;
+                    });
+                },
+                clear: function () { history = []; },
+                messages: function () { return JSON.parse(JSON.stringify(history)); }
+            });
+        }
+
         // ---- timers -------------------------------------------------------------------
 
         var timers = {};
@@ -558,7 +687,79 @@ public enum AorusPluginPrelude {
                         cancel: typeof opts.cancel === 'string' ? opts.cancel : null
                     });
                 },
-                haptic: function (kind) { host.haptic(requireString(kind, 'kind')); }
+                share: function (value) {
+                    var opts = typeof value === 'string' ? { text: value } : optionalObject(value, 'value');
+                    return request('ui.share', {
+                        text: typeof opts.text === 'string' ? opts.text : null,
+                        url: typeof opts.url === 'string' ? opts.url : null
+                    });
+                },
+                haptic: function (kind) { host.haptic(requireString(kind, 'kind')); },
+                definePages: function (pages) {
+                    if (!Array.isArray(pages)) { throw typeError('pages must be an array'); }
+                    if (!host.pagesDefine(JSON.stringify(pages))) { throw new Error('Invalid page definition or permission not granted'); }
+                },
+                createPage: createPage,
+                openPage: function (pageId, options) {
+                    return request('ui.openPage', { pageId: requireString(pageId, 'pageId'), style: pageStyle(options) });
+                },
+                presentPage: function (pageId, options) {
+                    var opts = optionalObject(options, 'options');
+                    return request('ui.openPage', { pageId: requireString(pageId, 'pageId'), style: typeof opts.style === 'string' ? pageStyle(opts) : 'sheet' });
+                },
+                openURL: function (url) {
+                    return request('browser.open', { url: requireString(url, 'url') });
+                }
+            }),
+            browser: freeze({
+                open: function (url) { return request('browser.open', { url: requireString(url, 'url') }); }
+            }),
+            app: freeze({
+                info: function () {
+                    return freeze({
+                        language: device.language,
+                        systemVersion: device.systemVersion,
+                        appVersion: device.appVersion,
+                        isDark: !!device.isDark
+                    });
+                },
+                currentAccount: function () { return request('account.current', {}); },
+                openChat: function (peerId) {
+                    var target = toPeerId(peerId);
+                    return request('chats.open', { peerId: target === 'me' ? null : target, toSelf: target === 'me' });
+                },
+                openURL: function (url) { return request('browser.open', { url: requireString(url, 'url') }); },
+                haptic: function (kind) { host.haptic(requireString(kind, 'kind')); },
+                share: function (value) {
+                    var opts = typeof value === 'string' ? { text: value } : optionalObject(value, 'value');
+                    return request('ui.share', {
+                        text: typeof opts.text === 'string' ? opts.text : null,
+                        url: typeof opts.url === 'string' ? opts.url : null
+                    });
+                }
+            }),
+            integrations: freeze({
+                settings: freeze({
+                    register: function (definition) {
+                        return registerIntegration(settingsShortcuts, definition, function (json) { return host.settingsShortcutsDefine(json); });
+                    }
+                }),
+                contextMenu: freeze({
+                    register: function (definition) {
+                        return registerIntegration(contextActions, definition, function (json) { return host.contextActionsDefine(json); });
+                    }
+                })
+            }),
+            ai: freeze({
+                createChat: createAIChat,
+                ask: function (prompt, options) {
+                    var opts = optionalObject(options, 'options');
+                    var history = Array.isArray(opts.history) ? opts.history : [];
+                    return request('ai.ask', { prompt: requireString(prompt, 'prompt'), history: history });
+                },
+                openArtifact: function (artifactId) {
+                    return request('ai.openArtifact', { artifactId: requireString(artifactId, 'artifactId') });
+                }
             }),
             clipboard: freeze({
                 read: function () { return request('clipboard.read', {}); },
