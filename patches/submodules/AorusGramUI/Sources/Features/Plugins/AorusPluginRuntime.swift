@@ -1001,12 +1001,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
 
     func pluginEditMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, text: String, completion: @escaping (Result<Void, Error>) -> Void) {
         withPluginMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, completion: completion) { id in
-            let entities = generateTextEntities(text, enabledTypes: .all)
             let signal = self.context.engine.messages.requestEditMessage(
                 messageId: id,
                 text: text,
                 media: .keep,
-                entities: entities.isEmpty ? nil : TextEntitiesMessageAttribute(entities: entities),
+                // Plugin edits are plain text. Entity generation belongs to TelegramUI and
+                // importing that module here would create a dependency cycle.
+                entities: nil,
                 richText: nil,
                 inlineStickers: [:],
                 webpagePreviewAttribute: nil,

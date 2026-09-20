@@ -424,6 +424,12 @@ def main():
             paths.extend(sorted(base.rglob("*.swift")))
     sources, layout, by_type, free, nested, parents, written = collect(paths)
     failures = check(sources, layout, by_type, free, nested, parents, written)
+    plugin_runtime = root / "patches/submodules/AorusGramUI/Sources/Features/Plugins/AorusPluginRuntime.swift"
+    if plugin_runtime.is_file() and "generateTextEntities(" in plugin_runtime.read_text(encoding="utf-8"):
+        failures.append(
+            f"{plugin_runtime}: generateTextEntities is private to TelegramUI and cannot be "
+            "called from the AorusGramUI module"
+        )
     if failures:
         print("Swift call label check: FAILED")
         for failure in failures:
