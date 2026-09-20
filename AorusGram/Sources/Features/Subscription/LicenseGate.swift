@@ -459,6 +459,7 @@ final class LicenseGate {
     // cache mirror (`aorusgram_lic*`) are never touched. Fail-open: only ever engaged
     // when the gate actually locks, so an active / offline-grace user is never hit.
     private static let lockBackupKey = "aorusgram_lock_backup_v1"
+    private static let subscriptionBannerKey = "aorusgram_subscription_banner"
     private func setFeatureAccess(active: Bool) {
         let locked = !active
         let ud = UserDefaults.standard
@@ -560,6 +561,12 @@ final class LicenseGate {
     private func maybeShowEntryBanner(status: LicenseStatus, response: LicenseResponse?) {
         guard !bannerShownThisLaunch else { return }
         bannerShownThisLaunch = true
+        // This controls only the informational banner shown on launch. License verdicts,
+        // activation feedback and the lock screen remain authoritative and unaffected.
+        if let enabled = UserDefaults.standard.object(forKey: LicenseGate.subscriptionBannerKey) as? Bool,
+           !enabled {
+            return
+        }
         let days = response?.daysLeft ?? LicenseStore.shared.daysLeft ?? -1
         let duck: SubscriptionDuck
         let title: String

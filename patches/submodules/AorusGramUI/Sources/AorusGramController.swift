@@ -329,6 +329,7 @@ private struct AorusState: Equatable {
     var tripleTapDelete: Bool
     var interfaceV2: Bool
     var glassUI: Bool
+    var subscriptionBanner: Bool
     var showStories: Bool
     var amoledMode: Bool
     var profileReportButton: Bool
@@ -468,6 +469,7 @@ private enum AorusEntry: ItemListNodeEntry {
     case appBadge(PresentationTheme, String, String)
     case squareAvatars(PresentationTheme, String, Bool)
     case customFont(PresentationTheme, String)
+    case subscriptionBanner(PresentationTheme, String, Bool)
     case showStories(PresentationTheme, String, Bool)
 
     case tabsHeader(PresentationTheme, String)
@@ -528,7 +530,7 @@ private enum AorusEntry: ItemListNodeEntry {
              .performanceDisk, .performanceThermal, .performanceGraph, .ramAutoClean,
              .ramInterval, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
-        case .uiHeader, .interfaceV2, .glassUI, .amoledMode, .profileReportButton, .siriShortcuts, .appBadge, .squareAvatars, .customFont, .showStories:
+        case .uiHeader, .interfaceV2, .glassUI, .amoledMode, .profileReportButton, .siriShortcuts, .appBadge, .squareAvatars, .customFont, .subscriptionBanner, .showStories:
             return AorusSection.ui.rawValue
         case .tabsHeader, .hideContactsTab, .hideCallsTab, .hideSearchButton, .hideTabTitles, .compactTabBar:
             return AorusSection.tabs.rawValue
@@ -599,9 +601,10 @@ private enum AorusEntry: ItemListNodeEntry {
         case .profileReportButton:  return 54
         case .hideCallsTab:         return 63
         case .hideContactsTab:      return 62
-        case .siriShortcuts:        return 56
-        case .appBadge:             return 57
-        case .squareAvatars:        return 58
+        case .siriShortcuts:        return 55
+        case .appBadge:             return 56
+        case .squareAvatars:        return 57
+        case .subscriptionBanner:   return 58
         case .showStories:          return 59
         case .customFont:           return 60
         case .tabsHeader:           return 61
@@ -750,6 +753,8 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .squareAvatars(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .customFont(lt, ls):
             if case let .customFont(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .subscriptionBanner(lt, ls, lv):
+            if case let .subscriptionBanner(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .showStories(lt, ls, lv):
             if case let .showStories(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .tabsHeader(lt, ls):
@@ -941,6 +946,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.squareAvatars, $0) })
         case let .customFont(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openFont)
+        case let .subscriptionBanner(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.subscriptionBanner, $0) })
         case let .showStories(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.showStories, $0) })
         case let .tabsHeader(_, text):
@@ -1054,6 +1061,7 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
         .appBadge(theme, l10n.appBadge, appBadgeLabel(state.appBadge, l10n)),
         .squareAvatars(theme, l10n.squareAvatars, state.squareAvatars),
+        .subscriptionBanner(theme, l10n.subscriptionBanner, state.subscriptionBanner),
         .showStories(theme, l10n.showStories, state.showStories),
         .customFont(theme, l10n.customFont),
 
@@ -1243,6 +1251,7 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
         tripleTapDelete:    mgr.tripleTapDelete,
         interfaceV2:        AorusInterfaceV2.isEnabled,
         glassUI:            mgr.glassUI,
+        subscriptionBanner: UserDefaults.standard.object(forKey: "aorusgram_subscription_banner") as? Bool ?? true,
         showStories:        UserDefaults.standard.object(forKey: "aorusgram_show_stories") as? Bool ?? true,
         amoledMode:         mgr.amoledMode,
         profileReportButton: mgr.profileReportButton,
@@ -1334,6 +1343,7 @@ public func aorusGramController(context: AccountContext, shortcutRoutes: AorusSe
             UserDefaults.standard.set(s.bypassSavePaid,      forKey: "aorusgram_bypass_save_paid")
             UserDefaults.standard.set(s.bypassSaveViewOnce,  forKey: "aorusgram_bypass_view_once")
             UserDefaults.standard.set(s.bypassStoryDownload, forKey: "aorusgram_bypass_story_dl")
+            UserDefaults.standard.set(s.subscriptionBanner, forKey: "aorusgram_subscription_banner")
             UserDefaults.standard.set(s.showStories, forKey: "aorusgram_show_stories")
             // Glass effects are read once when the nav bar / input panel / HUD build
             // their layers, so toggling only fully applies (everywhere) after a restart.
