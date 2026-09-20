@@ -232,7 +232,10 @@ public enum AorusGlassSnapshot {
     /// Every pane in a window, outermost first.
     ///
     /// A pane's own subtree is not searched: on iOS 26 a `GlassBackgroundView` HOLDS the effect
-    /// view that does the work, and freezing both would put two copies where one belongs.
+    /// view that does the work, and freezing both would put two copies where one belongs. A
+    /// `UIGlassContainerEffect` is different: it only groups the real glass effects below it, so
+    /// it is deliberately skipped and its subtree remains searchable. `LegacyGlassView` is a
+    /// pane in its own right on older systems.
     private static func collectPanes(in view: UIView, into result: inout [UIView]) {
         for subview in view.subviews {
             if subview.isHidden || subview.alpha <= 0.02 { continue }
@@ -254,10 +257,17 @@ public enum AorusGlassSnapshot {
     /// handle as an import would be. Nothing is called on it: it is only asked whether it is the
     /// view a picture belongs in.
     private static let legacyPaneName = "LegacyGlassView"
+    private static let containerEffectName = "UIGlassContainerEffect"
 
     private static func isPane(_ view: UIView) -> Bool {
         if let effect = view as? UIVisualEffectView {
-            return effect.effect != nil
+            guard let current = effect.effect else { return false }
+            // The iOS 26 container is only a grouping effect. Its nested glass effects draw
+            // the material and must be discovered separately by collectPanes.
+            if String(describing: type(of: current)) == self.containerEffectName {
+                return false
+            }
+            return true
         }
         return String(describing: type(of: view)) == self.legacyPaneName
     }

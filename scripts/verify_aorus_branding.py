@@ -14,6 +14,14 @@ def main() -> None:
 
     here = Path(__file__).resolve().parent
     branding_source = (here / "aorus_branding.py").read_text(encoding="utf-8")
+    glass_snapshot_source = here.parent / "AorusGram" / "Sources" / "Features" / "UI" / "AorusGlassSnapshot.swift"
+    if not glass_snapshot_source.is_file():
+        err.append("GlassSnapshot: AorusGlassSnapshot.swift is missing")
+    else:
+        glass_snapshot_text = glass_snapshot_source.read_text(encoding="utf-8")
+        for marker in ("containerEffectName", '"UIGlassContainerEffect"'):
+            if marker not in glass_snapshot_text:
+                err.append(f"GlassSnapshot: container-effect exclusion lost {marker}")
     for marker in (
         "patch_tgcalls_v2_set_proxy(tg)",
         "patch_tgcalls_reflector_socks5_udp(tg)",
