@@ -1210,10 +1210,19 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         "require(.artificialIntelligence",
         "require(.appCustomization",
         "require(.connectionControl",
+        "require(.accountSwitching",
+        "require(.telegramProxy",
+        "require(.manageMessages",
         "require(.messageHistory",
         "case \"features.set\"",
         "case \"proxy.set\"",
         "case \"chats.history\"",
+        "case \"accounts.switch\"",
+        "case \"telegramProxy.add\"",
+        "case \"messages.edit\"",
+        "case \"messages.delete\"",
+        "case \"messages.forward\"",
+        "case \"messages.react\"",
     ):
         if marker not in sandbox:
             fail(errors, f"plugin sandbox fail-closed invariant is missing: {marker}")
@@ -1248,12 +1257,16 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         "isPermissionGranted(.artificialIntelligence",
         "isPermissionGranted(.appCustomization",
         "isPermissionGranted(.connectionControl",
+        "isPermissionGranted(.accountSwitching",
+        "isPermissionGranted(.telegramProxy",
+        "isPermissionGranted(.manageMessages",
         "isPermissionGranted(.clipboardRead",
         "isPermissionGranted(.clipboardWrite",
         "AorusPluginFeatureBroker",
         "AorusPluginProxyBroker",
         "aiTurnIds",
         "clearPluginState",
+        "decodeTelegramProxySecret",
     ):
         if marker not in runtime:
             fail(errors, f"plugin host security invariant is missing: {marker}")
@@ -1281,6 +1294,17 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         fail(errors, "plugin editor debug runtime is not bound to the license gate")
     if "AorusPluginExport(record: record, settings: [:])" not in store:
         fail(errors, "plugin exports may include installation-owned settings")
+    if "AorusPluginBadgeView(text: state.badge" in controllers:
+        fail(errors, "plugin list/detail brought back the debug RUNNING badge")
+    branding = (root / "scripts/aorus_branding.py").read_text(encoding="utf-8")
+    for marker in (
+        "AorusPluginRuntimeManager.shared.processOutgoing",
+        "let aorusPluginMessages: [EnqueueMessage] = commit ? messages : messages.compactMap",
+        "guard !aorusPluginMessages.isEmpty else { return }",
+        "var messages = aorusPluginMessages",
+    ):
+        if marker not in branding:
+            fail(errors, f"plugin outgoing command integration is missing: {marker}")
     check_plugin_ui_stubs(root, errors)
 
 

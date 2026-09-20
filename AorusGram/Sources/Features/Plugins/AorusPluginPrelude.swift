@@ -57,6 +57,17 @@ public enum AorusPluginPrelude {
             throw typeError('peerId must be a decimal string, a safe integer or \\'me\\'');
         }
 
+        function messageReference(value) {
+            var ref = optionalObject(value, 'message');
+            var peerId = toPeerId(ref.peerId);
+            var namespace = Number(ref.namespace);
+            var messageId = Number(ref.messageId === undefined ? ref.id : ref.messageId);
+            if (peerId === 'me') { throw typeError('message.peerId must identify a chat'); }
+            if (!Number.isSafeInteger(namespace) || namespace < -2147483648 || namespace > 2147483647) { throw new RangeError('message.namespace is invalid'); }
+            if (!Number.isSafeInteger(messageId) || messageId < -2147483648 || messageId > 2147483647) { throw new RangeError('message.messageId is invalid'); }
+            return { peerId: peerId, namespace: namespace, messageId: messageId };
+        }
+
         // What console.* prints for a value: JSON for objects, with cycles cut and the
         // whole thing capped so a runaway object cannot flood the log.
         function describe(value, depth, seen) {
@@ -655,6 +666,55 @@ public enum AorusPluginPrelude {
             refresh: function () { return request('proxy.refresh', {}); }
         });
 
+        var accountsApi = freeze({
+            list: function () { return request('accounts.list', {}); },
+            switchTo: function (accountId) {
+                var id = toPeerId(accountId);
+                if (id === 'me') { throw typeError('accountId must be a decimal identifier'); }
+                return request('accounts.switch', { accountId: id });
+            }
+        });
+
+        var telegramProxyApi = freeze({
+            status: function () { return request('telegramProxy.status', {}); },
+            setEnabled: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return request('telegramProxy.setEnabled', { enabled: enabled });
+            },
+            setUseForCalls: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return request('telegramProxy.setUseForCalls', { enabled: enabled });
+            },
+            add: function (server) {
+                var value = optionalObject(server, 'server');
+                var type = requireString(value.type, 'server.type').toLowerCase();
+                var hostName = requireString(value.host, 'server.host').trim();
+                var port = Number(value.port);
+                if (type !== 'socks5' && type !== 'mtp') { throw new Error('server.type must be socks5 or mtp'); }
+                if (!hostName || hostName.length > 253) { throw new Error('server.host is invalid'); }
+                if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { throw new RangeError('server.port must be between 1 and 65535'); }
+                return request('telegramProxy.add', {
+                    type: type,
+                    host: hostName,
+                    port: port,
+                    username: typeof value.username === 'string' ? value.username : null,
+                    password: typeof value.password === 'string' ? value.password : null,
+                    secret: typeof value.secret === 'string' ? value.secret : null
+                });
+            },
+            remove: function (index) {
+                index = Number(index);
+                if (!Number.isSafeInteger(index) || index < 0) { throw new RangeError('index must be a non-negative integer'); }
+                return request('telegramProxy.remove', { index: index });
+            },
+            select: function (index) {
+                if (index === null) { return request('telegramProxy.select', { index: null }); }
+                index = Number(index);
+                if (!Number.isSafeInteger(index) || index < 0) { throw new RangeError('index must be null or a non-negative integer'); }
+                return request('telegramProxy.select', { index: index });
+            }
+        });
+
         var aorus = freeze({
             version: '\(apiVersion)',
             plugin: freeze({ id: info.id, name: info.name, version: info.version, author: info.author }),
@@ -686,6 +746,30 @@ public enum AorusPluginPrelude {
                         replyTo: typeof opts.replyTo === 'number' ? opts.replyTo : null,
                         accountId: (typeof opts.accountId === 'string' && /^-?\\d+$/.test(opts.accountId)) ? opts.accountId : (typeof opts.accountId === 'number' && Number.isSafeInteger(opts.accountId) ? String(opts.accountId) : null)
                     });
+                },
+                edit: function (message, text) {
+                    var ref = messageReference(message);
+                    ref.text = requireString(text, 'text');
+                    return request('messages.edit', ref);
+                },
+                delete: function (message, options) {
+                    var ref = messageReference(message);
+                    var opts = optionalObject(options, 'options');
+                    ref.forEveryone = !!opts.forEveryone;
+                    return request('messages.delete', ref);
+                },
+                forward: function (message, destinationPeerId) {
+                    var ref = messageReference(message);
+                    var target = toPeerId(destinationPeerId);
+                    if (target === 'me') { throw typeError('toPeerId must identify a chat'); }
+                    ref.toPeerId = target;
+                    return request('messages.forward', ref);
+                },
+                react: function (message, reaction) {
+                    var ref = messageReference(message);
+                    if (reaction !== null) { requireString(reaction, 'reaction'); }
+                    ref.reaction = reaction;
+                    return request('messages.react', ref);
                 }
             }),
             chats: freeze({
@@ -714,12 +798,14 @@ public enum AorusPluginPrelude {
             account: freeze({
                 current: function () { return request('account.current', {}); }
             }),
+            accounts: accountsApi,
             features: featureApi,
             interface: interfaceApi,
             tabs: tabsApi,
             avatars: avatarsApi,
             wall: wallApi,
             proxy: proxyApi,
+            telegramProxy: telegramProxyApi,
             telegram: freeze({
                 openLink: function (url) { return request('telegram.openLink', { url: requireString(url, 'url') }); }
             }),

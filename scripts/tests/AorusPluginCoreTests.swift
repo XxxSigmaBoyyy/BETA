@@ -59,6 +59,15 @@ expect(
     AorusPluginPermission.requestedBySource(telegramSource) == [.messageHistory, .openChats],
     "Telegram history and native navigation use separate explicit grants"
 )
+let accountAndProxySource = "aorus.accounts.list(); aorus.accounts.switchTo('42'); aorus.telegramProxy.status(); aorus.telegramProxy.setEnabled(true);"
+expect(
+    AorusPluginPermission.requestedBySource(accountAndProxySource) == [.accountSwitching, .telegramProxy],
+    "account switching and Telegram proxy management require separate grants"
+)
+expect(
+    AorusPluginPermission.requestedBySource("aorus.messages.edit(ref, 'x'); aorus.messages.delete(ref); aorus.messages.forward(ref, '2'); aorus.messages.react(ref, '👍');") == [.manageMessages],
+    "message mutation methods require the manage-messages grant"
+)
 // The consent sheet is built from the probe table, so a capability with no needle is one
 // nobody is ever asked about and the plugin is therefore never granted — its calls fail
 // silently forever. `aorus.ui.toast` was exactly that.
@@ -367,6 +376,59 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(requestedHistoryLimit == 12, "history request preserves Saved Messages and bounded limit")
     expect(openedTelegramURL == "tg://resolve?domain=telegram", "Telegram links cross only the native navigation broker")
     telegram.stop()
+
+    let accountProxyHost = AorusPluginNullHost()
+    var switchedAccount: Int64?
+    accountProxyHost.onAccounts = { _ in [["id": "42", "peerId": "100", "title": "Work", "current": false]] }
+    accountProxyHost.onSwitchAccount = { _, accountId in switchedAccount = accountId }
+    accountProxyHost.onTelegramProxyStatus = { _ in
+        ["enabled": true, "useForCalls": false, "servers": [["index": 0, "host": "proxy.example", "port": 443, "type": "mtp", "active": true, "hasCredentials": true]]]
+    }
+    let accountProxy = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Accounts and proxy"),
+        source: """
+        aorus.on('start', async function () {
+            const accounts = await aorus.accounts.list();
+            if (accounts.length === 1) { await aorus.accounts.switchTo(accounts[0].id); }
+            const status = await aorus.telegramProxy.status();
+            if (status.servers.length === 1) { await aorus.telegramProxy.setUseForCalls(true); }
+        });
+        """,
+        host: accountProxyHost,
+        permissions: [.accountSwitching, .telegramProxy]
+    )
+    let accountProxyStarted = DispatchSemaphore(value: 0)
+    accountProxy.start { error in expect(error == nil, "account and proxy plugin starts"); accountProxyStarted.signal() }
+    _ = accountProxyStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(switchedAccount == 42, "account switch accepts only a decimal local account identifier")
+    accountProxy.stop()
+
+    let messageActionHost = AorusPluginNullHost()
+    var messageActions: [String] = []
+    messageActionHost.onMessageAction = { _, action, peerId, namespace, messageId in
+        messageActions.append("\(action):\(peerId):\(namespace):\(messageId)")
+    }
+    let messageActionsPlugin = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Message actions"),
+        source: """
+        aorus.on('start', async function () {
+            const ref = { peerId: '100', namespace: 0, messageId: 7 };
+            await aorus.messages.edit(ref, 'updated');
+            await aorus.messages.delete(ref, { forEveryone: false });
+            await aorus.messages.forward(ref, '200');
+            await aorus.messages.react(ref, '👍');
+        });
+        """,
+        host: messageActionHost,
+        permissions: [.manageMessages]
+    )
+    let messageActionsStarted = DispatchSemaphore(value: 0)
+    messageActionsPlugin.start { error in expect(error == nil, "message actions plugin starts"); messageActionsStarted.signal() }
+    _ = messageActionsStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.8)
+    expect(messageActions == ["edit:100:0:7", "delete:100:0:7", "forward:100:0:7", "react:100:0:7"], "message actions cross only the typed native broker")
+    messageActionsPlugin.stop()
 
     let deniedIntegrationHost = AorusPluginNullHost()
     var deniedIntegrationCalls = 0

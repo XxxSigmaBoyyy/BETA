@@ -140,6 +140,9 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case artificialIntelligence
     case appCustomization
     case connectionControl
+    case accountSwitching
+    case telegramProxy
+    case manageMessages
 
     /// What each permission looks like in a plugin's source. The consent sheet is built
     /// from this, so a capability with no needle here is one the person is never asked
@@ -163,7 +166,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
                 "aorus.on('messageEdited'", "aorus.on(\"messageEdited\"", "aorus.once('messageEdited'", "aorus.once(\"messageEdited\"",
             ]),
             (.messageHistory, ["aorus.chats.history"]),
-            (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands.register"]),
+            (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands"]),
             (.customUI, ["aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage"]),
             (.settingsIntegration, ["aorus.integrations.settings.register"]),
             (.contextMenu, ["aorus.integrations.contextMenu.register"]),
@@ -179,6 +182,9 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.artificialIntelligence, ["aorus.ai."]),
             (.appCustomization, ["aorus.features.", "aorus.interface.", "aorus.tabs.", "aorus.avatars.", "aorus.wall."]),
             (.connectionControl, ["aorus.proxy."]),
+            (.accountSwitching, ["aorus.accounts."]),
+            (.telegramProxy, ["aorus.telegramProxy."]),
+            (.manageMessages, ["aorus.messages.edit", "aorus.messages.delete", "aorus.messages.forward", "aorus.messages.react"]),
     ]
 
     public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {

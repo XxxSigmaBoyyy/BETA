@@ -25,11 +25,17 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginSettingsSchemaChanged(_ pluginId: String, fields: [AorusPluginSettingField])
     func pluginSettingsChanged(_ pluginId: String, values: [String: AorusPluginJSONValue])
     func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginEditMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, text: String, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginDeleteMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, forEveryone: Bool, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginForwardMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, toPeerId: Int64, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginReactToMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, reaction: String?, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
     func pluginChatInfo(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
     func pluginChatHistory(_ pluginId: String, peerId: Int64?, toSelf: Bool, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
     func pluginOpenChat(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginAccounts(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
+    func pluginSwitchAccount(_ pluginId: String, accountId: Int64, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginShowToast(_ pluginId: String, text: String, duration: Double?)
     func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void)
     func pluginConfirm(_ pluginId: String, title: String, text: String?, ok: String?, cancel: String?, completion: @escaping (Bool) -> Void)
@@ -48,6 +54,12 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginSetProxyPreference(_ pluginId: String, key: String, value: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginRefreshProxy(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginTelegramProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginSetTelegramProxyEnabled(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginSetTelegramProxyUseForCalls(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginAddTelegramProxy(_ pluginId: String, type: String, host: String, port: Int32, username: String?, password: String?, secret: String?, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginRemoveTelegramProxy(_ pluginId: String, index: Int, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginSelectTelegramProxy(_ pluginId: String, index: Int?, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginHaptic(_ pluginId: String, kind: String)
     func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void)
     func pluginClipboardWrite(_ pluginId: String, text: String)
@@ -64,6 +76,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onSettingsSchemaChanged: ((String, [AorusPluginSettingField]) -> Void)?
     public var onSettingsChanged: ((String, [String: AorusPluginJSONValue]) -> Void)?
     public var onSendMessage: ((String, Int64?, Bool, Int64?, String, Int32?) -> Void)?
+    public var onMessageAction: ((String, String, Int64, Int32, Int32) -> Void)?
     public var onToast: ((String, String) -> Void)?
     public var onShare: ((String, String?, String?) -> Void)?
     public var onPagesChanged: ((String, [AorusPluginUIPage]) -> Void)?
@@ -80,6 +93,9 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onProxyStatus: ((String) -> [String: Any])?
     public var onSetProxyPreference: ((String, String, Bool) -> [String: Any])?
     public var onRefreshProxy: ((String) -> [String: Any])?
+    public var onAccounts: ((String) -> [[String: Any]])?
+    public var onSwitchAccount: ((String, Int64) -> Void)?
+    public var onTelegramProxyStatus: ((String) -> [String: Any])?
     public var language = "en"
 
     public init() {}
@@ -94,6 +110,10 @@ open class AorusPluginNullHost: AorusPluginHostServices {
         onSendMessage?(pluginId, peerId, toSelf, accountId, text, replyTo)
         completion(.success(()))
     }
+    open func pluginEditMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, text: String, completion: @escaping (Result<Void, Error>) -> Void) { onMessageAction?(pluginId, "edit", peerId, namespace, messageId); completion(.success(())) }
+    open func pluginDeleteMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, forEveryone: Bool, completion: @escaping (Result<Void, Error>) -> Void) { onMessageAction?(pluginId, "delete", peerId, namespace, messageId); completion(.success(())) }
+    open func pluginForwardMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, toPeerId: Int64, completion: @escaping (Result<Void, Error>) -> Void) { onMessageAction?(pluginId, "forward", peerId, namespace, messageId); completion(.success(())) }
+    open func pluginReactToMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, reaction: String?, completion: @escaping (Result<Void, Error>) -> Void) { onMessageAction?(pluginId, "react", peerId, namespace, messageId); completion(.success(())) }
     open func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) { completion(.success(nil)) }
     open func pluginChatInfo(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<[String: Any]?, Error>) -> Void) { completion(.success(nil)) }
     open func pluginChatHistory(_ pluginId: String, peerId: Int64?, toSelf: Bool, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
@@ -103,6 +123,8 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     open func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         completion(.success(["id": NSNumber(value: 0), "firstName": "", "lastName": "", "username": ""]))
     }
+    open func pluginAccounts(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void) { completion(.success(onAccounts?(pluginId) ?? [])) }
+    open func pluginSwitchAccount(_ pluginId: String, accountId: Int64, completion: @escaping (Result<Void, Error>) -> Void) { onSwitchAccount?(pluginId, accountId); completion(.success(())) }
     open func pluginShowToast(_ pluginId: String, text: String, duration: Double?) { onToast?(pluginId, text) }
     open func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void) { completion() }
     open func pluginConfirm(_ pluginId: String, title: String, text: String?, ok: String?, cancel: String?, completion: @escaping (Bool) -> Void) { completion(false) }
@@ -148,6 +170,12 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     open func pluginRefreshProxy(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         completion(.success(onRefreshProxy?(pluginId) ?? ["enabled": false, "stableCalls": false, "connected": false, "servers": []]))
     }
+    open func pluginTelegramProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) { completion(.success(onTelegramProxyStatus?(pluginId) ?? ["enabled": false, "useForCalls": false, "servers": []])) }
+    open func pluginSetTelegramProxyEnabled(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) { pluginTelegramProxyStatus(pluginId, completion: completion) }
+    open func pluginSetTelegramProxyUseForCalls(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) { pluginTelegramProxyStatus(pluginId, completion: completion) }
+    open func pluginAddTelegramProxy(_ pluginId: String, type: String, host: String, port: Int32, username: String?, password: String?, secret: String?, completion: @escaping (Result<[String: Any], Error>) -> Void) { pluginTelegramProxyStatus(pluginId, completion: completion) }
+    open func pluginRemoveTelegramProxy(_ pluginId: String, index: Int, completion: @escaping (Result<[String: Any], Error>) -> Void) { pluginTelegramProxyStatus(pluginId, completion: completion) }
+    open func pluginSelectTelegramProxy(_ pluginId: String, index: Int?, completion: @escaping (Result<[String: Any], Error>) -> Void) { pluginTelegramProxyStatus(pluginId, completion: completion) }
     open func pluginHaptic(_ pluginId: String, kind: String) {}
     open func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void) { completion(nil) }
     open func pluginClipboardWrite(_ pluginId: String, text: String) {}
@@ -912,6 +940,12 @@ public final class AorusPluginSandbox {
         func string(_ key: String) -> String? {
             return payload[key] as? String
         }
+        func int32(_ key: String) -> Int32? {
+            guard let number = payload[key] as? NSNumber,
+                  number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                  number.doubleValue >= Double(Int32.min), number.doubleValue <= Double(Int32.max) else { return nil }
+            return number.int32Value
+        }
         func boolean(_ key: String) -> Bool? {
             guard let number = payload[key] as? NSNumber,
                   CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
@@ -932,6 +966,49 @@ public final class AorusPluginSandbox {
             }
             let replyTo: Int32? = (payload["replyTo"] as? NSNumber).map { $0.int32Value }
             host.pluginSendMessage(pluginId, peerId: int64("peerId"), toSelf: toSelf, accountId: int64("accountId"), text: text, replyTo: replyTo) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "messages.edit":
+            guard require(.manageMessages, id: id) else { return }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId"),
+                  let text = string("text"), !text.isEmpty, text.count <= 32_768 else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid message reference and text are required")))
+                return
+            }
+            host.pluginEditMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, text: text) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "messages.delete":
+            guard require(.manageMessages, id: id) else { return }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId"),
+                  let forEveryone = boolean("forEveryone") else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid message reference is required")))
+                return
+            }
+            host.pluginDeleteMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, forEveryone: forEveryone) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "messages.forward":
+            guard require(.manageMessages, id: id) else { return }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId"), let toPeerId = int64("toPeerId") else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid source message and destination peer are required")))
+                return
+            }
+            host.pluginForwardMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, toPeerId: toPeerId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "messages.react":
+            guard require(.manageMessages, id: id) else { return }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId") else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid message reference is required")))
+                return
+            }
+            let reaction = string("reaction")
+            guard reaction == nil || (reaction != nil && !reaction!.isEmpty && reaction!.count <= 16) else {
+                settle(id, with: .failure(AorusPluginRequestError("reaction is invalid")))
+                return
+            }
+            host.pluginReactToMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, reaction: reaction) { [weak self] result in
                 self?.settle(id, with: result.map { _ -> Any? in nil })
             }
         case "chats.resolve":
@@ -977,6 +1054,20 @@ public final class AorusPluginSandbox {
             host.pluginCurrentAccount(pluginId) { [weak self] result in
                 self?.settle(id, with: result.map { value -> Any? in value as Any })
             }
+        case "accounts.list":
+            guard require(.accountSwitching, id: id) else { return }
+            host.pluginAccounts(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "accounts.switch":
+            guard require(.accountSwitching, id: id) else { return }
+            guard let accountId = int64("accountId") else {
+                settle(id, with: .failure(AorusPluginRequestError("accountId is required")))
+                return
+            }
+            host.pluginSwitchAccount(pluginId, accountId: accountId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
         case "features.list":
             guard require(.appCustomization, id: id) else { return }
             host.pluginAppFeatures(pluginId) { [weak self] result in
@@ -1021,6 +1112,63 @@ public final class AorusPluginSandbox {
         case "proxy.refresh":
             guard require(.connectionControl, id: id) else { return }
             host.pluginRefreshProxy(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.status":
+            guard require(.telegramProxy, id: id) else { return }
+            host.pluginTelegramProxyStatus(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.setEnabled":
+            guard require(.telegramProxy, id: id) else { return }
+            guard let enabled = boolean("enabled") else {
+                settle(id, with: .failure(AorusPluginRequestError("enabled must be a boolean")))
+                return
+            }
+            host.pluginSetTelegramProxyEnabled(pluginId, enabled: enabled) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.setUseForCalls":
+            guard require(.telegramProxy, id: id) else { return }
+            guard let enabled = boolean("enabled") else {
+                settle(id, with: .failure(AorusPluginRequestError("enabled must be a boolean")))
+                return
+            }
+            host.pluginSetTelegramProxyUseForCalls(pluginId, enabled: enabled) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.add":
+            guard require(.telegramProxy, id: id) else { return }
+            guard let type = string("type"), let hostName = string("host"),
+                  let portNumber = payload["port"] as? NSNumber,
+                  (1...65_535).contains(portNumber.intValue) else {
+                settle(id, with: .failure(AorusPluginRequestError("type, host and a valid port are required")))
+                return
+            }
+            host.pluginAddTelegramProxy(pluginId, type: type, host: hostName, port: Int32(portNumber.intValue), username: string("username"), password: string("password"), secret: string("secret")) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.remove":
+            guard require(.telegramProxy, id: id) else { return }
+            guard let index = (payload["index"] as? NSNumber)?.intValue, index >= 0 else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid server index is required")))
+                return
+            }
+            host.pluginRemoveTelegramProxy(pluginId, index: index) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "telegramProxy.select":
+            guard require(.telegramProxy, id: id) else { return }
+            let index: Int?
+            if payload["index"] == nil || payload["index"] is NSNull {
+                index = nil
+            } else if let value = (payload["index"] as? NSNumber)?.intValue, value >= 0 {
+                index = value
+            } else {
+                settle(id, with: .failure(AorusPluginRequestError("index must be null or a non-negative integer")))
+                return
+            }
+            host.pluginSelectTelegramProxy(pluginId, index: index) { [weak self] result in
                 self?.settle(id, with: result.map { value -> Any? in value as Any })
             }
         case "ui.alert":

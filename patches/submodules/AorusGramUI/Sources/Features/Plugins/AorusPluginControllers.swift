@@ -123,12 +123,6 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
         displayNodeDidLoad()
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // The badges read the runtime, which changes while other screens are open.
-        reload()
-    }
-
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         let top = navigationLayout(layout: layout).navigationFrame.maxY
@@ -358,47 +352,27 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
         }
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int { 4 }
+    func numberOfSections(in tableView: UITableView) -> Int { 3 }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
-        case 0: return 1
-        case 1: return 2
-        case 2: return screens.count
+        case 0: return 2
+        case 1: return screens.count
         default: return 3
         }
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        if indexPath.section == 0 {
-            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-            cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
-            cell.textLabel?.text = AorusPluginUIString.status.text
-            cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
-            let state = AorusPluginStatus(pluginId: record.manifest.id, record: record)
-            cell.detailTextLabel?.text = state.detail
-            cell.detailTextLabel?.textColor = state.isFailure
-                ? presentationData.theme.list.itemDestructiveColor
-                : presentationData.theme.list.itemSecondaryTextColor
-            cell.detailTextLabel?.numberOfLines = 0
-            cell.accessoryView = AorusPluginBadgeView(text: state.badge, color: state.color)
-            cell.accessoryType = .none
-            let indicator = UIImageView(image: UIImage(systemName: "circle.fill"))
-            indicator.tintColor = state.color
-            cell.imageView?.image = indicator.image
-            cell.imageView?.tintColor = state.color
-            return cell
-        }
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
         cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
         cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
-        if indexPath.section == 1 {
+        if indexPath.section == 0 {
             let toggle = UISwitch()
             if indexPath.row == 0 { cell.textLabel?.text = AorusPluginUIString.enabled.text; toggle.isOn = record.manifest.isEnabled; toggle.addTarget(self, action: #selector(enabledChanged(_:)), for: .valueChanged) }
             else { cell.textLabel?.text = AorusPluginUIString.autostart.text; toggle.isOn = record.manifest.autostart; toggle.addTarget(self, action: #selector(autostartChanged(_:)), for: .valueChanged) }
             cell.accessoryView = toggle
             cell.selectionStyle = .none
-        } else if indexPath.section == 2 {
+        } else if indexPath.section == 1 {
             cell.textLabel?.text = title(for: screens[indexPath.row]); cell.accessoryType = .disclosureIndicator
         } else {
             let actionTitles = [AorusPluginUIString.duplicate.text, AorusPluginUIString.export.text, AorusPluginUIString.delete.text]
@@ -410,12 +384,8 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        if indexPath.section == 0 {
-            (navigationController as? NavigationController)?.pushViewController(AorusPluginDiagnosticsController(context: context, record: record))
-            return
-        }
-        guard indexPath.section != 1 else { return }
-        if indexPath.section == 2 {
+        guard indexPath.section != 0 else { return }
+        if indexPath.section == 1 {
             switch screens[indexPath.row] {
             case .appearance: (navigationController as? NavigationController)?.pushViewController(AorusPluginMetadataController(context: context, record: record))
             case .editor: (navigationController as? NavigationController)?.pushViewController(AorusPluginEditorController(context: context, record: record))
@@ -950,7 +920,6 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
     @objc private func save() {
         let source = editor.text ?? ""
         let sourceChanged = source != record.source
-        let wasEnabled = record.manifest.isEnabled
         record.source = source
         do {
             if sourceChanged {
@@ -963,11 +932,10 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
             }
             title = record.manifest.name
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            // Editing the code revokes the grants that were given for the old code and
-            // switches the plugin off — correct, and invisible: the editor looked the same
-            // afterwards, so the obvious next step was to go and try the new commands,
-            // which of course did nothing. Say it, and offer the one action that fixes it.
-            if sourceChanged, wasEnabled, !record.manifest.isEnabled {
+            // New or changed code never inherits grants. Review it immediately after save,
+            // including the first save, so a freshly-created command cannot look enabled
+            // while the secure runtime has correctly refused to start it.
+            if sourceChanged, !record.manifest.isEnabled {
                 offerReenable()
             }
         } catch {
@@ -1001,8 +969,6 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
                         guard let self else { return }
                         if let error {
                             self.appendConsole("ERROR: \(error.message)")
-                        } else {
-                            self.appendConsole(AorusPluginUIString.running.text)
                         }
                     }
                 }
@@ -1338,13 +1304,19 @@ private enum AorusPluginDocumentation {
             Сообщения и чаты
             Идентификаторы peerId и accountId передаются десятичными строками без потери точности.
             await aorus.messages.send(peerId, text)
+            const message = { peerId, namespace, messageId }
+            await aorus.messages.edit(message, 'Новый текст')
+            await aorus.messages.delete(message, { forEveryone: true })
+            await aorus.messages.forward(message, destinationPeerId)
+            await aorus.messages.react(message, '👍')
+            await aorus.messages.react(message, null)
             await aorus.chats.resolve('username')
             await aorus.chats.get(peerId)
             await aorus.chats.history(peerId, { limit: 50 })
             await aorus.chats.open(peerId)
             await aorus.account.current()
             await aorus.telegram.openLink('tg://resolve?domain=telegram')
-            Используйте 'me' вместо peerId для текущего сохранённого чата. История требует отдельного разрешения и возвращает очищенные поля id, namespace, peerId, senderId, text, date, incoming и hasMedia. Один запрос ограничен 100 сообщениями и 128 000 символами. Telegram-ссылки открываются нативной навигацией. Отправка всегда выполняется только от активного аккаунта; подмена accountId отклоняется.
+            Используйте 'me' вместо peerId для текущего сохранённого чата. История требует отдельного разрешения и возвращает очищенные поля id, namespace, peerId, senderId, text, date, incoming и hasMedia. Эти peerId, namespace и id образуют ссылку на сообщение для edit/delete/forward/react. Перед действием клиент проверяет наличие сообщения локально, а права на изменение проверяет Telegram. Один запрос истории ограничен 100 сообщениями и 128 000 символами. Telegram-ссылки открываются нативной навигацией. Отправка всегда выполняется только от активного аккаунта; подмена accountId отклоняется.
 
             Хранилище и настройки
             aorus.storage.get(key)
@@ -1394,6 +1366,11 @@ private enum AorusPluginDocumentation {
 
             App API дает безопасный доступ к состоянию интерфейса, текущему аккаунту, навигации по чатам, браузеру, системному меню отправки и тактильному отклику. Действия проходят через проверяемый нативный broker и отдельные разрешения.
 
+            Аккаунты
+            const accounts = await aorus.accounts.list()
+            await aorus.accounts.switchTo(accounts[0].id)
+            Возвращаются только локальные id, имя, username и признак текущего аккаунта. Ключи авторизации, сессии и токены недоступны. Переключиться можно только на аккаунт, уже добавленный пользователем в приложение.
+
             Функции и интерфейс
             const all = await aorus.features.list()
             const current = await aorus.features.get('squareAvatars')
@@ -1415,6 +1392,16 @@ private enum AorusPluginDocumentation {
             await aorus.proxy.setStableCalls(true)
             await aorus.proxy.refresh()
             Возвращается только очищенное состояние маршрутов. Адреса, UUID, HMAC, ключи REALITY/VLESS и содержимое Keychain никогда не передаются плагину. При изменении пользовательских переключателей приходит connectionChanged.
+
+            Штатные прокси Telegram
+            const proxy = await aorus.telegramProxy.status()
+            await aorus.telegramProxy.add({ type: 'socks5', host: 'proxy.example', port: 1080, username: 'user', password: 'pass' })
+            await aorus.telegramProxy.add({ type: 'mtp', host: 'proxy.example', port: 443, secret: 'ee...' })
+            await aorus.telegramProxy.select(0)
+            await aorus.telegramProxy.setEnabled(true)
+            await aorus.telegramProxy.setUseForCalls(true)
+            await aorus.telegramProxy.remove(0)
+            status возвращает адрес, порт, тип, активность и наличие учётных данных, но никогда не возвращает сохранённые username, password или MTProto secret.
 
             Интеграции
             aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
@@ -1481,13 +1468,19 @@ private enum AorusPluginDocumentation {
     Messages and chats
     peerId and accountId values are decimal strings so 64-bit identifiers remain exact.
     await aorus.messages.send(peerId, text)
+    const message = { peerId, namespace, messageId }
+    await aorus.messages.edit(message, 'Updated text')
+    await aorus.messages.delete(message, { forEveryone: true })
+    await aorus.messages.forward(message, destinationPeerId)
+    await aorus.messages.react(message, '👍')
+    await aorus.messages.react(message, null)
     await aorus.chats.resolve('username')
     await aorus.chats.get(peerId)
     await aorus.chats.history(peerId, { limit: 50 })
     await aorus.chats.open(peerId)
     await aorus.account.current()
     await aorus.telegram.openLink('tg://resolve?domain=telegram')
-    Use 'me' as peerId for Saved Messages. History uses a separate permission and returns sanitized id, namespace, peerId, senderId, text, date, incoming and hasMedia fields. One call is bounded to 100 messages and 128,000 characters. Telegram links use native app navigation. Sending always uses the active account; a mismatched accountId is rejected.
+    Use 'me' as peerId for Saved Messages. History uses a separate permission and returns sanitized id, namespace, peerId, senderId, text, date, incoming and hasMedia fields. Those peerId, namespace and id values form the reference used by edit/delete/forward/react. The client verifies that the message exists locally before acting, while Telegram enforces edit and deletion rights. One history call is bounded to 100 messages and 128,000 characters. Telegram links use native app navigation. Sending always uses the active account; a mismatched accountId is rejected.
 
     Storage and settings
     aorus.storage.get(key)
@@ -1537,6 +1530,11 @@ private enum AorusPluginDocumentation {
 
     The App API provides safe access to interface state, the current account, chat navigation, the in-app browser, system share sheet and haptics. Actions use the validated native broker and separate permissions.
 
+    Accounts
+    const accounts = await aorus.accounts.list()
+    await aorus.accounts.switchTo(accounts[0].id)
+    Only local ids, display name, username and current-account state are returned. Authorization keys, sessions and tokens are unavailable. A plugin can switch only to an account already added by the user.
+
     Features and interface
     const all = await aorus.features.list()
     const current = await aorus.features.get('squareAvatars')
@@ -1558,6 +1556,16 @@ private enum AorusPluginDocumentation {
     await aorus.proxy.setStableCalls(true)
     await aorus.proxy.refresh()
     Only a sanitized route status is returned. Addresses, UUIDs, HMAC material, REALITY/VLESS credentials and Keychain contents never enter the plugin. Changing user switches emits connectionChanged.
+
+    Telegram proxies
+    const proxy = await aorus.telegramProxy.status()
+    await aorus.telegramProxy.add({ type: 'socks5', host: 'proxy.example', port: 1080, username: 'user', password: 'pass' })
+    await aorus.telegramProxy.add({ type: 'mtp', host: 'proxy.example', port: 443, secret: 'ee...' })
+    await aorus.telegramProxy.select(0)
+    await aorus.telegramProxy.setEnabled(true)
+    await aorus.telegramProxy.setUseForCalls(true)
+    await aorus.telegramProxy.remove(0)
+    status returns the address, port, type, active state and whether credentials exist, but never returns a saved username, password or MTProto secret.
 
     Integrations
     aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
@@ -2032,25 +2040,16 @@ private final class AorusPluginDiagnosticsController: ViewController, UITableVie
 private final class AorusPluginCell: UITableViewCell {
     var onToggle: ((Bool) -> Void)?
     private let toggle = UISwitch()
-    private let accessory = UIStackView()
-    private var badge: AorusPluginBadgeView?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
-        accessory.axis = .horizontal
-        accessory.alignment = .center
-        accessory.spacing = 10
-        accessory.addArrangedSubview(toggle)
-        accessoryView = accessory
+        accessoryView = toggle
         toggle.addTarget(self, action: #selector(changed), for: .valueChanged)
         selectionStyle = .default
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// The switch says what was asked for. The badge says what is actually happening, which
-    /// is the difference between a plugin that is off and one that was never granted what
-    /// it needs and therefore never ran.
     func configure(manifest: AorusPluginManifest, record: AorusPluginRecord?, theme: PresentationTheme) {
         textLabel?.text = manifest.name
         detailTextLabel?.text = manifest.summary.isEmpty ? manifest.version : manifest.summary
@@ -2059,15 +2058,6 @@ private final class AorusPluginCell: UITableViewCell {
         imageView?.image = UIImage(systemName: AorusPluginIcon.normalized(manifest.icon))
         imageView?.tintColor = pluginColor(manifest.accent)
         toggle.isOn = manifest.isEnabled
-        badge?.removeFromSuperview()
-        badge = nil
-        if let record {
-            let state = AorusPluginStatus(pluginId: manifest.id, record: record)
-            let view = AorusPluginBadgeView(text: state.badge, color: state.color)
-            accessory.insertArrangedSubview(view, at: 0)
-            badge = view
-        }
-        accessory.frame = CGRect(origin: .zero, size: accessory.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize))
     }
 
     @objc private func changed() { onToggle?(toggle.isOn) }
@@ -2105,6 +2095,9 @@ private func permissionTitle(_ permission: AorusPluginPermission) -> String {
     case .artificialIntelligence: return "AorusAI"
     case .appCustomization: return aorusL("Настройка приложения", "Customize app")
     case .connectionControl: return aorusL("Управление соединением", "Connection control")
+    case .accountSwitching: return aorusL("Аккаунты", "Accounts")
+    case .telegramProxy: return aorusL("Прокси Telegram", "Telegram proxies")
+    case .manageMessages: return aorusL("Управление сообщениями", "Manage messages")
     }
 }
 
@@ -2149,6 +2142,12 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
         return marker + aorusL("Разрешает изменять функции и оформление AorusGram из проверенного списка.", "Allows changing AorusGram features and appearance from a verified catalog.")
     case .connectionControl:
         return marker + aorusL("Разрешает читать состояние маршрута, менять пользовательские переключатели и запускать перепроверку без доступа к ключам серверов.", "Allows reading route status, changing user switches and refreshing the route without access to server credentials.")
+    case .accountSwitching:
+        return marker + aorusL("Разрешает видеть локальные аккаунты и переключать активный аккаунт без доступа к ключам авторизации.", "Allows listing local accounts and switching the active account without access to authorization keys.")
+    case .telegramProxy:
+        return marker + aorusL("Разрешает управлять штатными прокси Telegram. Сохранённые пароли и секреты плагину не раскрываются.", "Allows managing Telegram proxies. Saved passwords and secrets are never exposed to the plugin.")
+    case .manageMessages:
+        return marker + aorusL("Разрешает редактировать, удалять, пересылать сообщения и менять реакции от имени текущего аккаунта.", "Allows editing, deleting and forwarding messages and changing reactions as the current account.")
     }
 }
 

@@ -783,6 +783,183 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         }
     }
 
+    func pluginTelegramProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
+            return
+        }
+        readTelegramProxySettings { settings in
+            completion(.success(self.telegramProxySnapshot(settings)))
+        }
+    }
+
+    func pluginSetTelegramProxyEnabled(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guardTelegramProxyMutation(pluginId, completion: completion) { settings in
+            guard !enabled || settings.activeServer != nil else {
+                return .failure(AorusPluginRequestError("Select a Telegram proxy before enabling it"))
+            }
+            var updated = settings
+            updated.enabled = enabled
+            return .success(updated)
+        }
+    }
+
+    func pluginSetTelegramProxyUseForCalls(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guardTelegramProxyMutation(pluginId, completion: completion) { settings in
+            var updated = settings
+            updated.useForCalls = enabled
+            return .success(updated)
+        }
+    }
+
+    func pluginAddTelegramProxy(_ pluginId: String, type: String, host: String, port: Int32, username: String?, password: String?, secret: String?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedHost.isEmpty, normalizedHost.count <= 253, port > 0 else {
+            completion(.failure(AorusPluginRequestError("Invalid Telegram proxy address")))
+            return
+        }
+        let connection: ProxyServerConnection
+        switch type {
+        case "socks5":
+            guard (username?.count ?? 0) <= 256, (password?.count ?? 0) <= 256 else {
+                completion(.failure(AorusPluginRequestError("Telegram proxy credentials are too long")))
+                return
+            }
+            connection = .socks5(username: username?.isEmpty == true ? nil : username, password: password?.isEmpty == true ? nil : password)
+        case "mtp":
+            guard let value = secret, let decoded = decodeTelegramProxySecret(value) else {
+                completion(.failure(AorusPluginRequestError("MTProto proxy secret must be valid hex or base64")))
+                return
+            }
+            connection = .mtp(secret: decoded)
+        default:
+            completion(.failure(AorusPluginRequestError("Unsupported Telegram proxy type")))
+            return
+        }
+        let server = ProxyServerSettings(host: normalizedHost, port: port, connection: connection)
+        guardTelegramProxyMutation(pluginId, completion: completion) { settings in
+            var updated = settings
+            if let existing = updated.servers.firstIndex(of: server) {
+                updated.activeServer = updated.servers[existing]
+            } else {
+                guard updated.servers.count < 64 else {
+                    return .failure(AorusPluginRequestError("Telegram proxy limit reached"))
+                }
+                updated.servers.append(server)
+                updated.activeServer = server
+            }
+            return .success(updated)
+        }
+    }
+
+    func pluginRemoveTelegramProxy(_ pluginId: String, index: Int, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guardTelegramProxyMutation(pluginId, completion: completion) { settings in
+            guard settings.servers.indices.contains(index) else {
+                return .failure(AorusPluginRequestError("Telegram proxy is not available"))
+            }
+            var updated = settings
+            let removed = updated.servers.remove(at: index)
+            if updated.activeServer == removed {
+                updated.activeServer = nil
+                updated.enabled = false
+            }
+            return .success(updated)
+        }
+    }
+
+    func pluginSelectTelegramProxy(_ pluginId: String, index: Int?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guardTelegramProxyMutation(pluginId, completion: completion) { settings in
+            var updated = settings
+            if let index {
+                guard settings.servers.indices.contains(index) else {
+                    return .failure(AorusPluginRequestError("Telegram proxy is not available"))
+                }
+                updated.activeServer = settings.servers[index]
+            } else {
+                updated.activeServer = nil
+                updated.enabled = false
+            }
+            return .success(updated)
+        }
+    }
+
+    private func guardTelegramProxyMutation(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void, update: @escaping (ProxySettings) -> Result<ProxySettings, Error>) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
+            return
+        }
+        readTelegramProxySettings { current in
+            guard AorusLicenseAccess.isAllowed,
+                  self.manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
+                completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
+                return
+            }
+            switch update(current) {
+            case let .failure(error):
+                completion(.failure(error))
+            case let .success(updated):
+                let _ = (updateProxySettingsInteractively(accountManager: self.context.sharedContext.accountManager, { _ in updated }) |> take(1)).start(next: { _ in
+                    completion(.success(self.telegramProxySnapshot(updated)))
+                })
+            }
+        }
+    }
+
+    private func readTelegramProxySettings(_ completion: @escaping (ProxySettings) -> Void) {
+        let _ = (context.sharedContext.accountManager.sharedData(keys: [SharedDataKeys.proxySettings]) |> take(1)).start(next: { data in
+            completion(data.entries[SharedDataKeys.proxySettings]?.get(ProxySettings.self) ?? .defaultSettings)
+        })
+    }
+
+    private func telegramProxySnapshot(_ settings: ProxySettings) -> [String: Any] {
+        let servers: [[String: Any]] = settings.servers.enumerated().map { index, server in
+            let type: String
+            let hasCredentials: Bool
+            switch server.connection {
+            case let .socks5(username, password):
+                type = "socks5"
+                hasCredentials = !(username ?? "").isEmpty || !(password ?? "").isEmpty
+            case .mtp:
+                type = "mtp"
+                hasCredentials = true
+            }
+            return [
+                "index": NSNumber(value: index),
+                "host": server.host,
+                "port": NSNumber(value: server.port),
+                "type": type,
+                "active": NSNumber(value: server == settings.activeServer),
+                "hasCredentials": NSNumber(value: hasCredentials),
+            ]
+        }
+        return [
+            "enabled": NSNumber(value: settings.enabled),
+            "useForCalls": NSNumber(value: settings.useForCalls),
+            "servers": servers,
+        ]
+    }
+
+    private func decodeTelegramProxySecret(_ value: String) -> Data? {
+        let compact = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !compact.isEmpty, compact.count <= 1_024 else { return nil }
+        if compact.count.isMultiple(of: 2), compact.allSatisfy({ $0.isHexDigit }) {
+            var result = Data()
+            result.reserveCapacity(compact.count / 2)
+            var index = compact.startIndex
+            while index < compact.endIndex {
+                let next = compact.index(index, offsetBy: 2)
+                guard let byte = UInt8(compact[index..<next], radix: 16) else { return nil }
+                result.append(byte)
+                index = next
+            }
+            return (16...512).contains(result.count) ? result : nil
+        }
+        guard let result = Data(base64Encoded: compact), (16...512).contains(result.count) else { return nil }
+        return result
+    }
+
     private func rememberArtifacts(_ artifacts: [AorusAIArtifact], pluginId: String) {
         aiLock.lock()
         var known = aiArtifacts[pluginId] ?? [:]
@@ -820,6 +997,71 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             .message(text: text, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])
         ])
         let _ = signal.start(completed: { completion(.success(())) })
+    }
+
+    func pluginEditMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, text: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        withPluginMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, completion: completion) { id in
+            let entities = generateTextEntities(text, enabledTypes: .all)
+            let signal = self.context.engine.messages.requestEditMessage(
+                messageId: id,
+                text: text,
+                media: .keep,
+                entities: entities.isEmpty ? nil : TextEntitiesMessageAttribute(entities: entities),
+                richText: nil,
+                inlineStickers: [:],
+                webpagePreviewAttribute: nil,
+                disableUrlPreview: false,
+                scheduleInfoAttribute: nil
+            )
+            let _ = signal.start(next: { result in
+                if case .done = result { completion(.success(())) }
+            }, error: { _ in
+                completion(.failure(AorusPluginRequestError("Telegram rejected the message edit")))
+            })
+        }
+    }
+
+    func pluginDeleteMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, forEveryone: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        withPluginMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, completion: completion) { id in
+            let signal = self.context.engine.messages.deleteMessagesInteractively(
+                messageIds: [id],
+                type: forEveryone ? .forEveryone : .forLocalPeer
+            )
+            let _ = signal.start(completed: { completion(.success(())) })
+        }
+    }
+
+    func pluginForwardMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, toPeerId: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        withPluginMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, completion: completion) { id in
+            let signal = enqueueMessages(account: self.context.account, peerId: PeerId(toPeerId), messages: [
+                .forward(source: id, threadId: nil, grouping: .none, attributes: [], correlationId: nil)
+            ])
+            let _ = signal.start(completed: { completion(.success(())) })
+        }
+    }
+
+    func pluginReactToMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, reaction: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        withPluginMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, completion: completion) { id in
+            self.context.engine.messages.setMessageReactions(ids: [id], reactions: reaction.map { [.builtin($0)] } ?? [])
+            completion(.success(()))
+        }
+    }
+
+    private func withPluginMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void, action: @escaping (MessageId) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Manage messages permission is not granted")))
+            return
+        }
+        let id = MessageId(peerId: PeerId(peerId), namespace: namespace, id: messageId)
+        let _ = (context.account.postbox.transaction { transaction in transaction.getMessage(id) != nil } |> take(1)).start(next: { exists in
+            guard exists, AorusLicenseAccess.isAllowed,
+                  self.manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
+                completion(.failure(AorusPluginRequestError(exists ? "Manage messages permission is not granted" : "Message is not available")))
+                return
+            }
+            action(id)
+        })
     }
 
     func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
@@ -943,6 +1185,53 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         }
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)) |> take(1)).start(next: { peer in
             completion(.success(["id": String(self.context.account.peerId.toInt64()), "title": peer?.compactDisplayTitle ?? ""]))
+        })
+    }
+
+    func pluginAccounts(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
+            return
+        }
+        let currentId = context.account.id
+        let _ = (context.sharedContext.activeAccountsWithInfo |> take(1)).start(next: { value in
+            let accounts: [[String: Any]] = value.accounts.map { item in
+                var result: [String: Any] = [
+                    "id": String(item.account.id.int64),
+                    "peerId": String(item.peer.id.toInt64()),
+                    "title": item.peer.compactDisplayTitle,
+                    "current": NSNumber(value: item.account.id == currentId),
+                ]
+                if let username = item.peer.addressName, !username.isEmpty {
+                    result["username"] = username
+                }
+                return result
+            }
+            completion(.success(accounts))
+        })
+    }
+
+    func pluginSwitchAccount(_ pluginId: String, accountId: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
+            return
+        }
+        let _ = (context.sharedContext.activeAccountsWithInfo |> take(1) |> deliverOnMainQueue).start(next: { [weak self] value in
+            guard let self, AorusLicenseAccess.isAllowed,
+                  self.manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
+                completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
+                return
+            }
+            guard let account = value.accounts.first(where: { $0.account.id.int64 == accountId }) else {
+                completion(.failure(AorusPluginRequestError("Account is not available")))
+                return
+            }
+            if account.account.id != self.context.account.id {
+                self.context.sharedContext.switchToAccount(id: account.account.id, fromSettingsController: nil, withChatListController: nil)
+            }
+            completion(.success(()))
         })
     }
 
