@@ -19,7 +19,8 @@ public enum AorusPluginPrelude {
     /// Events a plugin may subscribe to. Anything else is rejected at `aorus.on`.
     public static let events: [String] = [
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
-        "foreground", "background", "settingsChanged", "uiAction", "contextAction",
+        "foreground", "background", "settingsChanged", "appSettingsChanged",
+        "connectionChanged", "uiAction", "contextAction",
     ]
 
     public static let source: String = """
@@ -578,6 +579,82 @@ public enum AorusPluginPrelude {
             }
         });
 
+        // App customization is deliberately key-based. The native host owns the catalog,
+        // validates every value and never exposes UserDefaults, selectors or Swift objects.
+        var featureApi = freeze({
+            list: function () { return request('features.list', {}); },
+            get: function (id) { return request('features.get', { id: requireString(id, 'id') }); },
+            set: function (id, value) { return request('features.set', { id: requireString(id, 'id'), value: value }); }
+        });
+
+        var interfaceApi = freeze({
+            list: function () {
+                return featureApi.list().then(function (items) {
+                    return freeze((items || []).filter(function (item) {
+                        return item && (item.category === 'interface' || item.category === 'tabs');
+                    }));
+                });
+            },
+            get: featureApi.get,
+            set: featureApi.set
+        });
+
+        var tabFeatureIds = freeze([
+            'hideCallsTab', 'hideContactsTab', 'hideSearchButton',
+            'hideTabTitles', 'compactTabBar', 'wallEnabled'
+        ]);
+        var tabsApi = freeze({
+            list: function () {
+                return featureApi.list().then(function (items) {
+                    return freeze((items || []).filter(function (item) { return item && tabFeatureIds.indexOf(item.id) !== -1; }));
+                });
+            },
+            setVisible: function (tab, visible) {
+                requireString(tab, 'tab');
+                if (typeof visible !== 'boolean') { throw typeError('visible must be a boolean'); }
+                var keys = { calls: 'hideCallsTab', contacts: 'hideContactsTab', wall: 'wallEnabled', search: 'hideSearchButton' };
+                if (!keys.hasOwnProperty(tab)) { throw new Error('Unknown tab: ' + tab); }
+                return featureApi.set(keys[tab], tab === 'wall' ? visible : !visible);
+            },
+            setTitlesVisible: function (visible) {
+                if (typeof visible !== 'boolean') { throw typeError('visible must be a boolean'); }
+                return featureApi.set('hideTabTitles', !visible);
+            },
+            setCompact: function (compact) {
+                if (typeof compact !== 'boolean') { throw typeError('compact must be a boolean'); }
+                return featureApi.set('compactTabBar', compact);
+            }
+        });
+
+        var avatarsApi = freeze({
+            isSquare: function () { return featureApi.get('squareAvatars').then(function (item) { return !!(item && item.value); }); },
+            setSquare: function (square) {
+                if (typeof square !== 'boolean') { throw typeError('square must be a boolean'); }
+                return featureApi.set('squareAvatars', square);
+            }
+        });
+
+        var wallApi = freeze({
+            status: function () { return featureApi.get('wallEnabled'); },
+            setEnabled: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return featureApi.set('wallEnabled', enabled);
+            }
+        });
+
+        var proxyApi = freeze({
+            status: function () { return request('proxy.status', {}); },
+            setEnabled: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return request('proxy.set', { key: 'enabled', value: enabled });
+            },
+            setStableCalls: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return request('proxy.set', { key: 'stableCalls', value: enabled });
+            },
+            refresh: function () { return request('proxy.refresh', {}); }
+        });
+
         var aorus = freeze({
             version: '\(apiVersion)',
             plugin: freeze({ id: info.id, name: info.name, version: info.version, author: info.author }),
@@ -620,6 +697,15 @@ public enum AorusPluginPrelude {
                     var target = toPeerId(peerId);
                     return request('chats.get', { peerId: target === 'me' ? null : target, toSelf: target === 'me' });
                 },
+                history: function (peerId, options) {
+                    var target = toPeerId(peerId);
+                    var opts = optionalObject(options, 'options');
+                    var limit = opts.limit === undefined ? 50 : Number(opts.limit);
+                    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+                        throw new RangeError('limit must be between 1 and 100');
+                    }
+                    return request('chats.history', { peerId: target === 'me' ? null : target, toSelf: target === 'me', limit: limit });
+                },
                 open: function (peerId) {
                     var target = toPeerId(peerId);
                     return request('chats.open', { peerId: target === 'me' ? null : target, toSelf: target === 'me' });
@@ -627,6 +713,15 @@ public enum AorusPluginPrelude {
             }),
             account: freeze({
                 current: function () { return request('account.current', {}); }
+            }),
+            features: featureApi,
+            interface: interfaceApi,
+            tabs: tabsApi,
+            avatars: avatarsApi,
+            wall: wallApi,
+            proxy: proxyApi,
+            telegram: freeze({
+                openLink: function (url) { return request('telegram.openLink', { url: requireString(url, 'url') }); }
             }),
             storage: storage,
             settings: settings,

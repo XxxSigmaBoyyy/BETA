@@ -131,12 +131,15 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case clipboardRead
     case clipboardWrite
     case incomingMessages
+    case messageHistory
     case outgoingMessages
     case customUI
     case settingsIntegration
     case contextMenu
     case inAppBrowser
     case artificialIntelligence
+    case appCustomization
+    case connectionControl
 
     /// What each permission looks like in a plugin's source. The consent sheet is built
     /// from this, so a capability with no needle here is one the person is never asked
@@ -146,7 +149,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.network, ["aorus.http"]),
             (.sendMessages, ["aorus.messages.send"]),
             (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get"]),
-            (.openChats, ["aorus.chats.open", "aorus.app.openChat"]),
+            (.openChats, ["aorus.chats.open", "aorus.app.openChat", "aorus.telegram.openLink"]),
             (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount"]),
             // `toast` is gated on the same permission as the other dialogs and had no
             // needle, so a plugin whose only visible output is a toast was granted nothing
@@ -154,7 +157,12 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
-            (.incomingMessages, ["aorus.on('message'", "aorus.on(\"message\"", "aorus.once('message'", "aorus.once(\"message\""]),
+            (.incomingMessages, [
+                "aorus.on('message'", "aorus.on(\"message\"", "aorus.once('message'", "aorus.once(\"message\"",
+                "aorus.on('messageDeleted'", "aorus.on(\"messageDeleted\"", "aorus.once('messageDeleted'", "aorus.once(\"messageDeleted\"",
+                "aorus.on('messageEdited'", "aorus.on(\"messageEdited\"", "aorus.once('messageEdited'", "aorus.once(\"messageEdited\"",
+            ]),
+            (.messageHistory, ["aorus.chats.history"]),
             (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands.register"]),
             (.customUI, ["aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage"]),
             (.settingsIntegration, ["aorus.integrations.settings.register"]),
@@ -169,6 +177,8 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
                 "type: 'link'", "type: \"link\"", "\"type\":\"link\"", ".link({",
             ]),
             (.artificialIntelligence, ["aorus.ai."]),
+            (.appCustomization, ["aorus.features.", "aorus.interface.", "aorus.tabs.", "aorus.avatars.", "aorus.wall."]),
+            (.connectionControl, ["aorus.proxy."]),
     ]
 
     public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {

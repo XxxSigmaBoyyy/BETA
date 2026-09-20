@@ -343,11 +343,49 @@ public final class AorusPluginRuntimeManager {
             payload["accountId"] = String(self.context?.account.id.int64 ?? 0)
             self.dispatch(event: "message", payload: payload)
         })
+        observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.willDeleteMessage"), object: nil, queue: nil) { [weak self] note in
+            guard let self, let info = note.userInfo,
+                  let eventAccountPath = info["accountPath"] as? String,
+                  eventAccountPath == self.context?.account.postbox.mediaBox.basePath,
+                  let peerId = info["peerId"] as? NSNumber,
+                  let msgId = info["msgId"] as? NSNumber,
+                  let msgNs = info["msgNs"] as? NSNumber else { return }
+            self.dispatch(event: "messageDeleted", payload: [
+                "accountId": String(self.context?.account.id.int64 ?? 0),
+                "peerId": String(peerId.int64Value),
+                "msgId": msgId,
+                "msgNs": msgNs,
+            ])
+        })
+        observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.willEditMessage"), object: nil, queue: nil) { [weak self] note in
+            guard let self, let info = note.userInfo,
+                  let eventAccountPath = info["accountPath"] as? String,
+                  eventAccountPath == self.context?.account.postbox.mediaBox.basePath,
+                  let peerId = info["peerId"] as? NSNumber,
+                  let msgId = info["msgId"] as? NSNumber,
+                  let msgNs = info["msgNs"] as? NSNumber else { return }
+            var payload: [String: Any] = [
+                "accountId": String(self.context?.account.id.int64 ?? 0),
+                "peerId": String(peerId.int64Value),
+                "msgId": msgId,
+                "msgNs": msgNs,
+            ]
+            if let original = info["originalText"] as? String { payload["originalText"] = String(original.prefix(32_768)) }
+            if let updated = info["newText"] as? String { payload["text"] = String(updated.prefix(32_768)) }
+            if let date = info["date"] as? NSNumber { payload["date"] = date }
+            self.dispatch(event: "messageEdited", payload: payload)
+        })
         observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in
             self?.dispatch(event: "foreground", payload: [:])
         })
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak self] _ in
             self?.dispatch(event: "background", payload: [:])
+        })
+        observers.append(center.addObserver(forName: .aorusSettingsChanged, object: nil, queue: nil) { [weak self] _ in
+            self?.dispatch(event: "appSettingsChanged", payload: [:])
+        })
+        observers.append(center.addObserver(forName: AorusConnectionPreferences.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.dispatch(event: "connectionChanged", payload: [:])
         })
     }
 
@@ -387,27 +425,38 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     func pluginLog(_ pluginId: String, level: AorusPluginLogEntry.Level, text: String) {}
 
     func pluginStorageChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) {
+        guard pluginExecutionAllowed else { return }
         try? AorusPluginStore.shared.setStorage(values, for: pluginId)
     }
 
     func pluginSettingsSchemaChanged(_ pluginId: String, fields: [AorusPluginSettingField]) {
+        guard pluginExecutionAllowed else { return }
         manager?.setSchema(Array(fields.prefix(64)), id: pluginId)
     }
 
     func pluginSettingsChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) {
+        guard pluginExecutionAllowed else { return }
         try? AorusPluginStore.shared.setSettings(values, for: pluginId)
         manager?.publishSettingsChanged(pluginId)
     }
 
     func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage]) {
+        guard manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else { return }
+        let containsLink = pages.contains { page in
+            page.sections.contains { section in section.rows.contains { $0.kind == .link } }
+        }
+        if containsLink, manager?.isPermissionGranted(.inAppBrowser, pluginId: pluginId) != true { return }
         manager?.setPages(pages, id: pluginId)
     }
 
     func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut]) {
+        guard manager?.isPermissionGranted(.settingsIntegration, pluginId: pluginId) == true else { return }
+        if shortcuts.contains(where: { $0.url != nil }), manager?.isPermissionGranted(.inAppBrowser, pluginId: pluginId) != true { return }
         manager?.setSettingsShortcuts(shortcuts, id: pluginId)
     }
 
     func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction]) {
+        guard manager?.isPermissionGranted(.contextMenu, pluginId: pluginId) == true else { return }
         manager?.setContextActions(actions, id: pluginId)
     }
 
@@ -481,6 +530,44 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 )
                 completion(.success(()))
             }
+        }
+    }
+
+    func pluginOpenTelegramLink(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.openChats, pluginId: pluginId) == true,
+              let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased() else {
+            completion(.failure(AorusPluginRequestError("Telegram link is not available")))
+            return
+        }
+        let allowed: Bool
+        if scheme == "tg" {
+            allowed = parsed.host != nil
+        } else if scheme == "https", let host = parsed.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) {
+            allowed = host == "t.me" || host == "telegram.me" || host == "telegram.dog"
+        } else {
+            allowed = false
+        }
+        guard allowed else {
+            completion(.failure(AorusPluginRequestError("Only Telegram links are allowed")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard self.pluginExecutionAllowed,
+                  let navigation = self.topController()?.navigationController as? NavigationController else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+            self.context.sharedContext.openExternalUrl(
+                context: self.context,
+                urlContext: .generic,
+                url: parsed.absoluteString,
+                forceExternal: false,
+                presentationData: presentationData,
+                navigationController: navigation,
+                dismissInput: {}
+            )
+            completion(.success(()))
         }
     }
 
@@ -624,6 +711,78 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         }
     }
 
+    func pluginAppFeatures(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("App customization is unavailable")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard AorusLicenseAccess.isAllowed else {
+                completion(.failure(AorusPluginRequestError("App customization is unavailable")))
+                return
+            }
+            completion(.success(AorusPluginFeatureBroker.snapshot()))
+        }
+    }
+
+    func pluginSetAppFeature(_ pluginId: String, featureId: String, value: Any, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("App customization is unavailable")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard AorusLicenseAccess.isAllowed else {
+                completion(.failure(AorusPluginRequestError("App customization is unavailable")))
+                return
+            }
+            completion(AorusPluginFeatureBroker.set(featureId, value: value))
+        }
+    }
+
+    func pluginProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
+            return
+        }
+        completion(.success(AorusPluginProxyBroker.snapshot()))
+    }
+
+    func pluginSetProxyPreference(_ pluginId: String, key: String, value: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
+            return
+        }
+        switch key {
+        case "enabled":
+            AorusConnectionPreferences.shared.setBypassEnabled(value)
+        case "stableCalls":
+            AorusConnectionPreferences.shared.setStableCallsEnabled(value)
+        default:
+            completion(.failure(AorusPluginRequestError("Unsupported proxy preference")))
+            return
+        }
+        completion(.success(AorusPluginProxyBroker.snapshot()))
+    }
+
+    func pluginRefreshProxy(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusLicenseAccess.isAllowed,
+              manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
+            return
+        }
+        AorusProxyManager.shared.refresh(force: true) { _ in
+            guard AorusLicenseAccess.isAllowed else {
+                completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
+                return
+            }
+            completion(.success(AorusPluginProxyBroker.snapshot()))
+        }
+    }
+
     private func rememberArtifacts(_ artifacts: [AorusAIArtifact], pluginId: String) {
         aiLock.lock()
         var known = aiArtifacts[pluginId] ?? [:]
@@ -640,6 +799,10 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.sendMessages, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Send messages permission is not granted")))
+            return
+        }
         if let accountId, accountId != context.account.id.int64 {
             completion(.failure(AorusPluginRequestError("A plugin cannot send from another account")))
             return
@@ -660,6 +823,10 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.chatMetadata, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Chat metadata permission is not granted")))
+            return
+        }
         let clean = username.trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
         guard !clean.isEmpty, clean.count <= 64 else { completion(.failure(AorusPluginRequestError("Invalid username"))); return }
         // resolvePeerByName emits .progress before it emits an answer, so taking the first
@@ -685,6 +852,10 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginChatInfo(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.chatMetadata, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Chat metadata permission is not granted")))
+            return
+        }
         let id: PeerId?
         if toSelf { id = context.account.peerId } else if let peerId { id = PeerId(peerId) } else { id = nil }
         guard let id else { completion(.failure(AorusPluginRequestError("peerId is required"))); return }
@@ -693,7 +864,52 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         })
     }
 
+    func pluginChatHistory(_ pluginId: String, peerId: Int64?, toSelf: Bool, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        guard manager?.isPermissionGranted(.messageHistory, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Message history permission is not granted")))
+            return
+        }
+        let id: PeerId?
+        if toSelf { id = context.account.peerId } else if let peerId { id = PeerId(peerId) } else { id = nil }
+        guard let id else {
+            completion(.failure(AorusPluginRequestError("peerId is required")))
+            return
+        }
+        let requested = min(100, max(1, limit))
+        let signal = context.account.postbox.transaction { transaction -> [[String: Any]] in
+            var result: [[String: Any]] = []
+            var remainingCharacters = 128_000
+            transaction.scanTopMessages(peerId: id, namespace: Namespaces.Message.Cloud, limit: requested) { message in
+                guard result.count < requested, remainingCharacters > 0 else { return false }
+                let text = String(message.text.prefix(min(32_768, remainingCharacters)))
+                remainingCharacters -= text.count
+                var item: [String: Any] = [
+                    "id": NSNumber(value: message.id.id),
+                    "namespace": NSNumber(value: message.id.namespace),
+                    "peerId": String(message.id.peerId.toInt64()),
+                    "text": text,
+                    "date": NSNumber(value: message.timestamp),
+                    "incoming": NSNumber(value: message.flags.contains(.Incoming)),
+                    "hasMedia": NSNumber(value: !message.media.isEmpty),
+                ]
+                if let authorId = message.author?.id.toInt64() {
+                    item["senderId"] = String(authorId)
+                }
+                result.append(item)
+                return true
+            }
+            return Array(result.reversed())
+        }
+        let _ = signal.start(next: { messages in
+            completion(.success(messages))
+        })
+    }
+
     func pluginOpenChat(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.openChats, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Open chats permission is not granted")))
+            return
+        }
         let id: PeerId?
         if toSelf { id = context.account.peerId } else if let peerId { id = PeerId(peerId) } else { id = nil }
         guard let id else { completion(.failure(AorusPluginRequestError("peerId is required"))); return }
@@ -721,12 +937,17 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard manager?.isPermissionGranted(.accountProfile, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Account profile permission is not granted")))
+            return
+        }
         let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)) |> take(1)).start(next: { peer in
             completion(.success(["id": String(self.context.account.peerId.toInt64()), "title": peer?.compactDisplayTitle ?? ""]))
         })
     }
 
     func pluginShowToast(_ pluginId: String, text: String, duration: Double?) {
+        guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else { return }
         DispatchQueue.main.async {
             guard let presenter = self.topController(), !text.isEmpty else { return }
             let tag = 0xA07A57
@@ -779,10 +1000,12 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void) {
+        guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else { completion(); return }
         DispatchQueue.main.async { self.presentAlert(title: title, text: text, actions: [("OK", .default, completion)]) }
     }
 
     func pluginConfirm(_ pluginId: String, title: String, text: String?, ok: String?, cancel: String?, completion: @escaping (Bool) -> Void) {
+        guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else { completion(false); return }
         DispatchQueue.main.async {
             self.presentAlert(title: title, text: text, actions: [
                 (cancel ?? "Cancel", .cancel, { completion(false) }),
@@ -792,6 +1015,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginPrompt(_ pluginId: String, title: String, text: String?, placeholder: String?, defaultValue: String?, ok: String?, cancel: String?, completion: @escaping (String?) -> Void) {
+        guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else { completion(nil); return }
         DispatchQueue.main.async {
             guard let presenter = self.topController() else { completion(nil); return }
             let alert = UIAlertController(title: title, message: text, preferredStyle: .alert)
@@ -803,6 +1027,10 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginShare(_ pluginId: String, text: String?, url: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Dialogs permission is not granted")))
+            return
+        }
         var items: [Any] = []
         if let text, !text.isEmpty { items.append(text) }
         if let url, !url.isEmpty {
@@ -849,14 +1077,17 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginHaptic(_ pluginId: String, kind: String) {
+        guard pluginExecutionAllowed else { return }
         DispatchQueue.main.async { UIImpactFeedbackGenerator(style: kind == "heavy" ? .heavy : .light).impactOccurred() }
     }
 
     func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void) {
+        guard manager?.isPermissionGranted(.clipboardRead, pluginId: pluginId) == true else { completion(nil); return }
         DispatchQueue.main.async { completion(UIPasteboard.general.string) }
     }
 
     func pluginClipboardWrite(_ pluginId: String, text: String) {
+        guard manager?.isPermissionGranted(.clipboardWrite, pluginId: pluginId) == true else { return }
         DispatchQueue.main.async { UIPasteboard.general.string = text }
     }
 
@@ -908,6 +1139,267 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         let alert = UIAlertController(title: title, message: text, preferredStyle: .alert)
         for action in actions { alert.addAction(UIAlertAction(title: action.0, style: action.1) { _ in action.2() }) }
         presenter.present(alert, animated: true)
+    }
+}
+
+private enum AorusPluginFeatureBroker {
+    private struct Definition {
+        let id: String
+        let category: String
+        let type: String
+        let minimum: Int?
+        let maximum: Int?
+        let options: [String]?
+
+        init(_ id: String, _ category: String, _ type: String = "toggle", minimum: Int? = nil, maximum: Int? = nil, options: [String]? = nil) {
+            self.id = id
+            self.category = category
+            self.type = type
+            self.minimum = minimum
+            self.maximum = maximum
+            self.options = options
+        }
+    }
+
+    private static let definitions: [Definition] = [
+        Definition("ghostMode", "privacy"), Definition("blockReadReceipts", "privacy"),
+        Definition("hideTyping", "privacy"), Definition("antiScreenshot", "privacy"),
+        Definition("saveDeletedMessages", "messages"), Definition("saveEditedMessages", "messages"),
+        Definition("antiSpamEnabled", "messages"), Definition("translator", "messages"),
+        Definition("shareButton", "messages"), Definition("autoReply", "messages"),
+        Definition("editLocally", "messages"), Definition("userMessagesInGroup", "messages"),
+        Definition("messageSeconds", "messages"), Definition("doubleTapCopy", "messages"),
+        Definition("tripleTapDelete", "messages"), Definition("wallEnabled", "messages"),
+        Definition("maxMediaQuality", "media"), Definition("downloadAccel", "media"),
+        Definition("voiceTranscription", "media"), Definition("videoMessagesRearCamera", "media"),
+        Definition("deviceMicrophone", "media"), Definition("voiceTwinEnabled", "media"),
+        Definition("voiceTwinPreset", "media", "select", options: ["anonymous", "male", "female", "robot", "child"]),
+        Definition("videoMasksEnabled", "media"),
+        Definition("videoMaskPreset", "media", "select", options: ["skull", "cyber", "oni", "phantom", "chrome", "aurora", "neonCat"]),
+        Definition("callRecording", "calls"),
+        Definition("glassUI", "interface"), Definition("amoledMode", "interface"),
+        Definition("profileReportButton", "interface"), Definition("squareAvatars", "interface"),
+        Definition("hideCallsTab", "tabs"), Definition("hideContactsTab", "tabs"),
+        Definition("hideSearchButton", "tabs"), Definition("hideTabTitles", "tabs"),
+        Definition("compactTabBar", "tabs"),
+        Definition("streaks", "features"), Definition("siriShortcuts", "features"),
+        Definition("cacheAutoClean", "storage"), Definition("cacheCleanInterval", "storage", "number", minimum: 1, maximum: 720),
+        Definition("performanceStatsEnabled", "performance"), Definition("performanceShowUptime", "performance"),
+        Definition("performanceShowRAM", "performance"), Definition("performanceShowCPU", "performance"),
+        Definition("performanceShowFPS", "performance"), Definition("performanceShowBattery", "performance"),
+        Definition("performanceShowNetwork", "performance"), Definition("performanceShowDisk", "performance"),
+        Definition("performanceShowThermal", "performance"), Definition("performanceShowGraph", "performance"),
+        Definition("ramAutoClean", "performance"), Definition("ramCleanInterval", "performance", "number", minimum: 10, maximum: 3600),
+    ]
+
+    static func snapshot() -> [[String: Any]] {
+        let manager = AorusGramManager.shared
+        return definitions.compactMap { definition in
+            guard let value = value(for: definition.id, manager: manager) else { return nil }
+            var result: [String: Any] = [
+                "id": definition.id,
+                "category": definition.category,
+                "type": definition.type,
+                "value": value,
+                "requiresRestart": false,
+            ]
+            if let minimum = definition.minimum { result["min"] = minimum }
+            if let maximum = definition.maximum { result["max"] = maximum }
+            if definition.id == "videoMaskPreset" {
+                let custom = AorusCustomMaskStore.records(isRussian: false).map(\.presetKey)
+                result["options"] = (definition.options ?? []) + custom
+            } else if let options = definition.options {
+                result["options"] = options
+            }
+            return result
+        }
+    }
+
+    static func set(_ id: String, value: Any) -> Result<[String: Any], Error> {
+        guard definitions.contains(where: { $0.id == id }) else {
+            return .failure(AorusPluginRequestError("Unknown app feature"))
+        }
+        let manager = AorusGramManager.shared
+        let bool = strictBool(value)
+        switch id {
+        case "ghostMode": guard let bool else { return typeError() }; manager.ghostMode = bool
+        case "blockReadReceipts": guard let bool else { return typeError() }; manager.blockReadReceipts = bool
+        case "hideTyping": guard let bool else { return typeError() }; manager.hideTyping = bool
+        case "antiScreenshot": guard let bool else { return typeError() }; manager.antiScreenshot = bool
+        case "saveDeletedMessages": guard let bool else { return typeError() }; manager.saveDeletedMessages = bool
+        case "saveEditedMessages": guard let bool else { return typeError() }; manager.saveEditedMessages = bool
+        case "antiSpamEnabled": guard let bool else { return typeError() }; manager.antiSpamEnabled = bool
+        case "translator": guard let bool else { return typeError() }; manager.translator = bool
+        case "shareButton": guard let bool else { return typeError() }; manager.shareButton = bool
+        case "autoReply": guard let bool else { return typeError() }; manager.autoReply = bool
+        case "editLocally": guard let bool else { return typeError() }; manager.editLocally = bool
+        case "userMessagesInGroup": guard let bool else { return typeError() }; manager.userMessagesInGroup = bool
+        case "messageSeconds": guard let bool else { return typeError() }; manager.messageSeconds = bool
+        case "doubleTapCopy": guard let bool else { return typeError() }; manager.doubleTapCopy = bool
+        case "tripleTapDelete": guard let bool else { return typeError() }; manager.tripleTapDelete = bool
+        case "wallEnabled": guard let bool else { return typeError() }; manager.wallEnabled = bool
+        case "maxMediaQuality": guard let bool else { return typeError() }; manager.maxMediaQuality = bool
+        case "downloadAccel": guard let bool else { return typeError() }; manager.downloadAccel = bool
+        case "voiceTranscription": guard let bool else { return typeError() }; manager.voiceTranscription = bool
+        case "videoMessagesRearCamera": guard let bool else { return typeError() }; manager.videoMessagesRearCamera = bool
+        case "deviceMicrophone": guard let bool else { return typeError() }; manager.deviceMicrophone = bool
+        case "voiceTwinEnabled": guard let bool else { return typeError() }; manager.voiceTwinEnabled = bool
+        case "videoMasksEnabled": guard let bool else { return typeError() }; manager.videoMasksEnabled = bool
+        case "callRecording": guard let bool else { return typeError() }; manager.callRecording = bool
+        case "glassUI": guard let bool else { return typeError() }; manager.glassUI = bool
+        case "amoledMode": guard let bool else { return typeError() }; manager.amoledMode = bool
+        case "profileReportButton": guard let bool else { return typeError() }; manager.profileReportButton = bool
+        case "squareAvatars": guard let bool else { return typeError() }; manager.squareAvatars = bool
+        case "hideCallsTab": guard let bool else { return typeError() }; manager.hideCallsTab = bool
+        case "hideContactsTab": guard let bool else { return typeError() }; manager.hideContactsTab = bool
+        case "hideSearchButton": guard let bool else { return typeError() }; manager.hideSearchButton = bool
+        case "hideTabTitles": guard let bool else { return typeError() }; manager.hideTabTitles = bool
+        case "compactTabBar": guard let bool else { return typeError() }; manager.compactTabBar = bool
+        case "streaks": guard let bool else { return typeError() }; manager.streaks = bool
+        case "siriShortcuts": guard let bool else { return typeError() }; manager.siriShortcuts = bool
+        case "cacheAutoClean": guard let bool else { return typeError() }; manager.cacheAutoClean = bool
+        case "performanceStatsEnabled": guard let bool else { return typeError() }; manager.performanceStatsEnabled = bool
+        case "performanceShowUptime": guard let bool else { return typeError() }; manager.performanceShowUptime = bool
+        case "performanceShowRAM": guard let bool else { return typeError() }; manager.performanceShowRAM = bool
+        case "performanceShowCPU": guard let bool else { return typeError() }; manager.performanceShowCPU = bool
+        case "performanceShowFPS": guard let bool else { return typeError() }; manager.performanceShowFPS = bool
+        case "performanceShowBattery": guard let bool else { return typeError() }; manager.performanceShowBattery = bool
+        case "performanceShowNetwork": guard let bool else { return typeError() }; manager.performanceShowNetwork = bool
+        case "performanceShowDisk": guard let bool else { return typeError() }; manager.performanceShowDisk = bool
+        case "performanceShowThermal": guard let bool else { return typeError() }; manager.performanceShowThermal = bool
+        case "performanceShowGraph": guard let bool else { return typeError() }; manager.performanceShowGraph = bool
+        case "ramAutoClean": guard let bool else { return typeError() }; manager.ramAutoClean = bool
+        case "cacheCleanInterval":
+            guard let number = strictInt(value), (1...720).contains(number) else { return typeError() }
+            manager.cacheCleanInterval = number
+        case "ramCleanInterval":
+            guard let number = strictInt(value), (10...3600).contains(number) else { return typeError() }
+            manager.ramCleanInterval = number
+        case "voiceTwinPreset":
+            guard let text = value as? String, ["anonymous", "male", "female", "robot", "child"].contains(text) else { return typeError() }
+            manager.voiceTwinPreset = text
+        case "videoMaskPreset":
+            let allowed = ["skull", "cyber", "oni", "phantom", "chrome", "aurora", "neonCat"] + AorusCustomMaskStore.records(isRussian: false).map(\.presetKey)
+            guard let text = value as? String, allowed.contains(text) else { return typeError() }
+            manager.videoMaskPreset = text
+        default:
+            return .failure(AorusPluginRequestError("Unknown app feature"))
+        }
+        if id == "wallEnabled", let enabled = self.value(for: id, manager: manager) as? Bool {
+            NotificationCenter.default.post(
+                name: Notification.Name("aorusgram_wall_visibility_changed"),
+                object: NSNumber(value: enabled)
+            )
+        }
+        guard let result = snapshot().first(where: { ($0["id"] as? String) == id }) else {
+            return .failure(AorusPluginRequestError("App feature is unavailable"))
+        }
+        return .success(result)
+    }
+
+    private static func value(for id: String, manager: AorusGramManager) -> Any? {
+        switch id {
+        case "ghostMode": return manager.ghostMode
+        case "blockReadReceipts": return manager.blockReadReceipts
+        case "hideTyping": return manager.hideTyping
+        case "antiScreenshot": return manager.antiScreenshot
+        case "saveDeletedMessages": return manager.saveDeletedMessages
+        case "saveEditedMessages": return manager.saveEditedMessages
+        case "antiSpamEnabled": return manager.antiSpamEnabled
+        case "translator": return manager.translator
+        case "shareButton": return manager.shareButton
+        case "autoReply": return manager.autoReply
+        case "editLocally": return manager.editLocally
+        case "userMessagesInGroup": return manager.userMessagesInGroup
+        case "messageSeconds": return manager.messageSeconds
+        case "doubleTapCopy": return manager.doubleTapCopy
+        case "tripleTapDelete": return manager.tripleTapDelete
+        case "wallEnabled": return manager.wallEnabled
+        case "maxMediaQuality": return manager.maxMediaQuality
+        case "downloadAccel": return manager.downloadAccel
+        case "voiceTranscription": return manager.voiceTranscription
+        case "videoMessagesRearCamera": return manager.videoMessagesRearCamera
+        case "deviceMicrophone": return manager.deviceMicrophone
+        case "voiceTwinEnabled": return manager.voiceTwinEnabled
+        case "voiceTwinPreset": return manager.voiceTwinPreset
+        case "videoMasksEnabled": return manager.videoMasksEnabled
+        case "videoMaskPreset": return manager.videoMaskPreset
+        case "callRecording": return manager.callRecording
+        case "glassUI": return manager.glassUI
+        case "amoledMode": return manager.amoledMode
+        case "profileReportButton": return manager.profileReportButton
+        case "squareAvatars": return manager.squareAvatars
+        case "hideCallsTab": return manager.hideCallsTab
+        case "hideContactsTab": return manager.hideContactsTab
+        case "hideSearchButton": return manager.hideSearchButton
+        case "hideTabTitles": return manager.hideTabTitles
+        case "compactTabBar": return manager.compactTabBar
+        case "streaks": return manager.streaks
+        case "siriShortcuts": return manager.siriShortcuts
+        case "cacheAutoClean": return manager.cacheAutoClean
+        case "cacheCleanInterval": return manager.cacheCleanInterval
+        case "performanceStatsEnabled": return manager.performanceStatsEnabled
+        case "performanceShowUptime": return manager.performanceShowUptime
+        case "performanceShowRAM": return manager.performanceShowRAM
+        case "performanceShowCPU": return manager.performanceShowCPU
+        case "performanceShowFPS": return manager.performanceShowFPS
+        case "performanceShowBattery": return manager.performanceShowBattery
+        case "performanceShowNetwork": return manager.performanceShowNetwork
+        case "performanceShowDisk": return manager.performanceShowDisk
+        case "performanceShowThermal": return manager.performanceShowThermal
+        case "performanceShowGraph": return manager.performanceShowGraph
+        case "ramAutoClean": return manager.ramAutoClean
+        case "ramCleanInterval": return manager.ramCleanInterval
+        default: return nil
+        }
+    }
+
+    private static func strictBool(_ value: Any) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    private static func strictInt(_ value: Any) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double.rounded(.towardZero) == double,
+              double >= Double(Int.min), double <= Double(Int.max) else { return nil }
+        return Int(double)
+    }
+
+    private static func typeError() -> Result<[String: Any], Error> {
+        return .failure(AorusPluginRequestError("Invalid value for app feature"))
+    }
+}
+
+private enum AorusPluginProxyBroker {
+    static func snapshot() -> [String: Any] {
+        let preferences = AorusConnectionPreferences.shared
+        var result: [String: Any] = [
+            "enabled": preferences.bypassEnabled,
+            "stableCalls": preferences.stableCallsEnabled,
+            "connected": false,
+            "servers": [],
+        ]
+        guard let text = UserDefaults.standard.string(forKey: "aorusgram_atunnel_status"),
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let raw = object as? [String: Any] else { return result }
+        if let connected = raw["callTunnel"] as? NSNumber,
+           CFGetTypeID(connected) == CFBooleanGetTypeID() {
+            result["connected"] = connected.boolValue
+        }
+        if let updatedAt = raw["updatedAt"] as? NSNumber { result["updatedAt"] = updatedAt }
+        if let servers = raw["servers"] as? [[String: Any]] {
+            result["servers"] = servers.prefix(32).map { server -> [String: Any] in
+                var safe: [String: Any] = [:]
+                for key in ["id", "country", "region", "routeType", "via", "available", "active", "latencyMs", "jitterMs", "lossCount", "measuredAt"] {
+                    if let value = server[key] { safe[key] = value }
+                }
+                return safe
+            }
+        }
+        return result
     }
 }
 

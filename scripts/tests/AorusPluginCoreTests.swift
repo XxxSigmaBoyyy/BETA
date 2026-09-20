@@ -49,6 +49,16 @@ expect(
     AorusPluginPermission.requestedBySource(appIntegrationSource) == [.accountProfile, .openChats, .dialogs, .inAppBrowser],
     "app integration aliases request their privileged capabilities"
 )
+let customizationSource = "aorus.features.list(); aorus.interface.set('compactTabBar', true); aorus.tabs.setVisible('wall', true); aorus.avatars.setSquare(true); aorus.wall.setEnabled(true); aorus.proxy.status();"
+expect(
+    AorusPluginPermission.requestedBySource(customizationSource) == [.appCustomization, .connectionControl],
+    "app customization and connection control use separate explicit grants"
+)
+let telegramSource = "aorus.chats.history('me', { limit: 10 }); aorus.telegram.openLink('tg://resolve?domain=telegram');"
+expect(
+    AorusPluginPermission.requestedBySource(telegramSource) == [.messageHistory, .openChats],
+    "Telegram history and native navigation use separate explicit grants"
+)
 // The consent sheet is built from the probe table, so a capability with no needle is one
 // nobody is ever asked about and the plugin is therefore never granted — its calls fail
 // silently forever. `aorus.ui.toast` was exactly that.
@@ -198,6 +208,46 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(receivedAccountId == 9_223_372_036_854_775_000, "64-bit account id reaches the host without JavaScript precision loss")
     exact.stop()
 
+    let eventHost = AorusPluginNullHost()
+    var eventStorage: [String: AorusPluginJSONValue] = [:]
+    eventHost.onStorageChanged = { _, values in eventStorage = values }
+    let eventSource = """
+    aorus.on('messageDeleted', function (event) { aorus.storage.set('deleted', event.msgId); });
+    aorus.on('messageEdited', function (event) { aorus.storage.set('edited', event.text); });
+    """
+    let events = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Message events"),
+        source: eventSource,
+        host: eventHost,
+        permissions: [.incomingMessages]
+    )
+    let eventsStarted = DispatchSemaphore(value: 0)
+    events.start { error in expect(error == nil, "message event plugin starts"); eventsStarted.signal() }
+    _ = eventsStarted.wait(timeout: .now() + 2)
+    events.dispatch(event: "messageDeleted", payload: ["msgId": 42])
+    events.dispatch(event: "messageEdited", payload: ["text": "updated"])
+    Thread.sleep(forTimeInterval: 0.1)
+    expect(eventStorage["deleted"] == .number(42), "delete events reach a plugin with message permission")
+    expect(eventStorage["edited"] == .string("updated"), "edit events reach a plugin with message permission")
+    events.stop()
+
+    let deniedEventHost = AorusPluginNullHost()
+    var deniedEventWrites = 0
+    deniedEventHost.onStorageChanged = { _, _ in deniedEventWrites += 1 }
+    let deniedEvents = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Denied message events"),
+        source: eventSource,
+        host: deniedEventHost,
+        permissions: []
+    )
+    let deniedEventsStarted = DispatchSemaphore(value: 0)
+    deniedEvents.start { error in expect(error == nil, "denied event plugin still starts safely"); deniedEventsStarted.signal() }
+    _ = deniedEventsStarted.wait(timeout: .now() + 2)
+    deniedEvents.dispatch(event: "messageEdited", payload: ["text": "blocked"])
+    Thread.sleep(forTimeInterval: 0.1)
+    expect(deniedEventWrites == 0, "message events do not cross the sandbox without permission")
+    deniedEvents.stop()
+
     let commandSource = "aorus.commands.register('r', function (args) { return args.toUpperCase(); });"
     let command = AorusPluginSandbox(
         manifest: AorusPluginManifest(name: "Command"),
@@ -252,6 +302,71 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(receivedActions.first?.id == "reply", "JavaScript context action reaches the native host")
     expect(sharedText == "Prepared securely", "native share broker reaches the host without exposing UIApplication")
     integration.stop()
+
+    let customizationHost = AorusPluginNullHost()
+    var changedFeature: String?
+    var changedFeatureValue: Bool?
+    var changedProxyPreference: String?
+    customizationHost.onAppFeatures = { _ in
+        [["id": "squareAvatars", "category": "interface", "type": "toggle", "value": false]]
+    }
+    customizationHost.onSetAppFeature = { _, id, value in
+        changedFeature = id
+        changedFeatureValue = (value as? NSNumber)?.boolValue
+        return ["id": id, "category": "interface", "type": "toggle", "value": value]
+    }
+    customizationHost.onProxyStatus = { _ in
+        ["enabled": true, "stableCalls": true, "connected": true, "servers": []]
+    }
+    customizationHost.onSetProxyPreference = { _, key, value in
+        changedProxyPreference = "\(key):\(value)"
+        return ["enabled": value, "stableCalls": true, "connected": false, "servers": []]
+    }
+    let customization = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Customization"),
+        source: """
+        aorus.on('start', function () {
+            aorus.features.list().then(function (items) { return aorus.interface.set(items[0].id, true); });
+            aorus.proxy.status().then(function () { return aorus.proxy.setEnabled(false); });
+        });
+        """,
+        host: customizationHost,
+        permissions: [.appCustomization, .connectionControl]
+    )
+    let customizationStarted = DispatchSemaphore(value: 0)
+    customization.start { error in expect(error == nil, "customization plugin starts"); customizationStarted.signal() }
+    _ = customizationStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(changedFeature == "squareAvatars" && changedFeatureValue == true, "feature changes cross only the typed broker")
+    expect(changedProxyPreference == "enabled:false", "proxy changes cross only the preference broker")
+    customization.stop()
+
+    let telegramHost = AorusPluginNullHost()
+    var requestedHistoryLimit: Int?
+    var openedTelegramURL: String?
+    telegramHost.onChatHistory = { _, _, toSelf, limit in
+        requestedHistoryLimit = toSelf ? limit : nil
+        return [["id": 7, "peerId": "1", "text": "hello", "incoming": true]]
+    }
+    telegramHost.onOpenTelegramLink = { _, url in openedTelegramURL = url }
+    let telegram = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Telegram"),
+        source: """
+        aorus.on('start', async function () {
+            const items = await aorus.chats.history('me', { limit: 12 });
+            if (items.length === 1) { await aorus.telegram.openLink('tg://resolve?domain=telegram'); }
+        });
+        """,
+        host: telegramHost,
+        permissions: [.messageHistory, .openChats]
+    )
+    let telegramStarted = DispatchSemaphore(value: 0)
+    telegram.start { error in expect(error == nil, "Telegram plugin starts"); telegramStarted.signal() }
+    _ = telegramStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(requestedHistoryLimit == 12, "history request preserves Saved Messages and bounded limit")
+    expect(openedTelegramURL == "tg://resolve?domain=telegram", "Telegram links cross only the native navigation broker")
+    telegram.stop()
 
     let deniedIntegrationHost = AorusPluginNullHost()
     var deniedIntegrationCalls = 0

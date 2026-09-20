@@ -1325,8 +1325,10 @@ private enum AorusPluginDocumentation {
             События
             aorus.on(event, handler) возвращает функцию отписки. Также доступны aorus.once и aorus.off.
             message: { accountId, peerId, senderId, msgId, msgNs, peerKind, text, date }
+            messageDeleted: { accountId, peerId, msgId, msgNs }
+            messageEdited: { accountId, peerId, msgId, msgNs, originalText, text, date }
             send: { accountId, peerId, text }
-            Идентификаторы аккаунтов и чатов — десятичные строки. Событие message требует отдельного разрешения. Обработчик send может вернуть новую строку, false для отмены или ничего для отправки без изменений. Promise из send не задерживает отправку.
+            Идентификаторы аккаунтов и чатов — десятичные строки. События сообщений требуют отдельного разрешения и относятся только к текущему аккаунту. Обработчик send может вернуть новую строку, false для отмены или ничего для отправки без изменений. Promise из send не задерживает отправку.
 
             Команды
             aorus.commands.register('name', (args, context) => result, { description, usage })
@@ -1338,9 +1340,11 @@ private enum AorusPluginDocumentation {
             await aorus.messages.send(peerId, text)
             await aorus.chats.resolve('username')
             await aorus.chats.get(peerId)
+            await aorus.chats.history(peerId, { limit: 50 })
             await aorus.chats.open(peerId)
             await aorus.account.current()
-            Используйте 'me' вместо peerId для текущего сохранённого чата. Отправка всегда выполняется только от активного аккаунта; подмена accountId отклоняется.
+            await aorus.telegram.openLink('tg://resolve?domain=telegram')
+            Используйте 'me' вместо peerId для текущего сохранённого чата. История требует отдельного разрешения и возвращает очищенные поля id, namespace, peerId, senderId, text, date, incoming и hasMedia. Один запрос ограничен 100 сообщениями и 128 000 символами. Telegram-ссылки открываются нативной навигацией. Отправка всегда выполняется только от активного аккаунта; подмена accountId отклоняется.
 
             Хранилище и настройки
             aorus.storage.get(key)
@@ -1390,6 +1394,28 @@ private enum AorusPluginDocumentation {
 
             App API дает безопасный доступ к состоянию интерфейса, текущему аккаунту, навигации по чатам, браузеру, системному меню отправки и тактильному отклику. Действия проходят через проверяемый нативный broker и отдельные разрешения.
 
+            Функции и интерфейс
+            const all = await aorus.features.list()
+            const current = await aorus.features.get('squareAvatars')
+            await aorus.features.set('squareAvatars', true)
+            const interfaceItems = await aorus.interface.list()
+            await aorus.interface.set('compactTabBar', true)
+            await aorus.tabs.setVisible('contacts', true)
+            await aorus.tabs.setVisible('calls', false)
+            await aorus.tabs.setVisible('wall', true)
+            await aorus.tabs.setTitlesVisible(true)
+            await aorus.tabs.setCompact(true)
+            await aorus.avatars.setSquare(true)
+            await aorus.wall.setEnabled(true)
+            Каталог содержит стабильный id, категорию, тип, текущее значение, допустимый диапазон или варианты и признак перезапуска. В него входят все переключатели центрального менеджера AorusGram: приватность, сообщения, медиа, звонки, вкладки, поиск, подписи и размер панели, аватарки, хранилище и показатели производительности. Сырые UserDefaults и внутренние ключи приложению не выдаются. Изменения применяются через нативные сеттеры и событие appSettingsChanged.
+
+            Соединение
+            const state = await aorus.proxy.status()
+            await aorus.proxy.setEnabled(true)
+            await aorus.proxy.setStableCalls(true)
+            await aorus.proxy.refresh()
+            Возвращается только очищенное состояние маршрутов. Адреса, UUID, HMAC, ключи REALITY/VLESS и содержимое Keychain никогда не передаются плагину. При изменении пользовательских переключателей приходит connectionChanged.
+
             Интеграции
             aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
             Ярлык может содержать ровно одно из полей pageId или url. Он появляется в основных настройках и в разделе плагинов. Ссылка открывается во встроенном браузере приложения и требует разрешение браузера. Предварительный список доменов не нужен, но loopback, локальная сеть и служебные домены AorusGram заблокированы.
@@ -1421,7 +1447,7 @@ private enum AorusPluginDocumentation {
             Доступны console.log/info/warn/error/debug, setTimeout, setInterval и функции отмены таймеров.
 
             Безопасность
-            Импортированный плагин всегда выключен. Разрешения и значения настроек принадлежат конкретной установке, не экспортируются, а разрешения отзываются при любом изменении исходника. Доступ к AorusAI идет только через ограниченный метод ask. Плагин не имеет API для файловой системы, Keychain, лицензии, VLESS, прокси, HMAC или внутренних доменов AorusGram.
+            Импортированный плагин всегда выключен. Разрешения и значения настроек принадлежат конкретной установке, не экспортируются, а разрешения отзываются при любом изменении исходника. Доступ к AorusAI идет только через ограниченный метод ask. Плагин не имеет API для файловой системы, Keychain, лицензии, VLESS/REALITY credentials, HMAC, сырых настроек или внутренних доменов AorusGram. Защищенные операции повторно проверяют активную лицензию и permission в нативном host.
 
             Ограничения
             Код: 512 КБ. Хранилище: 1 МБ. HTTP-ответ: 5 МБ. Один вход в JavaScript прерывается через 3 секунды. На плагин разрешено до 64 таймеров и 32 незавершённых запросов к приложению.
@@ -1442,8 +1468,10 @@ private enum AorusPluginDocumentation {
     Events
     aorus.on(event, handler) returns an unsubscribe function. aorus.once and aorus.off are also available.
     message: { accountId, peerId, senderId, msgId, msgNs, peerKind, text, date }
+    messageDeleted: { accountId, peerId, msgId, msgNs }
+    messageEdited: { accountId, peerId, msgId, msgNs, originalText, text, date }
     send: { accountId, peerId, text }
-    Account and peer identifiers are decimal strings. The message event requires its own permission. A send handler may return replacement text, false to consume it, or nothing to leave it unchanged. A Promise from send never delays sending.
+    Account and peer identifiers are decimal strings. Message events require their own permission and are scoped to the current account. A send handler may return replacement text, false to consume it, or nothing to leave it unchanged. A Promise from send never delays sending.
 
     Commands
     aorus.commands.register('name', (args, context) => result, { description, usage })
@@ -1455,9 +1483,11 @@ private enum AorusPluginDocumentation {
     await aorus.messages.send(peerId, text)
     await aorus.chats.resolve('username')
     await aorus.chats.get(peerId)
+    await aorus.chats.history(peerId, { limit: 50 })
     await aorus.chats.open(peerId)
     await aorus.account.current()
-    Use 'me' as peerId for Saved Messages. Sending always uses the active account; a mismatched accountId is rejected.
+    await aorus.telegram.openLink('tg://resolve?domain=telegram')
+    Use 'me' as peerId for Saved Messages. History uses a separate permission and returns sanitized id, namespace, peerId, senderId, text, date, incoming and hasMedia fields. One call is bounded to 100 messages and 128,000 characters. Telegram links use native app navigation. Sending always uses the active account; a mismatched accountId is rejected.
 
     Storage and settings
     aorus.storage.get(key)
@@ -1507,6 +1537,28 @@ private enum AorusPluginDocumentation {
 
     The App API provides safe access to interface state, the current account, chat navigation, the in-app browser, system share sheet and haptics. Actions use the validated native broker and separate permissions.
 
+    Features and interface
+    const all = await aorus.features.list()
+    const current = await aorus.features.get('squareAvatars')
+    await aorus.features.set('squareAvatars', true)
+    const interfaceItems = await aorus.interface.list()
+    await aorus.interface.set('compactTabBar', true)
+    await aorus.tabs.setVisible('contacts', true)
+    await aorus.tabs.setVisible('calls', false)
+    await aorus.tabs.setVisible('wall', true)
+    await aorus.tabs.setTitlesVisible(true)
+    await aorus.tabs.setCompact(true)
+    await aorus.avatars.setSquare(true)
+    await aorus.wall.setEnabled(true)
+    The catalog returns a stable id, category, type, current value, allowed range or options and restart requirement. It covers every switch in the central AorusGram manager: privacy, messages, media, calls, tabs, search, tab labels and size, avatars, storage and performance metrics. Raw UserDefaults and internal keys are never exposed. Changes use native setters and emit appSettingsChanged.
+
+    Connection
+    const state = await aorus.proxy.status()
+    await aorus.proxy.setEnabled(true)
+    await aorus.proxy.setStableCalls(true)
+    await aorus.proxy.refresh()
+    Only a sanitized route status is returned. Addresses, UUIDs, HMAC material, REALITY/VLESS credentials and Keychain contents never enter the plugin. Changing user switches emits connectionChanged.
+
     Integrations
     aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
     A shortcut contains exactly one of pageId or url and appears in the main settings and Plugins screen. Links open in the app browser and require browser permission. No domain declaration is required, but loopback, local networks and AorusGram control-plane domains are blocked.
@@ -1538,7 +1590,7 @@ private enum AorusPluginDocumentation {
     console.log/info/warn/error/debug, setTimeout, setInterval and timer cancellation are available.
 
     Security
-    Imported plugins always start disabled. Grants and setting values belong to this installation and are never exported; grants are revoked after every source edit. AorusAI is exposed only through the bounded ask method. There is no plugin API for the file system, Keychain, licensing, VLESS, proxy configuration, HMAC or private AorusGram domains.
+    Imported plugins always start disabled. Grants and setting values belong to this installation and are never exported; grants are revoked after every source edit. AorusAI is exposed only through the bounded ask method. There is no plugin API for the file system, Keychain, licensing, VLESS/REALITY credentials, raw settings, HMAC or private AorusGram domains. Protected operations re-check both the active license and permission in the native host.
 
     Limits
     Source: 512 KB. Storage: 1 MB. HTTP response: 5 MB. A JavaScript entry is terminated after 3 seconds. Up to 64 timers and 32 pending host requests are allowed per plugin.
@@ -2044,12 +2096,15 @@ private func permissionTitle(_ permission: AorusPluginPermission) -> String {
     case .clipboardRead: return aorusL("Чтение буфера обмена", "Read clipboard")
     case .clipboardWrite: return aorusL("Запись в буфер обмена", "Write clipboard")
     case .incomingMessages: return aorusL("События входящих сообщений", "Receive message events")
+    case .messageHistory: return aorusL("История сообщений", "Read message history")
     case .outgoingMessages: return aorusL("Обработка исходящих сообщений", "Process outgoing messages")
     case .customUI: return aorusL("Собственные экраны", "Custom screens")
     case .settingsIntegration: return AorusPluginUIString.settings.text
     case .contextMenu: return aorusL("Контекстное меню", "Context menu")
     case .inAppBrowser: return aorusL("Встроенный браузер", "In-app browser")
     case .artificialIntelligence: return "AorusAI"
+    case .appCustomization: return aorusL("Настройка приложения", "Customize app")
+    case .connectionControl: return aorusL("Управление соединением", "Connection control")
     }
 }
 
@@ -2076,6 +2131,8 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
         return marker + aorusL("Разрешает изменять содержимое буфера обмена.", "Allows changing the clipboard.")
     case .incomingMessages:
         return marker + aorusL("Разрешает получать события новых сообщений.", "Allows receiving new-message events.")
+    case .messageHistory:
+        return marker + aorusL("Разрешает читать до 100 последних сообщений выбранного чата.", "Allows reading up to 100 recent messages from a selected chat.")
     case .outgoingMessages:
         return marker + aorusL("Разрешает изменять или отменять отправляемый текст.", "Allows changing or consuming outgoing text.")
     case .customUI:
@@ -2088,6 +2145,10 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
         return marker + aorusL("Разрешает открывать публичные сайты во встроенном браузере.", "Allows public websites in the in-app browser.")
     case .artificialIntelligence:
         return marker + aorusL("Разрешает отправлять запросы AorusAI через защищенный клиентский шлюз.", "Allows AorusAI requests through the protected client gateway.")
+    case .appCustomization:
+        return marker + aorusL("Разрешает изменять функции и оформление AorusGram из проверенного списка.", "Allows changing AorusGram features and appearance from a verified catalog.")
+    case .connectionControl:
+        return marker + aorusL("Разрешает читать состояние маршрута, менять пользовательские переключатели и запускать перепроверку без доступа к ключам серверов.", "Allows reading route status, changing user switches and refreshing the route without access to server credentials.")
     }
 }
 

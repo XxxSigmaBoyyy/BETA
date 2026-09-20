@@ -1208,6 +1208,12 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         "permissions.contains(.contextMenu)",
         "require(.inAppBrowser",
         "require(.artificialIntelligence",
+        "require(.appCustomization",
+        "require(.connectionControl",
+        "require(.messageHistory",
+        "case \"features.set\"",
+        "case \"proxy.set\"",
+        "case \"chats.history\"",
     ):
         if marker not in sandbox:
             fail(errors, f"plugin sandbox fail-closed invariant is missing: {marker}")
@@ -1229,13 +1235,47 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         "Artifact is not available to this plugin",
         "AorusLicenseAccess.isAllowed",
         "var pluginExecutionAllowed: Bool",
+        "isPermissionGranted(.sendMessages",
+        "isPermissionGranted(.chatMetadata",
+        "isPermissionGranted(.messageHistory",
+        "isPermissionGranted(.openChats",
+        "isPermissionGranted(.accountProfile",
+        "isPermissionGranted(.dialogs",
+        "isPermissionGranted(.customUI",
+        "isPermissionGranted(.settingsIntegration",
+        "isPermissionGranted(.contextMenu",
         "isPermissionGranted(.inAppBrowser",
         "isPermissionGranted(.artificialIntelligence",
+        "isPermissionGranted(.appCustomization",
+        "isPermissionGranted(.connectionControl",
+        "isPermissionGranted(.clipboardRead",
+        "isPermissionGranted(.clipboardWrite",
+        "AorusPluginFeatureBroker",
+        "AorusPluginProxyBroker",
         "aiTurnIds",
         "clearPluginState",
     ):
         if marker not in runtime:
             fail(errors, f"plugin host security invariant is missing: {marker}")
+    proxy_start = runtime.find("private enum AorusPluginProxyBroker")
+    proxy_end = runtime.find("public func aorusPluginMessageContextMenuItems", proxy_start)
+    proxy_block = runtime[proxy_start:proxy_end] if proxy_start >= 0 and proxy_end > proxy_start else ""
+    for forbidden_key in ('"address"', '"port"', '"uuid"', '"secret"', '"publicKey"', '"shortId"'):
+        if forbidden_key in proxy_block:
+            fail(errors, f"plugin proxy snapshot exposes sensitive field {forbidden_key}")
+    manager_path = root / "patches/submodules/AorusGramUI/Sources/AorusGramManager.swift"
+    if manager_path.is_file():
+        manager_text = manager_path.read_text(encoding="utf-8")
+        manager_features = set(re.findall(r"public\s+var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:", manager_text))
+        broker_features = set(re.findall(r'Definition\("([A-Za-z_][A-Za-z0-9_]*)"', runtime))
+        missing = sorted(manager_features - broker_features)
+        stale = sorted(broker_features - manager_features)
+        if missing:
+            fail(errors, f"plugin feature catalog is missing AorusGram settings: {', '.join(missing)}")
+        if stale:
+            fail(errors, f"plugin feature catalog contains unknown AorusGram settings: {', '.join(stale)}")
+        if "wallEnabled" not in broker_features or "aorusgram_wall_visibility_changed" not in runtime:
+            fail(errors, "plugin feature catalog must expose and immediately apply the AorusGram Wall setting")
     controllers = (ui / "AorusPluginControllers.swift").read_text(encoding="utf-8") if (ui / "AorusPluginControllers.swift").is_file() else ""
     if "AorusPluginLicenseBoundDebugHost" not in controllers:
         fail(errors, "plugin editor debug runtime is not bound to the license gate")
