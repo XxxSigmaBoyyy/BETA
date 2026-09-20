@@ -3700,13 +3700,19 @@ def main() -> None:
     if not performance_hud.is_file() or "updateGlassAppearance(enabled: settings.glassUI)" not in performance_hud.read_text(encoding="utf-8"):
         err.append("GlassEffects: performance HUD ignores the setting")
 
-    # ICloudResources must stay upstream-stock. A prior rewrite read the picked URL
-    # through NSFileCoordinator and bookmarked the coordinator's presented URL instead
-    # of the picker's security-scoped one; the bookmark then failed to re-open its scope
-    # at upload time, so the copy produced nothing and the file silently never sent.
-    # Stock bookmarks the security-scoped URL, which re-opens — proven by Swiftgram on the
-    # same third-party certificate — so any reappearance of the coordinator rewrite is a
-    # regression, not an improvement.
+    # Files are imported into the app container before Telegram's stock bookmark and
+    # metadata pipeline sees them. The old coordinator rewrite remains forbidden: it
+    # bookmarked a coordinator-presented URL and silently lost uploads.
+    document_picker = tg / "submodules" / "LegacyMediaPickerUI" / "Sources" / "LegacyICloudFilePicker.swift"
+    if not document_picker.is_file():
+        err.append("DocumentPicker: LegacyICloudFilePicker.swift is missing")
+    else:
+        document_picker_text = document_picker.read_text(encoding="utf-8")
+        if "AorusGram: copy mode" not in document_picker_text:
+            err.append("DocumentPicker: default picker copy mode was not integrated")
+        if "case .default:\n            return .open" in document_picker_text:
+            err.append("DocumentPicker: default picker still opens security-scoped URLs in place")
+
     document_resources = tg / "submodules" / "ICloudResources" / "Sources" / "ICloudResources.swift"
     document_resources_text = document_resources.read_text(encoding="utf-8") if document_resources.is_file() else ""
     for regression_marker in (
@@ -3715,6 +3721,18 @@ def main() -> None:
     ):
         if regression_marker in document_resources_text:
             err.append(f"DocumentPicker: coordinator rewrite is back — it breaks uploads ({regression_marker})")
+    for marker in (
+        "AorusGram: picked documents are local copies",
+        "AorusGram: local copies have no security scope",
+    ):
+        if marker not in document_resources_text:
+            err.append(f"DocumentPicker: local-copy support is missing ({marker})")
+
+    notification_sound = tg / "submodules" / "NotificationSoundSelectionUI" / "Sources" / "NotificationSoundSelection.swift"
+    if not notification_sound.is_file():
+        err.append("DocumentPicker: NotificationSoundSelection.swift is missing")
+    elif "AorusGram: the picker returns a local copy" not in notification_sound.read_text(encoding="utf-8"):
+        err.append("DocumentPicker: notification sound local-copy support was not integrated")
 
     document_size_gate_marker = "AorusGram: let Telegram validate the selected document size"
     document_size_gate_files = (

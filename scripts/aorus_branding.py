@@ -25939,16 +25939,181 @@ def patch_disable_copy_protection(tg: Path) -> None:
             print("CopyProtection: gallery captureProtected anchor not found — skip")
 
 
+def patch_document_picker_copy_mode(tg: Path) -> None:
+    """Make user-selected documents independent of iCloud entitlements.
+
+    The default Files picker imports a local copy into the app container. We move
+    that copy into EngineTempBox before dismissing the picker, then let Telegram's
+    existing ICloudFileResource pipeline describe and upload it. Security scope is
+    still used when available, but a local copy is no longer rejected for not
+    having one. Explicit import/export picker modes keep their upstream behavior.
+    """
+
+    picker = tg / "submodules/LegacyMediaPickerUI/Sources/LegacyICloudFilePicker.swift"
+    if not picker.is_file():
+        print("DocumentPickerCopy: LegacyICloudFilePicker.swift not found — skip")
+    else:
+        text = picker.read_text(encoding="utf-8")
+        marker = "AorusGram: copy mode"
+        if marker in text:
+            print("DocumentPickerCopy: picker already patched")
+        else:
+            import_anchor = "import TelegramPresentationData\nimport LegacyUI\n"
+            import_replacement = "import TelegramPresentationData\nimport TelegramCore\nimport LegacyUI\n"
+            property_anchor = "    let completion: ([URL]) -> Void\n"
+            property_replacement = property_anchor + "    let relocatesPickedDocuments: Bool\n"
+            initializer_anchor = "    init(presentation: LegacyControllerPresentation, theme: PresentationTheme?, completion: @escaping ([URL]) -> Void) {\n"
+            initializer_replacement = "    init(presentation: LegacyControllerPresentation, theme: PresentationTheme?, relocatesPickedDocuments: Bool, completion: @escaping ([URL]) -> Void) {\n"
+            assignment_anchor = "        self.completion = completion\n"
+            assignment_replacement = assignment_anchor + "        self.relocatesPickedDocuments = relocatesPickedDocuments\n"
+            multi_callback_anchor = '''    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        self.completion(urls)
+    }
+'''
+            single_callback_anchor = '''    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentAt url: URL) {
+        self.completion([url])
+    }
+'''
+            relocation_helper = '''    private func completionUrls(_ urls: [URL]) -> [URL] {
+        guard self.relocatesPickedDocuments else {
+            return urls
+        }
+        var result: [URL] = []
+        for url in urls {
+            let tempFile = EngineTempBox.shared.tempFile(fileName: url.lastPathComponent)
+            let target = URL(fileURLWithPath: tempFile.path)
+            do {
+                try FileManager.default.moveItem(at: url, to: target)
+                result.append(target)
+            } catch {
+                do {
+                    try FileManager.default.copyItem(at: url, to: target)
+                    try? FileManager.default.removeItem(at: url)
+                    result.append(target)
+                } catch {
+                    EngineTempBox.shared.dispose(tempFile)
+                }
+            }
+        }
+        return result
+    }
+'''
+            multi_callback_replacement = '''    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        self.completion(self.completionUrls(urls))
+    }
+'''
+            single_callback_replacement = '''    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentAt url: URL) {
+        self.completion(self.completionUrls([url]))
+    }
+'''
+            mode_anchor = '''        case .default:
+            return .open
+'''
+            mode_replacement = '''        case .default:
+            // AorusGram: copy mode — iOS places a local copy in the app container;
+            // no security scope or iCloud entitlement is needed to read it.
+            return .import
+'''
+            construction_anchor = '''    var dismissImpl: (() -> Void)?
+    let legacyController = LegacyICloudFileController(presentation: .modal(animateIn: true), theme: theme, completion: { urls in
+'''
+            construction_replacement = '''    var dismissImpl: (() -> Void)?
+    let relocatesPickedDocuments: Bool
+    if case .default = mode {
+        relocatesPickedDocuments = true
+    } else {
+        relocatesPickedDocuments = false
+    }
+    let legacyController = LegacyICloudFileController(presentation: .modal(animateIn: true), theme: theme, relocatesPickedDocuments: relocatesPickedDocuments, completion: { urls in
+'''
+            anchors = (
+                (import_anchor, import_replacement, "TelegramCore import"),
+                (property_anchor, property_replacement, "controller property"),
+                (initializer_anchor, initializer_replacement, "controller initializer"),
+                (assignment_anchor, assignment_replacement, "controller assignment"),
+                (multi_callback_anchor, relocation_helper + "    \n" + multi_callback_replacement, "multi-select callback"),
+                (single_callback_anchor, single_callback_replacement, "single-select callback"),
+                (mode_anchor, mode_replacement, "default copy mode"),
+                (construction_anchor, construction_replacement, "controller construction"),
+            )
+            missing = [name for anchor, _, name in anchors if anchor not in text]
+            if missing:
+                raise RuntimeError(f"DocumentPickerCopy: picker anchors not found: {', '.join(missing)}")
+            for anchor, replacement, _ in anchors:
+                text = text.replace(anchor, replacement, 1)
+            picker.write_text(text, encoding="utf-8")
+            print("DocumentPickerCopy: picker uses local copy mode")
+
+    resources = tg / "submodules/ICloudResources/Sources/ICloudResources.swift"
+    if not resources.is_file():
+        print("DocumentPickerCopy: ICloudResources.swift not found — skip")
+    else:
+        text = resources.read_text(encoding="utf-8")
+        description_marker = "AorusGram: picked documents are local copies"
+        fetch_marker = "AorusGram: local copies have no security scope"
+        if description_marker not in text:
+            description_anchor = '''        guard url.startAccessingSecurityScopedResource() else {
+            return nil
+        }
+'''
+            description_replacement = '''        // AorusGram: picked documents are local copies; scope is optional.
+        let aorusHasSecurityScope = url.startAccessingSecurityScopedResource()
+'''
+            stop_anchor = "        url.stopAccessingSecurityScopedResource()\n"
+            stop_replacement = '''        if aorusHasSecurityScope {
+            url.stopAccessingSecurityScopedResource()
+        }
+'''
+            if description_anchor not in text or stop_anchor not in text:
+                raise RuntimeError("DocumentPickerCopy: description scope anchors not found")
+            text = text.replace(description_anchor, description_replacement, 1)
+            text = text.replace(stop_anchor, stop_replacement, 1)
+        if fetch_marker not in text:
+            fetch_anchor = '''        guard url.startAccessingSecurityScopedResource() else {
+            subscriber.putCompletion()
+            return EmptyDisposable
+        }
+'''
+            fetch_replacement = '''        // AorusGram: local copies have no security scope to open; proceed anyway.
+        let _ = url.startAccessingSecurityScopedResource()
+'''
+            if fetch_anchor not in text:
+                raise RuntimeError("DocumentPickerCopy: fetch scope anchor not found")
+            text = text.replace(fetch_anchor, fetch_replacement, 1)
+        resources.write_text(text, encoding="utf-8")
+        print("DocumentPickerCopy: local resources tolerate missing security scope")
+
+    sound = tg / "submodules/NotificationSoundSelectionUI/Sources/NotificationSoundSelection.swift"
+    if not sound.is_file():
+        print("DocumentPickerCopy: NotificationSoundSelection.swift not found — skip")
+    else:
+        text = sound.read_text(encoding="utf-8")
+        marker = "AorusGram: the picker returns a local copy"
+        if marker in text:
+            print("DocumentPickerCopy: notification sound picker already patched")
+        else:
+            anchor = '''        if !url.startAccessingSecurityScopedResource() {
+            Logger.shared.log("NotificationSoundSelection", "startAccessingSecurityScopedResource failed")
+            return
+        }
+'''
+            replacement = '''        // AorusGram: the picker returns a local copy; scope is optional.
+        let _ = url.startAccessingSecurityScopedResource()
+'''
+            if anchor not in text:
+                raise RuntimeError("DocumentPickerCopy: notification sound scope anchor not found")
+            sound.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+            print("DocumentPickerCopy: notification sounds tolerate local copies")
+
+
 def patch_document_picker_upload(tg: Path) -> None:
     """Let AorusGram attempt every selected document, whatever its size.
 
-    ICloudResources is left exactly as upstream ships it. An earlier rewrite read
-    the picked URL through NSFileCoordinator and then bookmarked the coordinator's
-    presented URL instead of the original security-scoped one; at upload time that
-    bookmark could no longer re-open its security scope, so the copy produced
-    nothing and the file silently never sent. Stock code bookmarks the picker's own
-    security-scoped URL, which re-opens correctly — the behaviour Swiftgram relies
-    on with the same third-party certificate — so we keep it.
+    User-selected files are first copied into the app container by
+    patch_document_picker_copy_mode. ICloudResources keeps its stock bookmark and
+    metadata pipeline, but accepts that these local copies have no security scope.
+    This deliberately does not restore the rejected NSFileCoordinator rewrite,
+    which bookmarked a coordinator-presented URL and silently lost uploads.
 
     The only change here is removing Telegram's local PremiumLimitScreen size gate,
     so the transport/backend stays the sole authority on the real protocol limit.
@@ -26158,6 +26323,7 @@ def main() -> None:
     patch_login_backup_key_button(tg)
     patch_formatting_panel(tg)
     patch_voice_to_text(tg)
+    patch_document_picker_copy_mode(tg)
     patch_document_picker_upload(tg)
     patch_webapp_tunnel(tg)
     patch_connection_title(tg)
