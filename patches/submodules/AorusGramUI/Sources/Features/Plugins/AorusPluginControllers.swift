@@ -2371,6 +2371,7 @@ private func permissionTitle(_ permission: AorusPluginPermission) -> String {
     case .accountSwitching: return aorusL("Аккаунты", "Accounts")
     case .telegramProxy: return aorusL("Прокси Telegram", "Telegram proxies")
     case .manageMessages: return aorusL("Управление сообщениями", "Manage messages")
+    case .composer: return aorusL("Поле ввода открытого чата", "Open chat composer")
     }
 }
 
@@ -2421,6 +2422,8 @@ private func permissionDescription(_ permission: AorusPluginPermission, requeste
         return marker + aorusL("Разрешает управлять штатными прокси Telegram. Сохранённые пароли и секреты плагину не раскрываются.", "Allows managing Telegram proxies. Saved passwords and secrets are never exposed to the plugin.")
     case .manageMessages:
         return marker + aorusL("Разрешает редактировать, удалять, пересылать сообщения и менять реакции от имени текущего аккаунта.", "Allows editing, deleting and forwarding messages and changing reactions as the current account.")
+    case .composer:
+        return marker + aorusL("Разрешает менять текст в поле ввода открытого чата, видеть, как он меняется при наборе, показывать статус печати и прокручивать историю. Отправку сообщений это разрешение не дает.", "Allows changing the text in the open chat composer, seeing it change as it is typed, showing the typing status and scrolling the history. It does not allow sending messages.")
     }
 }
 

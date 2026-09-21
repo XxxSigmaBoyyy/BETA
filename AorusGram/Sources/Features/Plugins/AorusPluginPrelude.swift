@@ -21,6 +21,7 @@ public enum AorusPluginPrelude {
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
         "foreground", "background", "settingsChanged", "appSettingsChanged",
         "connectionChanged", "uiAction", "contextAction", "settings.changed", "settings.action", "settings.reset",
+        "chatOpened", "chatClosed", "inputChanged",
     ]
 
     public static let source: String = """
@@ -801,6 +802,37 @@ public enum AorusPluginPrelude {
             }
         });
 
+        // The chat that is open right now. Everything here answers while a chat is on screen
+        // and rejects the moment none is, which is what "the current chat" means: there is no
+        // last one to fall back on, and pretending otherwise would write a draft into a chat
+        // nobody is looking at.
+        var chatApi = freeze({
+            current: function () { return request('chat.current', {}); },
+            draft: function () { return request('chat.draft', {}); },
+            setDraft: function (text) { return request('chat.setDraft', { text: requireString(text, 'text'), mode: 'set' }); },
+            insert: function (text) { return request('chat.setDraft', { text: requireString(text, 'text'), mode: 'insert' }); },
+            clear: function () { return request('chat.setDraft', { text: '', mode: 'clear' }); },
+            messages: function (options) {
+                var opts = optionalObject(options, 'options');
+                var limit = opts.limit === undefined ? 50 : Number(opts.limit);
+                if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+                    throw new RangeError('limit must be between 1 and 100');
+                }
+                return request('chat.messages', { limit: limit });
+            },
+            setTyping: function (enabled) {
+                if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
+                return request('chat.setTyping', { enabled: enabled });
+            },
+            markRead: function () { return request('chat.markRead', {}); },
+            scrollTo: function (message) {
+                var id = (message !== null && typeof message === 'object') ? message.id : message;
+                id = Number(id);
+                if (!Number.isSafeInteger(id) || id <= 0) { throw typeError('message must be a message or a message id'); }
+                return request('chat.scrollTo', { messageId: id });
+            }
+        });
+
         var telegramProxyApi = freeze({
             status: function () { return request('telegramProxy.status', {}); },
             setEnabled: function (enabled) {
@@ -922,6 +954,7 @@ public enum AorusPluginPrelude {
                     return request('chats.open', { peerId: target === 'me' ? null : target, toSelf: target === 'me' });
                 }
             }),
+            chat: chatApi,
             account: freeze({
                 current: function () { return request('account.current', {}); }
             }),

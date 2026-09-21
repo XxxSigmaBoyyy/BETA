@@ -17803,6 +17803,66 @@ def patch_internal_delete_maintenance(tg: Path) -> None:
     print(f"InternalDelete: bracketed {applied} maintenance deletes")
 
 
+def patch_plugin_chat_surface(tg: Path) -> None:
+    """Register the open chat with the plugin bridge.
+
+    `aorus.chat.*` means the chat on screen, and the only thing that knows which one that is
+    is the chat controller itself. Three lines say so: one when it appears, one when it
+    leaves, and one after every interface-state update, which is where a changed composer
+    shows up. Everything else lives in `AorusPluginChatAdapter.swift`, which is a whole file
+    of ours rather than a patch, so this stays three calls into it.
+
+    The update hook fires for dozens of reasons that have nothing to do with typing; the
+    adapter compares the composer text against the last one it reported and stays quiet
+    otherwise, so this is a string comparison on a path Telegram already walks.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ChatController.swift"
+    if not path.is_file():
+        raise SystemExit("PluginChatSurface: ChatController.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "aorusPluginChatDidAppear" in source:
+        print("PluginChatSurface: already patched")
+        return
+    sites = [
+        (
+            "    override public func viewDidAppear(_ animated: Bool) {\n"
+            "        super.viewDidAppear(animated)\n",
+            "        // AorusGram: this chat is now the one `aorus.chat.*` means.\n"
+            "        self.aorusPluginChatDidAppear()\n",
+            "viewDidAppear",
+        ),
+        (
+            "    override public func viewWillDisappear(_ animated: Bool) {\n"
+            "        super.viewWillDisappear(animated)\n",
+            "        // AorusGram: withdraw unless another chat has already registered.\n"
+            "        self.aorusPluginChatWillDisappear()\n",
+            "viewWillDisappear",
+        ),
+        (
+            "        updateChatPresentationInterfaceStateImpl(\n"
+            "            selfController: self,\n"
+            "            transition: transition,\n"
+            "            interactive: interactive,\n"
+            "            force: force,\n"
+            "            saveInterfaceState: saveInterfaceState,\n"
+            "            f,\n"
+            "            completion: completion\n"
+            "        )\n",
+            "        // AorusGram: the composer may have changed.\n"
+            "        self.aorusPluginChatStateUpdated()\n",
+            "updateChatPresentationInterfaceState",
+        ),
+    ]
+    for anchor, addition, name in sites:
+        if source.count(anchor) != 1:
+            raise SystemExit(
+                f"PluginChatSurface: {name} anchor found {source.count(anchor)} times, expected 1"
+            )
+        source = source.replace(anchor, anchor + addition, 1)
+    path.write_text(source, encoding="utf-8")
+    print("PluginChatSurface: registered the open chat at 3 call sites")
+
+
 def patch_plugin_settings_rows(tg: Path) -> None:
     """Put the shortcuts plugins register into Telegram's own settings list.
 
@@ -26467,6 +26527,9 @@ def main() -> None:
     patch_tab_bar_visibility_controls(tg)
     patch_wall_tab(tg)
     patch_wall_exclusion_swipe(tg)
+    # After the Wall patches: they anchor on the same two chat-controller lifecycle
+    # methods, and their anchors span the lines this one inserts.
+    patch_plugin_chat_surface(tg)
     patch_settings_live_refresh(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)

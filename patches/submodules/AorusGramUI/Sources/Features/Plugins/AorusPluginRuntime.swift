@@ -454,6 +454,23 @@ public final class AorusPluginRuntimeManager {
         observers.append(center.addObserver(forName: AorusConnectionPreferences.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
             self?.dispatch(event: "connectionChanged", payload: [:])
         })
+        // The chat on screen. These three are posted from the chat controller itself, on the
+        // main thread, and carry only what `aorus.chat.current()` would have returned.
+        observers.append(center.addObserver(forName: AorusPluginChatBridge.openedNotification, object: nil, queue: .main) { [weak self] note in
+            self?.dispatch(event: "chatOpened", payload: note.userInfo as? [String: Any] ?? [:])
+        })
+        observers.append(center.addObserver(forName: AorusPluginChatBridge.closedNotification, object: nil, queue: .main) { [weak self] note in
+            self?.dispatch(event: "chatClosed", payload: note.userInfo as? [String: Any] ?? [:])
+        })
+        observers.append(center.addObserver(forName: AorusPluginChatBridge.inputChangedNotification, object: nil, queue: .main) { [weak self] note in
+            guard let info = note.userInfo, let text = info["text"] as? String else { return }
+            var payload: [String: Any] = [
+                "text": String(text.prefix(32_768)),
+                "source": (info["source"] as? String) ?? "user",
+            ]
+            if let peerId = info["peerId"] as? String { payload["peerId"] = peerId }
+            self?.dispatch(event: "inputChanged", payload: payload)
+        })
     }
 
     private func dispatch(event: String, payload: [String: Any]) {
@@ -1265,6 +1282,95 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigation, context: self.context, chatLocation: .peer(peer)))
             completion(.success(()))
         })
+    }
+
+    // MARK: - The open chat
+    //
+    // Every call here goes through `AorusPluginChatBridge`, which holds the chat that is on
+    // screen and nothing else. The bridge is main-thread-only because a chat controller is,
+    // and a plugin calls from its own serial queue, so each one hops.
+
+    /// Runs `body` against the open chat on the main thread, or fails with the one sentence
+    /// that says there is none. The permission is checked before the hop, so a plugin that
+    /// was not granted anything never reaches the chat at all.
+    private func withOpenChat<T>(
+        _ pluginId: String,
+        permission: AorusPluginPermission,
+        denied: String,
+        completion: @escaping (Result<T, Error>) -> Void,
+        _ body: @escaping (AorusPluginChatHost) -> T
+    ) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(permission, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError(denied)))
+            return
+        }
+        let run = {
+            guard let host = AorusPluginChatBridge.shared.current else {
+                completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+                return
+            }
+            completion(.success(body(host)))
+        }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+    }
+
+    func pluginCurrentChat(_ pluginId: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.chatMetadata, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Chat metadata permission is not granted")))
+            return
+        }
+        // The one call that answers when no chat is open: `null` is the fact a plugin asks
+        // for, and turning it into an error would make "is a chat open?" unanswerable.
+        let run = {
+            guard let host = AorusPluginChatBridge.shared.current else {
+                completion(.success(nil))
+                return
+            }
+            completion(.success(AorusPluginChatBridge.describe(host)))
+        }
+        if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+    }
+
+    func pluginCurrentChatDraft(_ pluginId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        withOpenChat(pluginId, permission: .composer, denied: "Composer permission is not granted", completion: completion) { host in
+            String(host.aorusPluginDraftText().prefix(32_768))
+        }
+    }
+
+    func pluginSetCurrentChatDraft(_ pluginId: String, text: String, mode: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        withOpenChat(pluginId, permission: .composer, denied: "Composer permission is not granted", completion: completion) { host in
+            switch mode {
+            case "insert": host.aorusPluginInsertText(text)
+            case "clear": host.aorusPluginClearInput()
+            default: host.aorusPluginSetDraftText(text)
+            }
+        }
+    }
+
+    func pluginCurrentChatMessages(_ pluginId: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        withOpenChat(pluginId, permission: .chatMetadata, denied: "Chat metadata permission is not granted", completion: completion) { host in
+            host.aorusPluginVisibleMessages(limit: min(100, max(1, limit)))
+        }
+    }
+
+    func pluginCurrentChatTyping(_ pluginId: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        withOpenChat(pluginId, permission: .composer, denied: "Composer permission is not granted", completion: completion) { host in
+            host.aorusPluginSetTyping(enabled)
+        }
+    }
+
+    func pluginCurrentChatMarkRead(_ pluginId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        withOpenChat(pluginId, permission: .composer, denied: "Composer permission is not granted", completion: completion) { host in
+            host.aorusPluginMarkRead()
+        }
+    }
+
+    func pluginCurrentChatScrollTo(_ pluginId: String, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void) {
+        withOpenChat(pluginId, permission: .composer, denied: "Composer permission is not granted", completion: completion) { host in
+            host.aorusPluginScrollToMessage(messageId)
+        }
     }
 
     func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {

@@ -143,6 +143,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case accountSwitching
     case telegramProxy
     case manageMessages
+    case composer
 
     /// What each permission looks like in a plugin's source. The consent sheet is built
     /// from this, so a capability with no needle here is one the person is never asked
@@ -151,7 +152,9 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     public static let sourceProbes: [(AorusPluginPermission, [String])] = [
             (.network, ["aorus.http"]),
             (.sendMessages, ["aorus.messages.send"]),
-            (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get"]),
+            // `chats.*` names a chat by id; `chat.*` is the one on screen. Reading either is
+            // the same capability: a title, an identifier and what is in view.
+            (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get", "aorus.chat.current", "aorus.chat.messages"]),
             (.openChats, ["aorus.chats.open", "aorus.app.openChat", "aorus.telegram.openLink"]),
             (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount"]),
             // `toast` is gated on the same permission as the other dialogs and had no
@@ -186,6 +189,14 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.accountSwitching, ["aorus.accounts."]),
             (.telegramProxy, ["aorus.telegramProxy."]),
             (.manageMessages, ["aorus.messages.edit", "aorus.messages.delete", "aorus.messages.forward", "aorus.messages.react"]),
+            // Writing into the box someone is typing in, and watching them type. Reading the
+            // open chat is `chatMetadata`; changing what is in it is this.
+            (.composer, [
+                "aorus.chat.draft", "aorus.chat.setDraft", "aorus.chat.insert", "aorus.chat.clear",
+                "aorus.chat.setTyping", "aorus.chat.markRead", "aorus.chat.scrollTo",
+                "aorus.on('inputChanged'", "aorus.on(\"inputChanged\"",
+                "aorus.once('inputChanged'", "aorus.once(\"inputChanged\"",
+            ]),
     ]
 
     public static func requestedBySource(_ source: String) -> Set<AorusPluginPermission> {

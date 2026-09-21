@@ -18,6 +18,7 @@
 7. [Перехват исходящих](#7-перехват-исходящих)
 8. [Сообщения](#8-сообщения)
 9. [Чаты](#9-чаты)
+9a. [Открытый чат](#9a-открытый-чат)
 10. [Аккаунты](#10-аккаунты)
 11. [Нативные экраны](#11-нативные-экраны)
 12. [Форматированный текст](#13a-форматированный-текст)
@@ -101,7 +102,8 @@ aorus.commands.register('hello', function (args, context) {
 | `sendMessages` | Отправка сообщений | `aorus.messages.send` |
 | `manageMessages` | Правка, удаление, пересылка, реакции | `aorus.messages.edit/delete/forward/react` |
 | `messageHistory` | Чтение истории чата | `aorus.chats.history` |
-| `chatMetadata` | Название и идентификатор чата | `aorus.chats.resolve`, `aorus.chats.get` |
+| `chatMetadata` | Название и идентификатор чата, что видно на экране | `aorus.chats.resolve`, `aorus.chats.get`, `aorus.chat.current`, `aorus.chat.messages` |
+| `composer` | Поле ввода открытого чата: чтение, запись, статус печати, прокрутка | `aorus.chat.draft/setDraft/insert/clear/setTyping/markRead/scrollTo`, `aorus.on('inputChanged'…)` |
 | `openChats` | Открытие чатов и ссылок Telegram | `aorus.chats.open`, `aorus.app.openChat`, `aorus.telegram.openLink` |
 | `accountProfile` | Имя и идентификатор текущего аккаунта | `aorus.account.current`, `aorus.app.currentAccount` |
 | `accountSwitching` | Список аккаунтов и переключение | `aorus.accounts.` |
@@ -147,6 +149,9 @@ aorus.off('message', fn);    // снять конкретный обработч
 | `connectionChanged` | Изменилось состояние соединения | состояние |
 | `uiAction` | Взаимодействие со строкой нативного экрана | `{ pageId, rowId, value }` |
 | `contextAction` | Выбрано действие в меню сообщения | `{ actionId, peerId, namespace, messageId, text, source }` |
+| `chatOpened` | Чат появился на экране | `{ peerId, title, kind, threadId }` |
+| `chatClosed` | Чат ушёл с экрана | `{ peerId }` |
+| `inputChanged` | Изменился текст в поле ввода | `{ peerId, text, source }` |
 
 Обработчик, который бросил исключение или вернул отклонённый промис, не ломает остальные:
 ошибка попадает в консоль плагина с указанием события.
@@ -218,6 +223,49 @@ await aorus.telegram.openLink('tg://resolve?domain=telegram');
 
 `history` отдаёт массив сообщений с текстом, автором, датой и ссылкой `ref`, пригодной для
 `messages.*`. Требует `messageHistory`.
+
+## 9a. Открытый чат
+
+`aorus.chats.*` адресует чат по идентификатору. `aorus.chat.*` — это тот чат, который прямо
+сейчас на экране, и ничего больше.
+
+```js
+const chat = await aorus.chat.current();   // { peerId, title, kind, threadId } или null
+const text = await aorus.chat.draft();     // что набрано и не отправлено
+await aorus.chat.setDraft('готовый ответ');
+await aorus.chat.insert(' и ещё немного');
+await aorus.chat.clear();
+const visible = await aorus.chat.messages({ limit: 30 });
+await aorus.chat.setTyping(true);
+await aorus.chat.markRead();
+await aorus.chat.scrollTo(messageId);      // или scrollTo(message)
+```
+
+`kind` — одно из `user`, `bot`, `group`, `channel`, `secret`, `community`. `threadId` есть
+только в теме форума.
+
+Когда открытого чата нет, `current()` отвечает `null` — это факт, который плагину нужен, —
+а любой вызов, который что-то делает с чатом, отклоняется с сообщением `No chat is open`.
+Последний открытый чат не подставляется: писать черновик в чат, на который никто не смотрит,
+хуже, чем отказать.
+
+`messages` отдаёт то, что видно на экране, в том же виде, что и `chats.history`: новые в
+конце. Это не история — прокрутка меняет ответ.
+
+Событие `inputChanged` приходит на каждое изменение текста и несёт `source`: `user` — набрал
+человек, `plugin` — записал сам плагин. Это нужно, чтобы плагин, который отвечает на ввод
+записью в поле, не гонял сам себя по кругу:
+
+```js
+aorus.on('inputChanged', function (event) {
+    if (event.source !== 'user') { return; }
+    if (event.text === ':shrug') { aorus.chat.setDraft('¯\\_(ツ)_/¯'); }
+});
+```
+
+Чтение чата — `chatMetadata`, работа с полем ввода — `composer`. Это разные разрешения:
+название чата и то, что человек набрал, но ещё не отправил, — разные вещи. Отправку
+сообщений `composer` не даёт, для неё нужен `sendMessages`.
 
 ## 10. Аккаунты
 

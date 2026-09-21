@@ -654,6 +654,216 @@ if AorusPluginSandbox.watchdogAvailable {
         ["type": "italic", "offset": NSNumber(value: -1), "length": NSNumber(value: 2)]
     ], text: "abcd")
     expect(rejected.count == 1 && rejected[0].kind == .bold, "only the entity that fits the text survives validation")
+
+    // The open chat. Reading the title is chat metadata; the composer is a grant of its own,
+    // because what someone has typed and not sent is not the same fact as which chat is open.
+    expect(
+        AorusPluginPermission.requestedBySource("aorus.chat.current(); aorus.chat.messages({ limit: 10 });") == [.chatMetadata],
+        "reading the open chat is chat metadata"
+    )
+    expect(
+        AorusPluginPermission.requestedBySource("aorus.chat.draft(); aorus.chat.setDraft('x'); aorus.chat.scrollTo(5);") == [.composer],
+        "the composer is its own grant, and setDraft is not a draft read"
+    )
+    expect(
+        AorusPluginPermission.requestedBySource("aorus.on('inputChanged', function () {});") == [.composer],
+        "watching someone type asks for the composer"
+    )
+
+    // Nothing is open between chats, and that is the answer rather than the chat that was
+    // open a moment ago. `current()` says so with null, because "is a chat open?" has to be
+    // answerable; every call that would act on a chat refuses.
+    let noChatHost = AorusPluginNullHost()
+    var noChatResults: [String: AorusPluginJSONValue] = [:]
+    noChatHost.onStorageChanged = { _, values in noChatResults = values }
+    let noChatSource = """
+    aorus.on('start', function () {
+        aorus.chat.current().then(function (chat) { aorus.storage.set('current', chat === null ? 'null' : 'chat'); });
+        aorus.chat.setDraft('hi').then(
+            function () { aorus.storage.set('write', 'allowed'); },
+            function (error) { aorus.storage.set('write', String(error.message || error)); }
+        );
+    });
+    """
+    let noChat = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "No chat"),
+        source: noChatSource,
+        host: noChatHost,
+        permissions: [.chatMetadata, .composer]
+    )
+    let noChatStarted = DispatchSemaphore(value: 0)
+    noChat.start { error in expect(error == nil, "chat plugin starts with no chat open"); noChatStarted.signal() }
+    _ = noChatStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(noChatResults["current"] == .string("null"), "with no chat open, current() answers null")
+    expect(noChatResults["write"] == .string(AorusPluginSandbox.noChatOpen), "with no chat open, writing the composer is refused")
+    noChat.stop()
+
+    // With a chat open, every call reaches the host with exactly what the script passed.
+    let openChatHost = AorusPluginNullHost()
+    var chatDraftWrites: [(String, String)] = []
+    var chatTyping: Bool?
+    var chatMarkedRead = 0
+    var chatScrolledTo: Int32?
+    var chatMessageLimit: Int?
+    openChatHost.onCurrentChat = { _ in ["peerId": "-1001234567890", "title": "Team", "kind": "group", "threadId": "77"] }
+    openChatHost.onCurrentChatDraft = { _ in "draft so far" }
+    openChatHost.onSetCurrentChatDraft = { _, text, mode in chatDraftWrites.append((mode, text)) }
+    openChatHost.onCurrentChatMessages = { _, limit in
+        chatMessageLimit = limit
+        return [["id": NSNumber(value: 5), "text": "hello"]]
+    }
+    openChatHost.onCurrentChatTyping = { _, enabled in chatTyping = enabled }
+    openChatHost.onCurrentChatMarkRead = { _ in chatMarkedRead += 1 }
+    openChatHost.onCurrentChatScrollTo = { _, messageId in chatScrolledTo = messageId }
+    var chatResults: [String: AorusPluginJSONValue] = [:]
+    openChatHost.onStorageChanged = { _, values in chatResults = values }
+    let openChatSource = """
+    aorus.on('start', function () {
+        aorus.chat.current().then(function (chat) { aorus.storage.set('chat', chat.title + '/' + chat.kind + '/' + chat.threadId + '/' + chat.peerId); });
+        aorus.chat.draft().then(function (text) { aorus.storage.set('draft', text); });
+        aorus.chat.setDraft('replaced');
+        aorus.chat.insert(' more');
+        aorus.chat.clear();
+        aorus.chat.messages({ limit: 7 }).then(function (items) { aorus.storage.set('messages', items.length + ':' + items[0].text); });
+        aorus.chat.setTyping(true);
+        aorus.chat.markRead();
+        aorus.chat.scrollTo({ id: 4321 });
+    });
+    """
+    let openChat = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Open chat"),
+        source: openChatSource,
+        host: openChatHost,
+        permissions: [.chatMetadata, .composer]
+    )
+    let openChatStarted = DispatchSemaphore(value: 0)
+    openChat.start { error in expect(error == nil, "chat plugin starts with a chat open"); openChatStarted.signal() }
+    _ = openChatStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.3)
+    expect(chatResults["chat"] == .string("Team/group/77/-1001234567890"), "current() carries title, kind, thread and a 64-bit peer id")
+    expect(chatResults["draft"] == .string("draft so far"), "draft() reads the composer")
+    expect(chatDraftWrites.map { $0.0 } == ["set", "insert", "clear"], "set, insert and clear reach the host as distinct modes in order")
+    expect(chatDraftWrites.count == 3 && chatDraftWrites[0].1 == "replaced", "setDraft carries its text")
+    expect(chatDraftWrites.count == 3 && chatDraftWrites[1].1 == " more", "insert carries its text")
+    expect(chatDraftWrites.count == 3 && chatDraftWrites[2].1 == "", "clear carries no text")
+    expect(chatMessageLimit == 7, "messages() passes the limit it was given")
+    expect(chatResults["messages"] == .string("1:hello"), "messages() returns what the host gave")
+    expect(chatTyping == true, "setTyping reaches the host")
+    expect(chatMarkedRead == 1, "markRead reaches the host")
+    expect(chatScrolledTo == 4321, "scrollTo accepts a message object and passes its id")
+    openChat.stop()
+
+    // A grant for one half is not a grant for the other.
+    let halfChatHost = AorusPluginNullHost()
+    var halfChatWrites = 0
+    halfChatHost.onCurrentChat = { _ in ["peerId": "1", "title": "Someone", "kind": "user"] }
+    halfChatHost.onSetCurrentChatDraft = { _, _, _ in halfChatWrites += 1 }
+    var halfChatResults: [String: AorusPluginJSONValue] = [:]
+    halfChatHost.onStorageChanged = { _, values in halfChatResults = values }
+    let halfChatSource = """
+    aorus.on('start', function () {
+        aorus.chat.setDraft('x').then(
+            function () { aorus.storage.set('write', 'allowed'); },
+            function (error) { aorus.storage.set('write', String(error.message || error)); }
+        );
+        aorus.chat.current().then(
+            function () { aorus.storage.set('read', 'allowed'); },
+            function (error) { aorus.storage.set('read', String(error.message || error)); }
+        );
+    });
+    """
+    let halfChat = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Read only chat"),
+        source: halfChatSource,
+        host: halfChatHost,
+        permissions: [.chatMetadata]
+    )
+    let halfChatStarted = DispatchSemaphore(value: 0)
+    halfChat.start { error in expect(error == nil, "read-only chat plugin starts"); halfChatStarted.signal() }
+    _ = halfChatStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(halfChatWrites == 0, "an ungranted composer write never reaches the host")
+    expect(halfChatResults["write"] == .string("Permission not granted: composer"), "the refusal names the permission that was missing")
+    expect(halfChatResults["read"] == .string("allowed"), "chat metadata still answers")
+    halfChat.stop()
+
+    // The three chat events, and the two grants that carry them.
+    let chatEventHost = AorusPluginNullHost()
+    var chatEventValues: [String: AorusPluginJSONValue] = [:]
+    chatEventHost.onStorageChanged = { _, values in chatEventValues = values }
+    let chatEventSource = """
+    aorus.on('chatOpened', function (event) { aorus.storage.set('opened', event.title); });
+    aorus.on('chatClosed', function () { aorus.storage.set('closed', 'yes'); });
+    aorus.on('inputChanged', function (event) { aorus.storage.set('input', event.source + ':' + event.text); });
+    """
+    let chatEvents = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Chat events"),
+        source: chatEventSource,
+        host: chatEventHost,
+        permissions: [.chatMetadata, .composer]
+    )
+    let chatEventsStarted = DispatchSemaphore(value: 0)
+    chatEvents.start { error in expect(error == nil, "chat event plugin starts"); chatEventsStarted.signal() }
+    _ = chatEventsStarted.wait(timeout: .now() + 2)
+    chatEvents.dispatch(event: "chatOpened", payload: ["peerId": "5", "title": "Team", "kind": "group"])
+    chatEvents.dispatch(event: "chatClosed", payload: ["peerId": "5"])
+    chatEvents.dispatch(event: "inputChanged", payload: ["text": "hi", "source": "user"])
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(chatEventValues["opened"] == .string("Team"), "chatOpened carries the chat it opened")
+    expect(chatEventValues["closed"] == .string("yes"), "chatClosed is delivered")
+    expect(chatEventValues["input"] == .string("user:hi"), "inputChanged carries the text and what caused it")
+    chatEvents.stop()
+
+    let deniedChatEventHost = AorusPluginNullHost()
+    var deniedChatEventWrites = 0
+    deniedChatEventHost.onStorageChanged = { _, _ in deniedChatEventWrites += 1 }
+    let deniedChatEvents = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Denied chat events"),
+        source: chatEventSource,
+        host: deniedChatEventHost,
+        permissions: []
+    )
+    let deniedChatEventsStarted = DispatchSemaphore(value: 0)
+    deniedChatEvents.start { error in expect(error == nil, "denied chat event plugin still starts"); deniedChatEventsStarted.signal() }
+    _ = deniedChatEventsStarted.wait(timeout: .now() + 2)
+    deniedChatEvents.dispatch(event: "chatOpened", payload: ["peerId": "5", "title": "Team", "kind": "group"])
+    deniedChatEvents.dispatch(event: "chatClosed", payload: ["peerId": "5"])
+    deniedChatEvents.dispatch(event: "inputChanged", payload: ["text": "hi", "source": "user"])
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(deniedChatEventWrites == 0, "no chat event reaches a plugin that was granted neither")
+    deniedChatEvents.stop()
+
+    // Bad arguments are refused in JavaScript, before anything crosses the boundary.
+    let chatArgHost = AorusPluginNullHost()
+    var chatArgReached = 0
+    chatArgHost.onCurrentChatScrollTo = { _, _ in chatArgReached += 1 }
+    chatArgHost.onCurrentChatTyping = { _, _ in chatArgReached += 1 }
+    chatArgHost.onCurrentChatMessages = { _, _ in chatArgReached += 1; return [] }
+    var chatArgResults: [String: AorusPluginJSONValue] = [:]
+    chatArgHost.onStorageChanged = { _, values in chatArgResults = values }
+    let chatArgSource = """
+    aorus.on('start', function () {
+        try { aorus.chat.scrollTo('abc'); } catch (error) { aorus.storage.set('scroll', 'rejected'); }
+        try { aorus.chat.messages({ limit: 500 }); } catch (error) { aorus.storage.set('limit', 'rejected'); }
+        try { aorus.chat.setTyping('yes'); } catch (error) { aorus.storage.set('typing', 'rejected'); }
+    });
+    """
+    let chatArgs = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Chat arguments"),
+        source: chatArgSource,
+        host: chatArgHost,
+        permissions: [.chatMetadata, .composer]
+    )
+    let chatArgsStarted = DispatchSemaphore(value: 0)
+    chatArgs.start { error in expect(error == nil, "chat argument plugin starts"); chatArgsStarted.signal() }
+    _ = chatArgsStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(chatArgResults["scroll"] == .string("rejected"), "scrollTo rejects something that is not a message id")
+    expect(chatArgResults["limit"] == .string("rejected"), "messages() rejects a limit outside the range")
+    expect(chatArgResults["typing"] == .string("rejected"), "setTyping rejects a value that is not a boolean")
+    expect(chatArgReached == 0, "a rejected argument never reaches the host")
+    chatArgs.stop()
 }
 
 if failures == 0 {

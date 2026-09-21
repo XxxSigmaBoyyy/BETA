@@ -33,6 +33,14 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginChatInfo(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
     func pluginChatHistory(_ pluginId: String, peerId: Int64?, toSelf: Bool, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
     func pluginOpenChat(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginCurrentChat(_ pluginId: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    func pluginCurrentChatDraft(_ pluginId: String, completion: @escaping (Result<String, Error>) -> Void)
+    /// `mode` is `set`, `insert` or `clear`.
+    func pluginSetCurrentChatDraft(_ pluginId: String, text: String, mode: String, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginCurrentChatMessages(_ pluginId: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
+    func pluginCurrentChatTyping(_ pluginId: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginCurrentChatMarkRead(_ pluginId: String, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginCurrentChatScrollTo(_ pluginId: String, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginAccounts(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
     func pluginSwitchAccount(_ pluginId: String, accountId: Int64, completion: @escaping (Result<Void, Error>) -> Void)
@@ -87,6 +95,15 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onOpenURL: ((String, String) -> Void)?
     public var onOpenTelegramLink: ((String, String) -> Void)?
     public var onChatHistory: ((String, Int64?, Bool, Int) -> [[String: Any]])?
+    // The open chat. Nothing is open unless a test says so, which is also true on a device
+    // between chats, so the default answer here is the same one the app gives.
+    public var onCurrentChat: ((String) -> [String: Any]?)?
+    public var onCurrentChatDraft: ((String) -> String)?
+    public var onSetCurrentChatDraft: ((String, String, String) -> Void)?
+    public var onCurrentChatMessages: ((String, Int) -> [[String: Any]])?
+    public var onCurrentChatTyping: ((String, Bool) -> Void)?
+    public var onCurrentChatMarkRead: ((String) -> Void)?
+    public var onCurrentChatScrollTo: ((String, Int32) -> Void)?
     public var onAIAsk: ((String, String, [[String: String]]) -> [String: Any])?
     public var onAIEvent: ((String, [String: Any]) -> Void)?
     public var onAIOpenArtifact: ((String, String) -> Void)?
@@ -123,6 +140,55 @@ open class AorusPluginNullHost: AorusPluginHostServices {
         completion(.success(onChatHistory?(pluginId, peerId, toSelf, limit) ?? []))
     }
     open func pluginOpenChat(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+    open func pluginCurrentChat(_ pluginId: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(onCurrentChat?(pluginId)))
+    }
+    open func pluginCurrentChatDraft(_ pluginId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let onCurrentChatDraft = onCurrentChatDraft else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        completion(.success(onCurrentChatDraft(pluginId)))
+    }
+    open func pluginSetCurrentChatDraft(_ pluginId: String, text: String, mode: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let onSetCurrentChatDraft = onSetCurrentChatDraft else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        onSetCurrentChatDraft(pluginId, text, mode)
+        completion(.success(()))
+    }
+    open func pluginCurrentChatMessages(_ pluginId: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        guard let onCurrentChatMessages = onCurrentChatMessages else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        completion(.success(onCurrentChatMessages(pluginId, limit)))
+    }
+    open func pluginCurrentChatTyping(_ pluginId: String, enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let onCurrentChatTyping = onCurrentChatTyping else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        onCurrentChatTyping(pluginId, enabled)
+        completion(.success(()))
+    }
+    open func pluginCurrentChatMarkRead(_ pluginId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let onCurrentChatMarkRead = onCurrentChatMarkRead else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        onCurrentChatMarkRead(pluginId)
+        completion(.success(()))
+    }
+    open func pluginCurrentChatScrollTo(_ pluginId: String, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let onCurrentChatScrollTo = onCurrentChatScrollTo else {
+            completion(.failure(AorusPluginRequestError(AorusPluginSandbox.noChatOpen)))
+            return
+        }
+        onCurrentChatScrollTo(pluginId, messageId)
+        completion(.success(()))
+    }
     open func pluginCurrentAccount(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         completion(.success(["id": NSNumber(value: 0), "firstName": "", "lastName": "", "username": ""]))
     }
@@ -304,6 +370,9 @@ public final class AorusPluginSandbox {
     public static let requestBodyLimitBytes = 2 * 1024 * 1024
     public static let requestPayloadLimitBytes = 256 * 1024
     public static let pendingRequestLimit = 32
+    /// What every call on the open chat answers when there is none. One sentence, in one
+    /// place, so a plugin can compare against it and the two hosts cannot drift apart.
+    public static let noChatOpen = "No chat is open"
     /// How many log lines the sandbox keeps for the console panel.
     public static let recentLogLimit = 500
     /// Hosts a plugin may not talk to: the app's own control plane.
@@ -587,6 +656,10 @@ public final class AorusPluginSandbox {
         if event == "send" && !permissions.contains(.outgoingMessages) { return }
         if event == "appSettingsChanged" && !permissions.contains(.appCustomization) { return }
         if event == "connectionChanged" && !permissions.contains(.connectionControl) { return }
+        if ["chatOpened", "chatClosed"].contains(event) && !permissions.contains(.chatMetadata) { return }
+        // What someone is typing, keystroke by keystroke, before they have decided to send
+        // it. That is the composer, not chat metadata.
+        if event == "inputChanged" && !permissions.contains(.composer) { return }
         queue.async {
             self.deliver(event: event, payload: payload)
         }
@@ -1132,6 +1205,64 @@ public final class AorusPluginSandbox {
                 return
             }
             host.pluginReactToMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, reaction: reaction) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "chat.current":
+            guard require(.chatMetadata, id: id) else { return }
+            host.pluginCurrentChat(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value.map { $0 as Any } })
+            }
+        case "chat.draft":
+            // Not `chatMetadata`: this is the text someone has typed and not sent, which is
+            // the same thing `inputChanged` carries and the same grant.
+            guard require(.composer, id: id) else { return }
+            host.pluginCurrentChatDraft(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "chat.setDraft":
+            guard require(.composer, id: id) else { return }
+            guard let text = string("text"), let mode = string("mode"),
+                  ["set", "insert", "clear"].contains(mode) else {
+                settle(id, with: .failure(AorusPluginRequestError("text and a mode of set, insert or clear are required")))
+                return
+            }
+            guard text.count <= 32_768 else {
+                settle(id, with: .failure(AorusPluginRequestError("Text is too long")))
+                return
+            }
+            host.pluginSetCurrentChatDraft(pluginId, text: text, mode: mode) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "chat.messages":
+            guard require(.chatMetadata, id: id) else { return }
+            guard let limit = (payload["limit"] as? NSNumber).map({ $0.intValue }), limit >= 1, limit <= 100 else {
+                settle(id, with: .failure(AorusPluginRequestError("limit must be between 1 and 100")))
+                return
+            }
+            host.pluginCurrentChatMessages(pluginId, limit: limit) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "chat.setTyping":
+            guard require(.composer, id: id) else { return }
+            guard let enabled = boolean("enabled") else {
+                settle(id, with: .failure(AorusPluginRequestError("enabled must be a boolean")))
+                return
+            }
+            host.pluginCurrentChatTyping(pluginId, enabled: enabled) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "chat.markRead":
+            guard require(.composer, id: id) else { return }
+            host.pluginCurrentChatMarkRead(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "chat.scrollTo":
+            guard require(.composer, id: id) else { return }
+            guard let messageId = int32("messageId"), messageId > 0 else {
+                settle(id, with: .failure(AorusPluginRequestError("messageId is required")))
+                return
+            }
+            host.pluginCurrentChatScrollTo(pluginId, messageId: messageId) { [weak self] result in
                 self?.settle(id, with: result.map { _ -> Any? in nil })
             }
         case "chats.resolve":
