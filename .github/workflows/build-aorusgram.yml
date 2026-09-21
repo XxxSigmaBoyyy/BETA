@@ -50,6 +50,11 @@ jobs:
       - name: Call argument label preflight
         run: python3 aorusgram/scripts/swift_call_label_check.py aorusgram
 
+      # `invalid redeclaration of 'x'` in a test file costs a CI round for a name chosen
+      # hundreds of lines away from the one that already had it. Two seconds here.
+      - name: Test source shadowing preflight
+        run: python3 aorusgram/scripts/swift_local_shadow_check.py aorusgram
+
       - name: AorusAI transport and store preflight
         run: |
           mkdir -p /tmp/aorus-ai-preflight/module-cache
