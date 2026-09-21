@@ -558,6 +558,43 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(aiPrompt == "Question", "AorusAI chat sends the plugin question through the host")
     expect(aiLog == "Answer", "AorusAI chat resolves the assistant response")
     ai.stop()
+
+    // A plugin that once failed to answer the outgoing hook in time used to be shut out of
+    // every event for the rest of the session: the flag never cleared and `deliver` dropped
+    // on it. One slow millisecond and every button the plugin registered stopped working,
+    // with nothing on screen to say so. A timeout is now a cooldown on the synchronous hook
+    // alone, and events keep arriving throughout.
+    let slowHost = AorusPluginNullHost()
+    var slowActions = 0
+    slowHost.onToast = { _, _ in slowActions += 1 }
+    let slowSource = """
+    aorus.on('send', function () {
+        var until = Date.now() + 400;
+        while (Date.now() < until) {}
+        return false;
+    });
+    aorus.on('uiAction', function () { aorus.ui.toast('acted'); });
+    """
+    let slow = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Slow hook"),
+        source: slowSource,
+        host: slowHost,
+        permissions: [.outgoingMessages, .dialogs]
+    )
+    let slowStarted = DispatchSemaphore(value: 0)
+    slow.start { error in expect(error == nil, "slow plugin starts"); slowStarted.signal() }
+    _ = slowStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.1)
+    expect(slow.hasOutgoingHooks, "a send handler registers an outgoing hook")
+    let verdict = slow.processOutgoing(text: "hello", peerId: 1, accountId: 1, timeout: 0.05)
+    expect(verdict.timedOut, "a handler over its budget reports a timeout")
+    expect(slow.isHung, "a timed-out plugin is cooling down")
+    expect(!slow.hasOutgoingHooks, "a cooling plugin is skipped by the send path")
+    slow.dispatch(event: "uiAction", payload: ["pageId": "p", "rowId": "r"])
+    Thread.sleep(forTimeInterval: 0.6)
+    expect(slowActions == 1, "events are still delivered while the outgoing hook is cooling down")
+    expect(slow.registration().commands.isEmpty, "a send handler is not a command")
+    slow.stop()
 }
 
 if failures == 0 {

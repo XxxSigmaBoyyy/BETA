@@ -53,6 +53,7 @@ enum AorusL10nTable {
     ]
 
     private static let it: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Ancora niente. Qui appare tutto ciò che il plugin scrive con console e tutto ciò che l'app segnala su di esso.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Il codice è cambiato, quindi il plugin è stato disattivato e le sue autorizzazioni revocate.",
         "Running": "In esecuzione",
         "Stopped": "Fermo",
@@ -782,6 +783,7 @@ enum AorusL10nTable {
     ]
 
     private static let pl: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Na razie pusto. Pojawi się tu wszystko, co wtyczka pisze przez console, i wszystko, co aplikacja o niej zgłasza.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod się zmienił, więc wtyczka została wyłączona, a przyznane uprawnienia cofnięte.",
         "Running": "Działa",
         "Stopped": "Zatrzymana",
@@ -1511,6 +1513,7 @@ enum AorusL10nTable {
     ]
 
     private static let nl: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Nog niets. Hier verschijnt alles wat de plug-in via console schrijft en alles wat de app erover meldt.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "De code is gewijzigd, dus de plug-in is uitgeschakeld en de verleende machtigingen zijn ingetrokken.",
         "Running": "Actief",
         "Stopped": "Gestopt",
@@ -2240,6 +2243,7 @@ enum AorusL10nTable {
     ]
 
     private static let ca: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Encara no hi ha res. Aquí apareix tot el que el complement escriu amb console i tot el que l'app n'informa.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "El codi ha canviat, així que el complement s'ha desactivat i els permisos concedits s'han revocat.",
         "Running": "En execució",
         "Stopped": "Aturat",
@@ -2969,6 +2973,7 @@ enum AorusL10nTable {
     ]
 
     private static let id: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Belum ada apa pun. Semua yang ditulis plugin lewat console dan semua yang dilaporkan aplikasi tentangnya muncul di sini.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kode berubah, jadi plugin dimatikan dan izin yang diberikan dicabut.",
         "Running": "Berjalan",
         "Stopped": "Berhenti",
@@ -3698,6 +3703,7 @@ enum AorusL10nTable {
     ]
 
     private static let ms: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Belum ada apa-apa. Semua yang ditulis pemalam melalui console dan semua yang dilaporkan aplikasi tentangnya muncul di sini.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod telah berubah, jadi pemalam dimatikan dan kebenaran yang diberikan ditarik balik.",
         "Running": "Berjalan",
         "Stopped": "Dihentikan",
@@ -4427,6 +4433,7 @@ enum AorusL10nTable {
     ]
 
     private static let be: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Пакуль пуста. Тут з'явіцца ўсё, што ўбудова піша праз console, і ўсё, што праграма паведамляе пра яе.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код змяніўся, таму ўбудова выключана, а выдадзеныя дазволы адкліканыя.",
         "Running": "Працуе",
         "Stopped": "Спынена",
@@ -5156,6 +5163,7 @@ enum AorusL10nTable {
     ]
 
     private static let uz: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Hozircha bo'sh. Plagin console orqali yozgan va ilova u haqida xabar qilgan hamma narsa shu yerda ko'rinadi.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod o'zgardi, shuning uchun plagin o'chirildi va berilgan ruxsatlar bekor qilindi.",
         "Running": "Ishlayapti",
         "Stopped": "To'xtatilgan",
@@ -5885,6 +5893,7 @@ enum AorusL10nTable {
     ]
 
     private static let ko: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "아직 아무것도 없습니다. 플러그인이 console로 남기는 모든 것과 앱이 플러그인에 대해 알리는 모든 것이 여기에 나타납니다.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "코드가 바뀌어 플러그인이 꺼지고 부여된 권한이 취소되었습니다.",
         "Running": "실행 중",
         "Stopped": "중지됨",
@@ -6614,6 +6623,7 @@ enum AorusL10nTable {
     ]
 
     private static let ar: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "لا شيء بعد. يظهر هنا كل ما تكتبه الإضافة عبر console وكل ما يبلّغ عنه التطبيق بشأنها.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "تغيّر الكود، لذلك أُوقفت الإضافة وسُحبت الأذونات الممنوحة لها.",
         "Running": "قيد التشغيل",
         "Stopped": "متوقفة",
@@ -7343,6 +7353,7 @@ enum AorusL10nTable {
     ]
 
     private static let fa: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "هنوز چیزی نیست. هر چه افزونه با console می‌نویسد و هر چه برنامه درباره آن گزارش می‌دهد اینجا دیده می‌شود.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "کد تغییر کرد، بنابراین افزونه خاموش شد و دسترسی‌های داده‌شده لغو شدند.",
         "Running": "در حال اجرا",
         "Stopped": "متوقف",
@@ -8072,6 +8083,7 @@ enum AorusL10nTable {
     ]
 
     private static let kk: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Әзірге бос. Плагин console арқылы жазатынның бәрі және қолданба ол туралы хабарлайтынның бәрі осында шығады.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код өзгерді, сондықтан плагин өшірілді және берілген рұқсаттар қайтарып алынды.",
         "Running": "Жұмыс істеп тұр",
         "Stopped": "Тоқтатылған",
@@ -8801,6 +8813,7 @@ enum AorusL10nTable {
     ]
 
     private static let zhHans: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "还没有内容。插件通过 console 写下的一切，以及应用关于它的一切报告，都会出现在这里。",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "代码已更改，因此插件已关闭，已授予的权限也被收回。",
         "Running": "运行中",
         "Stopped": "已停止",
@@ -9531,6 +9544,7 @@ enum AorusL10nTable {
 
 
     private static let zhHant: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "還沒有內容。外掛程式透過 console 寫下的一切，以及應用程式關於它的一切回報，都會出現在這裡。",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "程式碼已變更，因此外掛程式已關閉，已授予的權限也被收回。",
         "Running": "執行中",
         "Stopped": "已停止",
@@ -10260,6 +10274,7 @@ enum AorusL10nTable {
     ]
 
     private static let ja: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "まだ何もありません。プラグインが console に書いたものと、アプリがそれについて報告したものがここに表示されます。",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "コードが変わったため、プラグインは停止され、与えられていた権限は取り消されました。",
         "Running": "実行中",
         "Stopped": "停止中",
@@ -10989,6 +11004,7 @@ enum AorusL10nTable {
     ]
 
     private static let fi: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Ei vielä mitään. Tähän tulee kaikki, mitä laajennus kirjoittaa consolella, ja kaikki, mitä sovellus siitä raportoi.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koodi muuttui, joten laajennus kytkettiin pois ja sille myönnetyt oikeudet peruttiin.",
         "Running": "Käynnissä",
         "Stopped": "Pysäytetty",
@@ -11718,6 +11734,7 @@ enum AorusL10nTable {
     ]
 
     private static let he: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "עדיין אין כלום. כאן יופיע כל מה שהתוסף כותב דרך console וכל מה שהאפליקציה מדווחת עליו.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "הקוד השתנה, ולכן התוסף כובה וההרשאות שניתנו לו בוטלו.",
         "Running": "פועל",
         "Stopped": "מופסק",
@@ -12447,6 +12464,7 @@ enum AorusL10nTable {
     ]
 
     private static let hr: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Još ništa. Ovdje se pojavljuje sve što dodatak piše putem console i sve što aplikacija o njemu javlja.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod se promijenio, pa je dodatak isključen, a dodijeljena dopuštenja opozvana.",
         "Running": "Radi",
         "Stopped": "Zaustavljen",
@@ -13176,6 +13194,7 @@ enum AorusL10nTable {
     ]
 
     private static let sr: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Још ништа. Овде се појављује све што додатак пише преко console и све што апликација о њему пријављује.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код се променио, па је додатак искључен, а додељене дозволе опозване.",
         "Running": "Ради",
         "Stopped": "Заустављен",
@@ -13905,6 +13924,7 @@ enum AorusL10nTable {
     ]
 
     private static let cs: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Zatím nic. Objeví se tu vše, co plugin píše přes console, a vše, co o něm hlásí aplikace.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kód se změnil, plugin byl proto vypnut a udělená oprávnění odebrána.",
         "Running": "Běží",
         "Stopped": "Zastaven",
@@ -14634,6 +14654,7 @@ enum AorusL10nTable {
     ]
 
     private static let sk: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Zatiaľ nič. Objaví sa tu všetko, čo doplnok píše cez console, a všetko, čo o ňom hlási aplikácia.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kód sa zmenil, doplnok bol preto vypnutý a udelené povolenia odobrané.",
         "Running": "Beží",
         "Stopped": "Zastavený",
@@ -15363,6 +15384,7 @@ enum AorusL10nTable {
     ]
 
     private static let ro: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Încă nimic. Aici apare tot ce scrie pluginul prin console și tot ce raportează aplicația despre el.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Codul s-a schimbat, așa că pluginul a fost oprit, iar permisiunile acordate au fost retrase.",
         "Running": "În execuție",
         "Stopped": "Oprit",
@@ -16092,6 +16114,7 @@ enum AorusL10nTable {
     ]
 
     private static let hu: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Még semmi. Itt jelenik meg minden, amit a bővítmény a console-lal ír, és minden, amit az alkalmazás jelent róla.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "A kód megváltozott, ezért a bővítmény kikapcsolt, és a megadott engedélyeket visszavontuk.",
         "Running": "Fut",
         "Stopped": "Leállítva",
@@ -16821,6 +16844,7 @@ enum AorusL10nTable {
     ]
 
     private static let nb: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Ingenting ennå. Her vises alt programtillegget skriver via console, og alt appen melder om det.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koden er endret, så programtillegget ble slått av og tillatelsene det hadde ble trukket tilbake.",
         "Running": "Kjører",
         "Stopped": "Stoppet",
@@ -17550,6 +17574,7 @@ enum AorusL10nTable {
     ]
 
     private static let sv: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Inget än. Här visas allt som tillägget skriver via console och allt som appen rapporterar om det.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Koden ändrades, så tillägget stängdes av och behörigheterna det hade återkallades.",
         "Running": "Körs",
         "Stopped": "Stoppat",
@@ -18279,6 +18304,7 @@ enum AorusL10nTable {
     ]
 
     private static let vi: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Chưa có gì. Mọi thứ tiện ích ghi qua console và mọi thứ ứng dụng báo về nó sẽ xuất hiện ở đây.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Mã đã thay đổi nên tiện ích bị tắt và các quyền đã cấp bị thu hồi.",
         "Running": "Đang chạy",
         "Stopped": "Đã dừng",
@@ -19008,6 +19034,7 @@ enum AorusL10nTable {
     ]
 
     private static let uk: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Поки порожньо. Тут з'явиться все, що плагін пише через console, і все, що застосунок повідомляє про нього.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Код змінився, тому плагін вимкнено, а видані дозволи відкликано.",
         "Running": "Працює",
         "Stopped": "Зупинено",
@@ -19746,6 +19773,7 @@ enum AorusL10nTable {
     ]
 
     private static let es: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Aún no hay nada. Aquí aparece todo lo que el complemento escribe con console y todo lo que la app informa sobre él.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "El código cambió, así que el complemento se desactivó y se revocaron sus permisos.",
         "Running": "Activo",
         "Stopped": "Detenido",
@@ -20484,6 +20512,7 @@ enum AorusL10nTable {
     ]
 
     private static let pt: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Ainda não há nada. Aqui aparece tudo o que o plugin escreve pelo console e tudo o que o app informa sobre ele.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "O código mudou, então o plugin foi desativado e as permissões dele foram revogadas.",
         "Running": "Em execução",
         "Stopped": "Parado",
@@ -21222,6 +21251,7 @@ enum AorusL10nTable {
     ]
 
     private static let de: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Noch nichts. Hier erscheint alles, was die Erweiterung über console schreibt, und alles, was die App über sie meldet.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Der Code hat sich geändert, deshalb wurde die Erweiterung abgeschaltet und ihre Berechtigungen entzogen.",
         "Running": "Läuft",
         "Stopped": "Gestoppt",
@@ -21960,6 +21990,7 @@ enum AorusL10nTable {
     ]
 
     private static let fr: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Rien pour l'instant. Tout ce que l'extension écrit via console, et tout ce que l'app en rapporte, apparaît ici.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Le code a changé, l'extension a donc été désactivée et ses autorisations révoquées.",
         "Running": "En cours",
         "Stopped": "Arrêtée",
@@ -22698,6 +22729,7 @@ enum AorusL10nTable {
     ]
 
     private static let tr: [String: String] = [
+        "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.": "Henüz bir şey yok. Eklentinin console ile yazdığı ve uygulamanın onun hakkında bildirdiği her şey burada görünür.",
         "The code changed, so the plugin was switched off and the permissions it had were revoked.": "Kod değişti, bu yüzden eklenti kapatıldı ve verilen izinler geri alındı.",
         "Running": "Çalışıyor",
         "Stopped": "Durduruldu",

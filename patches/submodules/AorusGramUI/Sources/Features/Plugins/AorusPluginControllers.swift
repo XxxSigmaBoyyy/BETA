@@ -24,7 +24,7 @@ private enum AorusPluginUIString {
     case name, description, version, author, icon, accent, reviewPermissions, grantAndEnable, noPermissions, syntaxReady
     case status, running, stopped, failed, diagnostics, commands, events, noCommands
     case isolation, available, unavailable, granted, outgoingHook, active, inactive, customColor
-    case sourceChangedDisabled
+    case sourceChangedDisabled, consoleEmpty
 
     var text: String {
         switch self {
@@ -74,6 +74,7 @@ private enum AorusPluginUIString {
         case .inactive: return aorusL("Неактивен", "Inactive")
         case .customColor: return aorusL("Свой цвет", "Custom color")
         case .sourceChangedDisabled: return aorusL("Код изменился, поэтому плагин выключен, а выданные разрешения отозваны.", "The code changed, so the plugin was switched off and the permissions it had were revoked.")
+        case .consoleEmpty: return aorusL("Пока пусто. Здесь появится всё, что плагин пишет через console, и всё, что приложение сообщает о нём.", "Nothing yet. Everything the plugin writes through console, and everything the app reports about it, appears here.")
         }
     }
 }
@@ -312,13 +313,14 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
     private enum Screen {
         case appearance
         case editor
+        case console
         case settings
         case permissions
         case documentation
     }
 
     private var screens: [Screen] {
-        var result: [Screen] = [.appearance, .editor]
+        var result: [Screen] = [.appearance, .editor, .console]
         if !AorusPluginRuntimeManager.shared.settingsSchema(id: record.manifest.id).isEmpty {
             result.append(.settings)
         }
@@ -330,6 +332,7 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
         switch screen {
         case .appearance: return AorusPluginUIString.configure.text
         case .editor: return AorusPluginUIString.editCode.text
+        case .console: return AorusPluginUIString.console.text
         case .settings: return AorusPluginUIString.settings.text
         case .permissions: return AorusPluginUIString.permissions.text
         case .documentation: return AorusPluginUIString.documentation.text
@@ -373,6 +376,7 @@ private final class AorusPluginDetailController: ViewController, UITableViewData
             switch screens[indexPath.row] {
             case .appearance: (navigationController as? NavigationController)?.pushViewController(AorusPluginMetadataController(context: context, record: record))
             case .editor: (navigationController as? NavigationController)?.pushViewController(AorusPluginEditorController(context: context, record: record))
+            case .console: (navigationController as? NavigationController)?.pushViewController(AorusPluginConsoleController(context: context, record: record))
             case .settings: (navigationController as? NavigationController)?.pushViewController(AorusPluginSettingsController(context: context, record: record))
             case .permissions: (navigationController as? NavigationController)?.pushViewController(AorusPluginPermissionsController(context: context, record: record))
             case .documentation: (navigationController as? NavigationController)?.pushViewController(AorusPluginDocsController(context: context))
@@ -2180,6 +2184,129 @@ private final class AorusPluginDiagnosticsController: ViewController, UITableVie
             ? presentationData.theme.list.itemDestructiveColor
             : presentationData.theme.list.itemSecondaryTextColor
         return cell
+    }
+}
+
+/// The running plugin's console.
+///
+/// The editor has a console too, but that one belongs to the throwaway sandbox behind the
+/// Run button — it shows nothing about the plugin that is actually installed and handling
+/// taps. This one reads the live sandbox: everything the plugin logged, everything the app
+/// logged about it, and it keeps updating while the screen is open.
+private final class AorusPluginConsoleController: ViewController {
+    private let record: AorusPluginRecord
+    private let presentationData: PresentationData
+    private let textView = UITextView()
+    private let emptyLabel = UILabel()
+    private var timer: Timer?
+    private var shownCount = -1
+    private var atBottom = true
+
+    init(context: AccountContext, record: AorusPluginRecord) {
+        self.record = record
+        self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: presentationData, style: .glass))
+        title = AorusPluginUIString.console.text
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "trash"),
+            style: .plain,
+            target: self,
+            action: #selector(clearLog)
+        )
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit { timer?.invalidate() }
+
+    override func loadDisplayNode() {
+        displayNode = ViewControllerTracingNode()
+        let dark = presentationData.theme.overallDarkAppearance
+        displayNode.backgroundColor = dark ? UIColor(red: 0.055, green: 0.059, blue: 0.071, alpha: 1.0) : UIColor(red: 0.96, green: 0.97, blue: 0.98, alpha: 1.0)
+        textView.backgroundColor = .clear
+        textView.isEditable = false
+        textView.alwaysBounceVertical = true
+        textView.font = .monospacedSystemFont(ofSize: 12.0, weight: .regular)
+        textView.textContainerInset = UIEdgeInsets(top: 14.0, left: 14.0, bottom: 24.0, right: 14.0)
+        textView.delegate = self
+        emptyLabel.text = AorusPluginUIString.consoleEmpty.text
+        emptyLabel.textAlignment = .center
+        emptyLabel.numberOfLines = 0
+        emptyLabel.font = .systemFont(ofSize: 15.0)
+        emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
+        displayNode.view.addSubview(textView)
+        displayNode.view.addSubview(emptyLabel)
+        refresh()
+        // A log is only useful while it is still happening. Half a second is below the rate
+        // at which anyone reads and far above the cost of reading an array under a lock.
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        displayNodeDidLoad()
+    }
+
+    override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        super.containerLayoutUpdated(layout, transition: transition)
+        let top = navigationLayout(layout: layout).navigationFrame.maxY
+        let frame = CGRect(x: 0.0, y: top, width: layout.size.width, height: max(0.0, layout.size.height - top))
+        transition.updateFrame(view: textView, frame: frame)
+        emptyLabel.frame = frame.insetBy(dx: 32.0, dy: 0.0)
+        textView.contentInset.bottom = layout.intrinsicInsets.bottom
+    }
+
+    private func refresh() {
+        let entries = AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id)?.recentLog ?? []
+        guard entries.count != shownCount else { return }
+        shownCount = entries.count
+        emptyLabel.isHidden = !entries.isEmpty
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let text = NSMutableAttributedString()
+        for entry in entries {
+            let stamp = NSAttributedString(
+                string: formatter.string(from: entry.date) + "  ",
+                attributes: [
+                    .font: UIFont.monospacedSystemFont(ofSize: 11.0, weight: .regular),
+                    .foregroundColor: presentationData.theme.list.itemSecondaryTextColor
+                ]
+            )
+            let body = NSAttributedString(
+                string: entry.text + "\n",
+                attributes: [
+                    .font: UIFont.monospacedSystemFont(ofSize: 12.0, weight: entry.level == .error ? .semibold : .regular),
+                    .foregroundColor: AorusPluginConsoleController.color(for: entry.level, theme: presentationData.theme)
+                ]
+            )
+            text.append(stamp)
+            text.append(body)
+        }
+        textView.attributedText = text
+        if atBottom, text.length > 0 {
+            textView.scrollRangeToVisible(NSRange(location: text.length - 1, length: 1))
+        }
+    }
+
+    private static func color(for level: AorusPluginLogEntry.Level, theme: PresentationTheme) -> UIColor {
+        switch level {
+        case .error: return .systemRed
+        case .warn: return .systemOrange
+        case .debug: return theme.list.itemSecondaryTextColor
+        case .info: return theme.overallDarkAppearance ? UIColor(red: 0.55, green: 0.95, blue: 0.68, alpha: 1.0) : theme.list.itemPrimaryTextColor
+        }
+    }
+
+    @objc private func clearLog() {
+        AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id)?.clearLog()
+        shownCount = -1
+        refresh()
+    }
+}
+
+extension AorusPluginConsoleController: UITextViewDelegate {
+    /// Stop following the tail once someone scrolls up to read something.
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let distance = scrollView.contentSize.height - scrollView.contentOffset.y - scrollView.bounds.height
+        atBottom = distance < 40.0
     }
 }
 

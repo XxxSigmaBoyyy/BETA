@@ -257,7 +257,11 @@ public final class AorusPluginSandbox {
     private var pendingRequestIds = Set<Int32>()
     private let stateLock = NSLock()
     private var runningFlag = false
-    private var hungFlag = false
+    /// When the plugin is allowed to be asked for an outgoing verdict again. A timeout is
+    /// evidence that this call was slow, not that the plugin is broken for the rest of the
+    /// session — the first entry into a fresh JavaScript context pays for the warm-up, and
+    /// a permanent flag turned one slow millisecond into a plugin that never worked again.
+    private var hungUntil: Date?
     private var lastErrorText: String?
     private var recentEntries: [AorusPluginLogEntry] = []
     private var sendHooks = false
@@ -297,9 +301,11 @@ public final class AorusPluginSandbox {
         return runningFlag
     }
 
+    /// True only while the cooldown from a timed-out call is still running.
     public var isHung: Bool {
         stateLock.lock(); defer { stateLock.unlock() }
-        return hungFlag
+        guard let hungUntil else { return false }
+        return hungUntil > Date()
     }
 
     public var lastError: String? {
@@ -310,8 +316,20 @@ public final class AorusPluginSandbox {
     /// True when the plugin registered a command or a `send` handler, so the chat's send
     /// path knows whether waiting on this plugin can change anything.
     public var hasOutgoingHooks: Bool {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return runningFlag && !hungFlag && permissions.contains(.outgoingMessages) && (sendHooks || commandHooks)
+        stateLock.lock()
+        let running = runningFlag
+        let cooling = (hungUntil ?? .distantPast) > Date()
+        let permitted = permissions.contains(.outgoingMessages)
+        let hooks = sendHooks || commandHooks
+        stateLock.unlock()
+        return running && !cooling && permitted && hooks
+    }
+
+    /// A line written by the app rather than by the plugin: a dispatch, a refusal, a piece
+    /// of lifecycle. It lands in the same log, which is the only place someone can look to
+    /// find out why a button they created did nothing.
+    public func note(_ level: AorusPluginLogEntry.Level, _ text: String) {
+        record(level, text)
     }
 
     public var recentLog: [AorusPluginLogEntry] {
@@ -330,10 +348,13 @@ public final class AorusPluginSandbox {
         return storageValues
     }
 
+    /// How long a plugin sits out after failing to answer the outgoing hook in time.
+    public static let hungCooldown: TimeInterval = 20.0
+
     private func setState(running: Bool? = nil, hung: Bool? = nil, error: String?? = nil) {
         stateLock.lock()
         if let running = running { runningFlag = running }
-        if let hung = hung { hungFlag = hung }
+        if let hung = hung { hungUntil = hung ? Date().addingTimeInterval(AorusPluginSandbox.hungCooldown) : nil }
         if let error = error { lastErrorText = error }
         stateLock.unlock()
     }
@@ -501,7 +522,11 @@ public final class AorusPluginSandbox {
     }
 
     private func deliver(event: String, payload: [String: Any]?) {
-        guard let dispatcher = dispatcher, context != nil, !isHung else { return }
+        // No `isHung` here on purpose. A timeout means one synchronous call was slow; it
+        // says nothing about delivering an event, which nobody is waiting on. Dropping
+        // events for it meant a single slow millisecond left every button the plugin
+        // registered doing nothing, with no way to tell from the outside.
+        guard let dispatcher = dispatcher, context != nil else { return }
         pendingException = nil
         if let payload = payload {
             dispatcher.invokeMethod("dispatch", withArguments: [event, payload])
@@ -517,7 +542,7 @@ public final class AorusPluginSandbox {
             let previous = self.settingsValues
             self.settingsValues = values
             self.stateLock.unlock()
-            guard let dispatcher = self.dispatcher, self.context != nil, !self.isHung else { return }
+            guard let dispatcher = self.dispatcher, self.context != nil else { return }
             let json = String(decoding: AorusPluginJSONValue.object(values).serialized(), as: UTF8.self)
             dispatcher.invokeMethod("settingsChanged", withArguments: [json])
             for (key, value) in values where previous[key] != value {
@@ -561,8 +586,8 @@ public final class AorusPluginSandbox {
             box.lock.lock()
             box.abandoned = true
             box.lock.unlock()
-            setState(hung: true, error: .some("The plugin did not answer within \(Int(timeout * 1000)) ms and was stopped"))
-            record(.error, "Outgoing hook did not finish within \(Int(timeout * 1000)) ms; the plugin is marked as hung")
+            setState(hung: true)
+            record(.warn, "The outgoing hook did not answer within \(Int(timeout * 1000)) ms; this plugin is skipped for the next \(Int(AorusPluginSandbox.hungCooldown)) seconds and then tried again")
             return AorusPluginOutgoingVerdict(consumed: false, replacement: nil, timedOut: true)
         }
         box.lock.lock(); defer { box.lock.unlock() }
@@ -594,7 +619,9 @@ public final class AorusPluginSandbox {
         let semaphore = DispatchSemaphore(value: 0)
         queue.async {
             var value = Registration()
-            if let dispatcher = self.dispatcher, self.context != nil, !self.isHung {
+            // Read even during a cooldown: this is what the diagnostics screen shows, and
+            // hiding the commands there is the opposite of what it is for.
+            if let dispatcher = self.dispatcher, self.context != nil {
                 self.pendingException = nil
                 if let prefix = dispatcher.invokeMethod("commandPrefix", withArguments: []), prefix.isString {
                     value.prefix = prefix.toString()

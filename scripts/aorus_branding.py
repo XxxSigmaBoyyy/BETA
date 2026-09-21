@@ -1066,7 +1066,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "    var __aorusIdsToDelete: [MessageId] = []\n"
                 "    for id in ids {\n"
-                "        guard __aorusPreserve, !aorusUserInitiatedDelete, let currentMessage = transaction.getMessage(id), currentMessage.flags.contains(.Incoming), ((transaction.getPeer(id.peerId) as? TelegramUser)?.botInfo == nil) else {\n"
+                "        guard __aorusPreserve, !aorusUserInitiatedDelete, !aorusInternalMessageMaintenance, let currentMessage = transaction.getMessage(id), currentMessage.flags.contains(.Incoming), ((transaction.getPeer(id.peerId) as? TelegramUser)?.botInfo == nil) else {\n"
                 "            __aorusIdsToDelete.append(id)\n"
                 "            continue\n"
                 "        }\n"
@@ -1111,7 +1111,13 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                         "import TelegramApi\n\n"
                         "// AorusGram: true only during a user-initiated delete; gates the\n"
                         "// preserve-incoming behaviour so the user's own deletes run at once.\n"
-                        "var aorusUserInitiatedDelete = false\n",
+                        "var aorusUserInitiatedDelete = false\n"
+                        "// AorusGram: true while TelegramCore removes a row for its own\n"
+                        "// bookkeeping rather than because anyone deleted anything — a local\n"
+                        "// pending copy being replaced by the server's, a self-destruct timer,\n"
+                        "// a history range being re-validated. Those are not deletions, and\n"
+                        "// marking them left messages nobody deleted showing as deleted.\n"
+                        "var aorusInternalMessageMaintenance = false\n",
                         1)
                 # Inject hook AND swap the `ids` argument for our filtered list so
                 # only non-preserved (outgoing / unknown) messages actually delete.
@@ -17735,6 +17741,112 @@ def patch_plugin_outgoing_messages(tg: Path) -> None:
     print("Plugins: outgoing command/send hook installed")
 
 
+def patch_internal_delete_maintenance(tg: Path) -> None:
+    """Stop marking a message as deleted when nothing was deleted.
+
+    `_internal_deleteMessages` is TelegramCore's one remove-a-row primitive, and it is
+    called for several things that are not a deletion: the local pending copy of a message
+    being dropped once the server's own copy arrives, a self-destruct timer expiring, and a
+    history range being re-validated against the server. The preserve hook sat on that
+    primitive and could not tell those apart from someone actually deleting a message, so a
+    photo that had only just finished sending — the case where a local row is replaced by
+    the server's — came back wearing the deleted marker.
+
+    Each of those call sites is bracketed with a flag the hook checks. The genuine path,
+    where an update says messages were deleted, is left alone.
+    """
+    sites = [
+        (
+            "submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift",
+            "        _internal_deleteMessages(transaction: transaction, mediaBox: account.postbox.mediaBox, ids: removeMessageIds, deleteMedia: false)\n",
+            "        ",
+            "the local copy is replaced by the server's",
+        ),
+        (
+            "submodules/TelegramCore/Sources/State/ManagedAutoremoveMessageOperations.swift",
+            "                            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [entry.messageId])\n",
+            "                            ",
+            "a self-destruct timer expired",
+        ),
+        (
+            "submodules/TelegramCore/Sources/State/HistoryViewStateValidation.swift",
+            "                                    _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])\n",
+            "                                    ",
+            "a history range is being re-validated",
+        ),
+        (
+            "submodules/TelegramCore/Sources/State/HistoryViewStateValidation.swift",
+            "                            _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: [id])\n",
+            "                            ",
+            "a thread range is being re-validated",
+        ),
+    ]
+    applied = 0
+    for relative, call, indent, reason in sites:
+        path = tg / relative
+        if not path.is_file():
+            print(f"InternalDelete: {relative} not found, skip")
+            continue
+        source = path.read_text(encoding="utf-8")
+        if call not in source:
+            print(f"InternalDelete: anchor not found in {relative} ({reason})")
+            continue
+        guarded = (
+            indent + "// AorusGram: not a deletion - " + reason + ".\n"
+            + indent + "aorusInternalMessageMaintenance = true\n"
+            + call
+            + indent + "aorusInternalMessageMaintenance = false\n"
+        )
+        source = source.replace(call, guarded, 1)
+        path.write_text(source, encoding="utf-8")
+        applied += 1
+    print(f"InternalDelete: bracketed {applied} maintenance deletes")
+
+
+def patch_plugin_settings_rows(tg: Path) -> None:
+    """Put the shortcuts plugins register into Telegram's own settings list.
+
+    They were only reachable from the AorusGram screen, which means a plugin could not put
+    anything where people actually look for settings. The rows sit directly under the
+    AorusGram entries, carry the plugin's own glyph and colour, and are built from plain
+    data handed across by `aorusPluginSettingsEntries()` — the settings screen is in another
+    module and cannot see anything of ours.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift"
+    if not path.is_file():
+        print("PluginSettingsRows: PeerInfoSettingsItems.swift not found, skip")
+        return
+    source = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram plugins: shortcuts registered by running plugins"
+    if sentinel in source:
+        print("PluginSettingsRows: already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        if "import AccountContext\n" in source:
+            source = source.replace("import AccountContext\n", "import AccountContext\nimport AorusGramUI\n", 1)
+        else:
+            source = "import AorusGramUI\n" + source
+    anchor = (
+        "    items[.support]!.append(PeerInfoScreenDisclosureItem(id: 0, text: presentationData.strings.Settings_Support,"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("PluginSettingsRows: support anchor not found")
+    injection = (
+        "    " + sentinel + "\n"
+        "    for (aorusPluginIndex, aorusPluginEntry) in aorusPluginSettingsEntries().enumerated() {\n"
+        "        items[.aorusGram]!.append(PeerInfoScreenDisclosureItem(\n"
+        "            id: 100 + aorusPluginIndex,\n"
+        "            label: aorusPluginEntry.subtitle.isEmpty ? .none : .text(aorusPluginEntry.subtitle),\n"
+        "            text: aorusPluginEntry.title,\n"
+        "            icon: aorusPluginEntry.image,\n"
+        "            action: { aorusPluginEntry.open() }\n"
+        "        ))\n"
+        "    }\n"
+    )
+    path.write_text(source.replace(anchor, injection + anchor, 1), encoding="utf-8")
+    print("PluginSettingsRows: plugin shortcuts added to Telegram settings")
+
+
 def patch_plugin_context_menu(tg: Path) -> None:
     """Append bounded declarative plugin actions to the native message menu."""
     path = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
@@ -26349,6 +26461,8 @@ def main() -> None:
     patch_plugin_runtime(tg)
     patch_plugin_outgoing_messages(tg)
     patch_plugin_context_menu(tg)
+    patch_plugin_settings_rows(tg)
+    patch_internal_delete_maintenance(tg)
     patch_hide_tabs(tg)
     patch_tab_bar_visibility_controls(tg)
     patch_wall_tab(tg)

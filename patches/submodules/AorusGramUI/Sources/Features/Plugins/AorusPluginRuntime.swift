@@ -9,6 +9,49 @@ import ContextUI
 import QuickLook
 import AorusGram
 
+/// The entitlement verdict for the plugin runtime, read once and re-read only when it can
+/// have changed.
+///
+/// `AorusPluginEntitlement.isAllowed` walks the licence stack: two UserDefaults reads, the
+/// session counter and a signed offline snapshot. That is the right check, and it was being
+/// made on *every* call a plugin makes across the boundary — every `console.log`, every
+/// storage write, every timer tick. It is a disk-backed read in the hot path of a scripting
+/// runtime, and the answer cannot change between two lines of the same script.
+///
+/// So it is answered from a cache with a short life. A lapse is noticed within a second,
+/// which is the same guarantee the rest of the app gives, and nothing pays for it per call.
+enum AorusPluginEntitlement {
+    private static let lock = NSLock()
+    private static var cached: Bool = false
+    private static var checkedAt: Date = .distantPast
+
+    static var isAllowed: Bool {
+        lock.lock()
+        let now = Date()
+        if now.timeIntervalSince(checkedAt) < 1.0 {
+            let value = cached
+            lock.unlock()
+            return value
+        }
+        lock.unlock()
+        let value = AorusLicenseAccess.isAllowed
+        lock.lock()
+        cached = value
+        checkedAt = now
+        lock.unlock()
+        return value
+    }
+
+    /// Forget the cached answer. Called when the app comes back to the foreground and when
+    /// the licence state is published, so a change is seen at once rather than within the
+    /// window above.
+    static func invalidate() {
+        lock.lock()
+        checkedAt = .distantPast
+        lock.unlock()
+    }
+}
+
 public final class AorusPluginRuntimeManager {
     public static let shared = AorusPluginRuntimeManager()
 
@@ -51,7 +94,7 @@ public final class AorusPluginRuntimeManager {
 
     public func reloadAutostart() {
         guard let host = currentHost() else { return }
-        guard AorusLicenseAccess.isAllowed else {
+        guard AorusPluginEntitlement.isAllowed else {
             stopAll()
             return
         }
@@ -140,7 +183,7 @@ public final class AorusPluginRuntimeManager {
     }
 
     public func processOutgoing(text: String, peerId: Int64, accountId: Int64) -> AorusPluginOutgoingVerdict {
-        guard AorusLicenseAccess.isAllowed else { return .passThrough }
+        guard AorusPluginEntitlement.isAllowed else { return .passThrough }
         lock.lock()
         let active = Array(sandboxes.values)
         lock.unlock()
@@ -205,18 +248,27 @@ public final class AorusPluginRuntimeManager {
         }
     }
 
+    /// Every tap on something a plugin put on screen goes through one of these two, and
+    /// both write a line to the plugin's log. A button that does nothing is the hardest
+    /// thing to debug from the outside, and the log is where the answer belongs: either the
+    /// event was delivered and the plugin ignored it, or the plugin was not running to
+    /// receive it.
     public func dispatchUIAction(pluginId: String, pageId: String, rowId: String, value: AorusPluginJSONValue?) {
         lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
         var payload: [String: Any] = ["pageId": pageId, "rowId": rowId]
         if let value { payload["value"] = value.anyValue }
-        sandbox?.dispatch(event: "uiAction", payload: payload)
+        guard let sandbox else { return }
+        sandbox.note(.debug, "uiAction \(pageId)/\(rowId)")
+        sandbox.dispatch(event: "uiAction", payload: payload)
     }
 
     public func dispatchContextAction(pluginId: String, actionId: String, payload: [String: Any]) {
         lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
         var value = payload
         value["actionId"] = actionId
-        sandbox?.dispatch(event: "contextAction", payload: value)
+        guard let sandbox else { return }
+        sandbox.note(.debug, "contextAction \(actionId)")
+        sandbox.dispatch(event: "contextAction", payload: value)
     }
 
     fileprivate func setSchema(_ fields: [AorusPluginSettingField], id: String) {
@@ -263,7 +315,7 @@ public final class AorusPluginRuntimeManager {
     }
 
     fileprivate func isPermissionGranted(_ permission: AorusPluginPermission, pluginId: String) -> Bool {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               let record = AorusPluginStore.shared.load(id: pluginId), record.manifest.isEnabled else { return false }
         let state = AorusPluginStore.shared.permissionState(for: pluginId)
         return state.sourceDigest == AorusPluginStore.sourceDigest(record.source) && state.granted.contains(permission)
@@ -288,8 +340,11 @@ public final class AorusPluginRuntimeManager {
         // once, at the moment a script would start executing. The settings screen already
         // routes a locked licence to the subscription flow; this covers autostart, which
         // runs before anyone opens a screen at all.
-        guard AorusLicenseAccess.isAllowed else {
-            completion?(.notRunning)
+        // The one place a plugin can start. A refusal here used to be silent — the switch
+        // stayed on, the card said nothing, and every command the plugin registered simply
+        // never existed. It names itself now, and the card shows it.
+        guard AorusPluginEntitlement.isAllowed else {
+            completion?(.runtime(message: "AorusGram subscription is not active, so plugins do not run", line: nil))
             return
         }
         let sandbox = AorusPluginSandbox(
@@ -330,8 +385,15 @@ public final class AorusPluginRuntimeManager {
         observers.append(center.addObserver(forName: AorusPluginStore.changedNotification, object: nil, queue: nil) { [weak self] _ in
             self?.reloadAutostart()
         })
-        observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.licenseLockChanged"), object: nil, queue: nil) { [weak self] _ in
+        // On the main queue on purpose: the licence notification is posted from wherever
+        // the gate happens to be, including during launch, and this handler starts and
+        // stops plugins.
+        observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.licenseLockChanged"), object: nil, queue: .main) { [weak self] _ in
+            AorusPluginEntitlement.invalidate()
             self?.reloadAutostart()
+        })
+        observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            AorusPluginEntitlement.invalidate()
         })
         observers.append(center.addObserver(forName: NSNotification.Name("aorusgram.didReceiveMessage"), object: nil, queue: nil) { [weak self] note in
             guard let self, let info = note.userInfo,
@@ -414,7 +476,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         self.manager = manager
     }
 
-    var pluginExecutionAllowed: Bool { AorusLicenseAccess.isAllowed }
+    var pluginExecutionAllowed: Bool { AorusPluginEntitlement.isAllowed }
 
     func clearPluginState(_ pluginId: String) {
         aiLock.lock()
@@ -577,7 +639,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], threadId: String?, event onEvent: @escaping ([String: Any]) -> Void, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.artificialIntelligence, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("AorusAI is unavailable")))
             return
@@ -704,7 +766,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.artificialIntelligence, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("AorusAI is unavailable")))
             return
@@ -733,13 +795,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginAppFeatures(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("App customization is unavailable")))
             return
         }
         DispatchQueue.main.async {
-            guard AorusLicenseAccess.isAllowed else {
+            guard AorusPluginEntitlement.isAllowed else {
                 completion(.failure(AorusPluginRequestError("App customization is unavailable")))
                 return
             }
@@ -748,13 +810,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginSetAppFeature(_ pluginId: String, featureId: String, value: Any, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("App customization is unavailable")))
             return
         }
         DispatchQueue.main.async {
-            guard AorusLicenseAccess.isAllowed else {
+            guard AorusPluginEntitlement.isAllowed else {
                 completion(.failure(AorusPluginRequestError("App customization is unavailable")))
                 return
             }
@@ -763,7 +825,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
             return
@@ -772,7 +834,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginSetProxyPreference(_ pluginId: String, key: String, value: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
             return
@@ -790,13 +852,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginRefreshProxy(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.connectionControl, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
             return
         }
         AorusProxyManager.shared.refresh(force: true) { _ in
-            guard AorusLicenseAccess.isAllowed else {
+            guard AorusPluginEntitlement.isAllowed else {
                 completion(.failure(AorusPluginRequestError("Connection control is unavailable")))
                 return
             }
@@ -805,7 +867,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginTelegramProxyStatus(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
             return
@@ -906,13 +968,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     private func guardTelegramProxyMutation(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void, update: @escaping (ProxySettings) -> Result<ProxySettings, Error>) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
             return
         }
         readTelegramProxySettings { current in
-            guard AorusLicenseAccess.isAllowed,
+            guard AorusPluginEntitlement.isAllowed,
                   self.manager?.isPermissionGranted(.telegramProxy, pluginId: pluginId) == true else {
                 completion(.failure(AorusPluginRequestError("Telegram proxy permission is not granted")))
                 return
@@ -1070,14 +1132,14 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     private func withPluginMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void, action: @escaping (MessageId) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Manage messages permission is not granted")))
             return
         }
         let id = MessageId(peerId: PeerId(peerId), namespace: namespace, id: messageId)
         let _ = (context.account.postbox.transaction { transaction in transaction.getMessage(id) != nil } |> take(1)).start(next: { exists in
-            guard exists, AorusLicenseAccess.isAllowed,
+            guard exists, AorusPluginEntitlement.isAllowed,
                   self.manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
                 completion(.failure(AorusPluginRequestError(exists ? "Manage messages permission is not granted" : "Message is not available")))
                 return
@@ -1211,7 +1273,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginAccounts(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
             return
@@ -1235,13 +1297,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     }
 
     func pluginSwitchAccount(_ pluginId: String, accountId: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
-        guard AorusLicenseAccess.isAllowed,
+        guard AorusPluginEntitlement.isAllowed,
               manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
             return
         }
         let _ = (context.sharedContext.activeAccountsWithInfo |> take(1) |> deliverOnMainQueue).start(next: { [weak self] value in
-            guard let self, AorusLicenseAccess.isAllowed,
+            guard let self, AorusPluginEntitlement.isAllowed,
                   self.manager?.isPermissionGranted(.accountSwitching, pluginId: pluginId) == true else {
                 completion(.failure(AorusPluginRequestError("Account switching permission is not granted")))
                 return
@@ -1719,6 +1781,63 @@ private enum AorusPluginProxyBroker {
 }
 
 /// The selected message is provided only when the native menu represents one message.
+/// A shortcut a plugin registered, ready to be drawn as a row in Telegram's own settings
+/// list. The row is built by the settings screen, which lives in another module and cannot
+/// see anything of ours, so everything it needs — including the rendered icon — comes
+/// across as plain data and one closure.
+public struct AorusPluginSettingsEntry {
+    public let title: String
+    public let subtitle: String
+    public let image: UIImage?
+    public let open: () -> Void
+}
+
+/// Every shortcut every running plugin has registered, in a stable order.
+public func aorusPluginSettingsEntries() -> [AorusPluginSettingsEntry] {
+    return AorusPluginRuntimeManager.shared.pluginSettingsShortcuts().map { item in
+        let manifest = AorusPluginStore.shared.manifest(id: item.pluginId)
+        let accent = aorusPluginEntryColor(manifest?.accent ?? AorusPluginAccent.fallback)
+        let symbol = item.shortcut.icon ?? manifest?.icon ?? AorusPluginIcon.fallback
+        return AorusPluginSettingsEntry(
+            title: item.shortcut.title,
+            subtitle: item.shortcut.subtitle ?? "",
+            image: aorusPluginSettingsRowIcon(symbol, color: accent),
+            open: {
+                AorusPluginRuntimeManager.shared.performSettingsShortcut(pluginId: item.pluginId, id: item.shortcut.id)
+            }
+        )
+    }
+}
+
+/// The 30pt rounded tile Telegram draws next to every settings row, with the plugin's own
+/// glyph and colour. Built here so the settings screen only has to place it.
+private func aorusPluginSettingsRowIcon(_ symbol: String, color: UIColor) -> UIImage? {
+    let side = CGSize(width: 30.0, height: 30.0)
+    let configuration = UIImage.SymbolConfiguration(pointSize: 17.0, weight: .medium)
+    let glyph = UIImage(systemName: AorusPluginIcon.normalized(symbol), withConfiguration: configuration)
+    let format = UIGraphicsImageRendererFormat.default()
+    format.opaque = false
+    return UIGraphicsImageRenderer(size: side, format: format).image { context in
+        UIBezierPath(roundedRect: CGRect(origin: .zero, size: side), cornerRadius: 8.0).addClip()
+        context.cgContext.setFillColor(color.cgColor)
+        context.cgContext.fill(CGRect(origin: .zero, size: side))
+        guard let glyph else { return }
+        let size = glyph.size
+        let origin = CGPoint(x: (side.width - size.width) / 2.0, y: (side.height - size.height) / 2.0)
+        glyph.withTintColor(.white, renderingMode: .alwaysOriginal).draw(in: CGRect(origin: origin, size: size))
+    }
+}
+
+private func aorusPluginEntryColor(_ hex: String) -> UIColor {
+    guard let value = UInt32(AorusPluginAccent.normalized(hex), radix: 16) else { return .systemPurple }
+    return UIColor(
+        red: CGFloat((value >> 16) & 0xff) / 255.0,
+        green: CGFloat((value >> 8) & 0xff) / 255.0,
+        blue: CGFloat(value & 0xff) / 255.0,
+        alpha: 1.0
+    )
+}
+
 public func aorusPluginMessageContextMenuItems(message: EngineRawMessage?) -> [ContextMenuItem] {
     var payload: [String: Any] = ["source": "message"]
     if let message {
@@ -1729,12 +1848,34 @@ public func aorusPluginMessageContextMenuItems(message: EngineRawMessage?) -> [C
     }
     return AorusPluginRuntimeManager.shared.pluginContextActions().map { entry in
         .action(ContextMenuActionItem(text: entry.action.title, icon: { theme in
-            UIImage(systemName: AorusPluginIcon.normalized(entry.action.icon ?? AorusPluginIcon.fallback))?.withTintColor(theme.contextMenu.primaryColor, renderingMode: .alwaysOriginal)
+            aorusPluginMenuIcon(entry.action.icon ?? AorusPluginIcon.fallback, color: theme.contextMenu.primaryColor)
         }, action: { _, complete in
-            complete(.default)
             AorusPluginRuntimeManager.shared.dispatchContextAction(pluginId: entry.pluginId, actionId: entry.action.id, payload: payload)
+            complete(.default)
         }))
     }
+}
+
+/// An SF Symbol, tinted, as a bitmap the context menu can draw.
+///
+/// A symbol image carries no `cgImage` — it is drawn from a vector description — so the two
+/// obvious approaches both fail here. `withTintColor` keeps the colour as an attribute that
+/// only `UIImageView` applies, and the context menu draws the image itself, so the glyph
+/// came out black. Telegram's own `generateTintedImage` masks with `image.cgImage!`, which
+/// for a symbol is nil and would trap. The symbol is rasterised first, which gives it a
+/// `cgImage`, and that raster is then tinted the same way every other item in the menu is.
+private func aorusPluginMenuIcon(_ name: String, color: UIColor) -> UIImage? {
+    let configuration = UIImage.SymbolConfiguration(pointSize: 22.0, weight: .regular)
+    guard let symbol = UIImage(systemName: AorusPluginIcon.normalized(name), withConfiguration: configuration) else {
+        return nil
+    }
+    let size = CGSize(width: max(1.0, symbol.size.width), height: max(1.0, symbol.size.height))
+    let format = UIGraphicsImageRendererFormat.default()
+    format.opaque = false
+    let raster = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        symbol.withRenderingMode(.alwaysTemplate).draw(in: CGRect(origin: .zero, size: size))
+    }
+    return generateTintedImage(image: raster, color: color)
 }
 
 private final class AorusPluginArtifactPreviewController: QLPreviewController, QLPreviewControllerDataSource {
