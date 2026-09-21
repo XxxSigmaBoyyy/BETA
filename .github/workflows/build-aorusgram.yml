@@ -840,6 +840,18 @@ jobs:
           echo "--- AorusGramUI sources ---"
           ls -la $TG/submodules/AorusGramUI/Sources/
 
+      # The archive is pinned by version and by SHA256, so a cache hit is exactly as
+      # trustworthy as a download: the checksum below is verified either way, and a restored
+      # file that does not match it fails the build the same as a corrupted download would.
+      # Caching it is what makes a build survive GitHub's release CDN being unavailable,
+      # which cost a run: five consecutive 504s inside a 27-second retry window.
+      - name: Restore pinned libXray archive
+        id: libxray-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/libxray-apple-cgo.zip
+          key: libxray-${{ env.LIBXRAY_VERSION }}-${{ env.LIBXRAY_APPLE_SHA256 }}
+
       - name: Stage pinned official libXray XCFramework
         run: |
           set -euo pipefail
@@ -848,8 +860,28 @@ jobs:
           TARGET="telegram-ios/submodules/AorusGram/ThirdParty/LibXray.xcframework"
           URL="https://github.com/XTLS/libXray/releases/download/${LIBXRAY_VERSION}/libxray-apple-cgo.zip"
 
-          curl --fail --location --retry 4 --retry-all-errors --output "$ARCHIVE" "$URL"
-          echo "${LIBXRAY_APPLE_SHA256}  ${ARCHIVE}" | shasum -a 256 --check
+          if [ -f "$ARCHIVE" ]; then
+            echo "libXray: using the cached archive"
+          else
+            # Six minutes of trying, at a fixed fifteen seconds apart. A gateway timeout on
+            # a release download lasts minutes, not seconds, so an exponential backoff that
+            # gives up after four attempts is the same as no retry at all.
+            curl --fail --location \
+              --retry 12 --retry-delay 15 --retry-max-time 360 --retry-all-errors \
+              --connect-timeout 20 \
+              --output "$ARCHIVE" "$URL"
+          fi
+          # Checked on both paths. A cache entry that does not match the pinned digest is
+          # removed and fetched again rather than used.
+          if ! echo "${LIBXRAY_APPLE_SHA256}  ${ARCHIVE}" | shasum -a 256 --check; then
+            echo "libXray: the archive does not match the pinned digest, fetching it again"
+            rm -f "$ARCHIVE"
+            curl --fail --location \
+              --retry 12 --retry-delay 15 --retry-max-time 360 --retry-all-errors \
+              --connect-timeout 20 \
+              --output "$ARCHIVE" "$URL"
+            echo "${LIBXRAY_APPLE_SHA256}  ${ARCHIVE}" | shasum -a 256 --check
+          fi
           rm -rf "$EXTRACTED" "$TARGET"
           mkdir -p "$EXTRACTED" "$(dirname "$TARGET")"
           ditto -x -k "$ARCHIVE" "$EXTRACTED"
@@ -859,6 +891,16 @@ jobs:
           test -f "$TARGET/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :AvailableLibraries' "$TARGET/Info.plist"
           find "$TARGET" -type f -name '*.a' -print
+
+      # Saved here rather than at the end of the job, because `actions/cache` only writes
+      # when the job succeeds — and the runs that most need this are the ones that fail
+      # later on. By this point the archive exists and its digest has been checked.
+      - name: Save pinned libXray archive
+        if: steps.libxray-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/libxray-apple-cgo.zip
+          key: libxray-${{ env.LIBXRAY_VERSION }}-${{ env.LIBXRAY_APPLE_SHA256 }}
 
       - name: AorusGram branding (launch screen, name, URLs, icons, strings)
         env:
