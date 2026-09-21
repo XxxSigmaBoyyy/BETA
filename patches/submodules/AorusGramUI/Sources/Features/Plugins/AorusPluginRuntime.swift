@@ -1719,7 +1719,7 @@ private enum AorusPluginProxyBroker {
 }
 
 /// The selected message is provided only when the native menu represents one message.
-public func aorusPluginMessageContextMenuItems(message: Message?) -> [ContextMenuItem] {
+public func aorusPluginMessageContextMenuItems(message: EngineRawMessage?) -> [ContextMenuItem] {
     var payload: [String: Any] = ["source": "message"]
     if let message {
         payload["peerId"] = String(message.id.peerId.toInt64())
