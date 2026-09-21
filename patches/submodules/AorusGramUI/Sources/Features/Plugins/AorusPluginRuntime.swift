@@ -5,6 +5,7 @@ import TelegramCore
 import AccountContext
 import SwiftSignalKit
 import Display
+import TelegramPresentationData
 import ContextUI
 import QuickLook
 import AorusGram
@@ -354,7 +355,8 @@ public final class AorusPluginRuntimeManager {
             permissions: permissions,
             storage: AorusPluginStore.shared.storage(for: record.manifest.id),
             settings: AorusPluginStore.shared.settings(for: record.manifest.id),
-            settingsSchema: settingsSchema(id: record.manifest.id)
+            settingsSchema: settingsSchema(id: record.manifest.id),
+            filesDirectory: AorusPluginStore.shared.filesDirectory(for: record.manifest.id)
         )
         lock.lock()
         let previous = sandboxes.updateValue(sandbox, forKey: record.manifest.id)
@@ -1573,6 +1575,42 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     func pluginClipboardWrite(_ pluginId: String, text: String) {
         guard manager?.isPermissionGranted(.clipboardWrite, pluginId: pluginId) == true else { return }
         DispatchQueue.main.async { UIPasteboard.general.string = text }
+    }
+
+    func pluginTheme(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        let theme = presentationData.theme
+        let name: String
+        switch theme.name {
+        case let .builtin(builtin):
+            switch builtin {
+            case .dayClassic: name = "dayClassic"
+            case .day: name = "day"
+            case .night: name = "night"
+            case .nightAccent: name = "nightAccent"
+            }
+        case let .custom(title):
+            name = title
+        }
+        completion(.success([
+            "isDark": NSNumber(value: theme.overallDarkAppearance),
+            "name": name,
+            "accent": AorusPluginTelegramHost.hex(theme.list.itemAccentColor),
+            "background": AorusPluginTelegramHost.hex(theme.list.plainBackgroundColor),
+            "groupedBackground": AorusPluginTelegramHost.hex(theme.list.blocksBackgroundColor),
+            "text": AorusPluginTelegramHost.hex(theme.list.itemPrimaryTextColor),
+            "secondaryText": AorusPluginTelegramHost.hex(theme.list.itemSecondaryTextColor),
+            "destructive": AorusPluginTelegramHost.hex(theme.list.itemDestructiveColor),
+        ]))
+    }
+
+    /// "RRGGBB", the same six digits a plugin's own accent is written as, so a colour read
+    /// from the theme can be handed straight back to anything that takes one.
+    private static func hex(_ color: UIColor) -> String {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return AorusPluginAccent.fallback }
+        let channel: (CGFloat) -> Int = { Int((min(1.0, max(0.0, $0)) * 255.0).rounded()) }
+        return String(format: "%02X%02X%02X", channel(red), channel(green), channel(blue))
     }
 
     var pluginDeviceInfo: [String: Any] {

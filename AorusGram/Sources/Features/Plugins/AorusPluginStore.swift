@@ -71,6 +71,14 @@ public final class AorusPluginStore {
     private func permissionsURL(for id: String) -> URL { directory(for: id).appendingPathComponent("permissions.json") }
     private func schemaURL(for id: String) -> URL { directory(for: id).appendingPathComponent("schema.json") }
 
+    /// The plugin's own file directory, `Plugins/<id>/files`. Inside the plugin's directory
+    /// on purpose: deleting the plugin removes it, so there is no bookkeeping that could
+    /// leave someone's files behind after the plugin that wrote them is gone.
+    public func filesDirectory(for id: String) -> URL? {
+        guard let id = AorusPluginStore.normalizedIdentifier(id) else { return nil }
+        return directory(for: id).appendingPathComponent("files", isDirectory: true)
+    }
+
     public static func normalizedIdentifier(_ id: String) -> String? {
         guard let uuid = UUID(uuidString: id), uuid.uuidString.caseInsensitiveCompare(id) == .orderedSame else {
             return nil
@@ -436,5 +444,166 @@ public final class AorusPluginStore {
             try ensureDirectory(for: id)
             try write(try encoder.encode(state), to: schemaURL(for: id))
         }
+    }
+}
+
+// A plugin's own files.
+//
+// `storage` is a key-value bucket that is read and written whole and lives in one JSON file,
+// which makes it the wrong place for anything large: a plugin caching a few hundred kilobytes
+// of downloaded text rewrites the entire bucket on every change. Files are the other shape —
+// named, written one at a time, and read back without touching anything else.
+//
+// The directory is inside the plugin's own directory, so deleting the plugin deletes its
+// files with it and no bookkeeping can leave orphans behind. Names are validated rather than
+// sanitised: a name that is not plainly a file name is rejected, which makes a path that
+// escapes the directory unrepresentable instead of something a cleaning function has to
+// catch.
+public struct AorusPluginFiles {
+    public static let maximumFileBytes = 4 * 1024 * 1024
+    public static let maximumTotalBytes = 32 * 1024 * 1024
+    public static let maximumFileCount = 256
+    public static let maximumNameLength = 64
+
+    public enum FileError: Error, Equatable {
+        case invalidName
+        case tooLarge
+        case quota
+        case tooMany
+        case io(String)
+
+        public var message: String {
+            switch self {
+            case .invalidName:
+                return "A file name may hold up to \(AorusPluginFiles.maximumNameLength) letters, digits, dot, dash and underscore, and may not begin with a dot"
+            case .tooLarge:
+                return "A single file may not exceed \(AorusPluginFiles.maximumFileBytes / (1024 * 1024)) MB"
+            case .quota:
+                return "The plugin's files may not exceed \(AorusPluginFiles.maximumTotalBytes / (1024 * 1024)) MB in total"
+            case .tooMany:
+                return "A plugin may keep up to \(AorusPluginFiles.maximumFileCount) files"
+            case let .io(text):
+                return text
+            }
+        }
+    }
+
+    public let directory: URL
+
+    public init(directory: URL) {
+        self.directory = directory
+    }
+
+    /// A name that is plainly a file name, or nil. Nothing is stripped or replaced: a name
+    /// that would have to be repaired is a mistake worth reporting, and repairing it silently
+    /// is how "notes/../../main.js" becomes a write nobody intended.
+    public static func normalizedName(_ name: String) -> String? {
+        guard !name.isEmpty, name.count <= maximumNameLength, !name.hasPrefix(".") else { return nil }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        guard name.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        guard !name.contains("..") else { return nil }
+        return name
+    }
+
+    private func url(for name: String) throws -> URL {
+        guard let name = AorusPluginFiles.normalizedName(name) else { throw FileError.invalidName }
+        return directory.appendingPathComponent(name, isDirectory: false)
+    }
+
+    private func entries() -> [(name: String, size: Int, modified: Date)] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return [] }
+        return contents.compactMap { url in
+            guard AorusPluginFiles.normalizedName(url.lastPathComponent) != nil else { return nil }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            return (url.lastPathComponent, values?.fileSize ?? 0, values?.contentModificationDate ?? Date(timeIntervalSince1970: 0))
+        }
+    }
+
+    public func write(_ name: String, text: String) throws {
+        let target = try url(for: name)
+        let data = Data(text.utf8)
+        guard data.count <= AorusPluginFiles.maximumFileBytes else { throw FileError.tooLarge }
+        let existing = entries()
+        let previous = existing.first(where: { $0.name == target.lastPathComponent })
+        if previous == nil, existing.count >= AorusPluginFiles.maximumFileCount { throw FileError.tooMany }
+        // The quota is checked against what the directory will hold afterwards, so
+        // overwriting a large file with a small one always succeeds.
+        let after = existing.reduce(0) { $0 + $1.size } - (previous?.size ?? 0) + data.count
+        guard after <= AorusPluginFiles.maximumTotalBytes else { throw FileError.quota }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Written beside and moved into place, so a crash mid-write leaves the previous
+            // file rather than half of the new one, the same as every other write here.
+            let temporary = directory.appendingPathComponent(".write-\(UUID().uuidString)")
+            try data.write(to: temporary, options: [.atomic])
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: temporary)
+        } catch {
+            throw FileError.io(error.localizedDescription)
+        }
+    }
+
+    public func read(_ name: String) throws -> String? {
+        let target = try url(for: name)
+        guard let data = try? Data(contentsOf: target) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    public func info(_ name: String) throws -> [String: Any]? {
+        let target = try url(for: name)
+        guard let entry = entries().first(where: { $0.name == target.lastPathComponent }) else { return nil }
+        return [
+            "name": entry.name,
+            "size": NSNumber(value: entry.size),
+            "modified": NSNumber(value: Int64(entry.modified.timeIntervalSince1970)),
+        ]
+    }
+
+    public func list() -> [[String: Any]] {
+        return entries().sorted { $0.name < $1.name }.map { entry in
+            [
+                "name": entry.name,
+                "size": NSNumber(value: entry.size),
+                "modified": NSNumber(value: Int64(entry.modified.timeIntervalSince1970)),
+            ]
+        }
+    }
+
+    /// True when the file was there to remove. Removing something that is already gone is
+    /// not an error: a plugin cleaning up after itself should not have to ask first.
+    @discardableResult
+    public func remove(_ name: String) throws -> Bool {
+        let target = try url(for: name)
+        guard FileManager.default.fileExists(atPath: target.path) else { return false }
+        do {
+            try FileManager.default.removeItem(at: target)
+        } catch {
+            throw FileError.io(error.localizedDescription)
+        }
+        return true
+    }
+
+    @discardableResult
+    public func clear() -> Int {
+        var removed = 0
+        for entry in entries() {
+            let target = directory.appendingPathComponent(entry.name, isDirectory: false)
+            if (try? FileManager.default.removeItem(at: target)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
+    public func usage() -> [String: Any] {
+        let all = entries()
+        return [
+            "count": NSNumber(value: all.count),
+            "bytes": NSNumber(value: all.reduce(0) { $0 + $1.size }),
+            "maximumBytes": NSNumber(value: AorusPluginFiles.maximumTotalBytes),
+            "maximumFileBytes": NSNumber(value: AorusPluginFiles.maximumFileBytes),
+            "maximumCount": NSNumber(value: AorusPluginFiles.maximumFileCount),
+        ]
     }
 }

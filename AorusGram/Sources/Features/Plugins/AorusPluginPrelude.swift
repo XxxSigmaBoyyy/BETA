@@ -802,6 +802,46 @@ public enum AorusPluginPrelude {
             }
         });
 
+        // The plugin's own files. `storage` is one bucket read and written whole, so a plugin
+        // keeping anything sizeable there rewrites all of it on every change; this is the
+        // other shape. The directory belongs to the plugin and goes when the plugin does.
+        var filesApi = freeze({
+            writeText: function (name, text) {
+                return request('files.write', { name: requireString(name, 'name'), text: requireString(text, 'text') });
+            },
+            readText: function (name) { return request('files.read', { name: requireString(name, 'name') }); },
+            writeJSON: function (name, value) {
+                return request('files.write', {
+                    name: requireString(name, 'name'),
+                    text: JSON.stringify(value === undefined ? null : value)
+                });
+            },
+            readJSON: function (name, fallback) {
+                var alternative = fallback === undefined ? null : fallback;
+                return request('files.read', { name: requireString(name, 'name') }).then(function (text) {
+                    if (typeof text !== 'string') { return alternative; }
+                    // A file a plugin wrote by hand, or truncated by a crash, is not a reason
+                    // to reject: the caller asked for a value and named what to use instead.
+                    try { return JSON.parse(text); } catch (error) { return alternative; }
+                });
+            },
+            append: function (name, text) {
+                requireString(name, 'name');
+                requireString(text, 'text');
+                return request('files.read', { name: name }).then(function (current) {
+                    return request('files.write', { name: name, text: (typeof current === 'string' ? current : '') + text });
+                });
+            },
+            exists: function (name) {
+                return request('files.info', { name: requireString(name, 'name') }).then(function (info) { return info !== null; });
+            },
+            info: function (name) { return request('files.info', { name: requireString(name, 'name') }); },
+            list: function () { return request('files.list', {}); },
+            remove: function (name) { return request('files.remove', { name: requireString(name, 'name') }); },
+            clear: function () { return request('files.clear', {}); },
+            usage: function () { return request('files.usage', {}); }
+        });
+
         // The chat that is open right now. Everything here answers while a chat is on screen
         // and rejects the moment none is, which is what "the current chat" means: there is no
         // last one to fall back on, and pretending otherwise would write a draft into a chat
@@ -955,6 +995,10 @@ public enum AorusPluginPrelude {
                 }
             }),
             chat: chatApi,
+            files: filesApi,
+            theme: freeze({
+                current: function () { return request('theme.current', {}); }
+            }),
             account: freeze({
                 current: function () { return request('account.current', {}); }
             }),

@@ -864,6 +864,132 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(chatArgResults["typing"] == .string("rejected"), "setTyping rejects a value that is not a boolean")
     expect(chatArgReached == 0, "a rejected argument never reaches the host")
     chatArgs.stop()
+
+    // The plugin's own files, end to end through JavaScript.
+    let fileHost = AorusPluginNullHost()
+    var fileResults: [String: AorusPluginJSONValue] = [:]
+    fileHost.onStorageChanged = { _, values in fileResults = values }
+    let fileDirectory = temporaryDirectory().appendingPathComponent("files", isDirectory: true)
+    let fileSource = """
+    aorus.on('start', function () {
+        aorus.files.writeText('notes.txt', 'first')
+            .then(function () { return aorus.files.append('notes.txt', ' and second'); })
+            .then(function () { return aorus.files.readText('notes.txt'); })
+            .then(function (text) { aorus.storage.set('text', text); })
+            .then(function () { return aorus.files.writeJSON('state.json', { count: 3 }); })
+            .then(function () { return aorus.files.readJSON('state.json'); })
+            .then(function (value) { aorus.storage.set('json', value.count); })
+            .then(function () { return aorus.files.readJSON('nothing.json', 'fallback'); })
+            .then(function (value) { aorus.storage.set('fallback', value); })
+            .then(function () { return aorus.files.readText('nothing.txt'); })
+            .then(function (value) { aorus.storage.set('missing', value === null ? 'null' : 'something'); })
+            .then(function () { return aorus.files.list(); })
+            .then(function (items) { aorus.storage.set('list', items.map(function (item) { return item.name; }).join(',')); })
+            .then(function () { return aorus.files.exists('state.json'); })
+            .then(function (there) { aorus.storage.set('exists', there ? 'yes' : 'no'); })
+            .then(function () { return aorus.files.remove('state.json'); })
+            .then(function (removed) { aorus.storage.set('removed', removed ? 'yes' : 'no'); })
+            .then(function () { return aorus.files.writeText('../escape.txt', 'no'); })
+            .then(
+                function () { aorus.storage.set('escape', 'allowed'); },
+                function () { aorus.storage.set('escape', 'rejected'); }
+            )
+            .then(function () { return aorus.files.usage(); })
+            .then(function (usage) { aorus.storage.set('count', usage.count); });
+    });
+    """
+    let fileSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Files"),
+        source: fileSource,
+        host: fileHost,
+        permissions: [],
+        filesDirectory: fileDirectory
+    )
+    let fileStarted = DispatchSemaphore(value: 0)
+    fileSandbox.start { error in expect(error == nil, "file plugin starts"); fileStarted.signal() }
+    _ = fileStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.5)
+    expect(fileResults["text"] == .string("first and second"), "append adds to what was written")
+    expect(fileResults["json"] == .number(3), "writeJSON and readJSON round-trip a value")
+    expect(fileResults["fallback"] == .string("fallback"), "readJSON of a missing file answers with the fallback")
+    expect(fileResults["missing"] == .string("null"), "readText of a missing file answers null")
+    expect(fileResults["list"] == .string("notes.txt,state.json"), "list names the files in order")
+    expect(fileResults["exists"] == .string("yes"), "exists answers for a file that is there")
+    expect(fileResults["removed"] == .string("yes"), "remove reports that the file was there")
+    expect(fileResults["escape"] == .string("rejected"), "a name that is not plainly a file name is refused")
+    expect(fileResults["count"] == .number(1), "usage counts what is left")
+    fileSandbox.stop()
+
+    // The theme a plugin draws against.
+    let themeHost = AorusPluginNullHost()
+    var themeResults: [String: AorusPluginJSONValue] = [:]
+    themeHost.onStorageChanged = { _, values in themeResults = values }
+    themeHost.onTheme = { _ in ["isDark": NSNumber(value: true), "name": "night", "accent": "5B4DFF", "text": "FFFFFF"] }
+    let themeSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Theme"),
+        source: "aorus.on('start', function () { aorus.theme.current().then(function (theme) { aorus.storage.set('theme', theme.name + '/' + theme.accent + '/' + (theme.isDark ? 'dark' : 'light')); }); });",
+        host: themeHost,
+        permissions: []
+    )
+    let themeStarted = DispatchSemaphore(value: 0)
+    themeSandbox.start { error in expect(error == nil, "theme plugin starts"); themeStarted.signal() }
+    _ = themeStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(themeResults["theme"] == .string("night/5B4DFF/dark"), "the theme reaches a plugin without any grant, like isDark always has")
+    themeSandbox.stop()
+
+    // A plugin with nowhere to write is told so rather than writing somewhere else.
+    let noFilesHost = AorusPluginNullHost()
+    var noFilesResults: [String: AorusPluginJSONValue] = [:]
+    noFilesHost.onStorageChanged = { _, values in noFilesResults = values }
+    let noFiles = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "No files"),
+        source: "aorus.on('start', function () { aorus.files.writeText('a.txt', 'x').then(function () { aorus.storage.set('write', 'allowed'); }, function (error) { aorus.storage.set('write', String(error.message || error)); }); });",
+        host: noFilesHost,
+        permissions: []
+    )
+    let noFilesStarted = DispatchSemaphore(value: 0)
+    noFiles.start { error in expect(error == nil, "plugin without file storage starts"); noFilesStarted.signal() }
+    _ = noFilesStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(noFilesResults["write"] == .string("This plugin has no file storage"), "a plugin with no file directory is told so")
+    noFiles.stop()
+}
+
+// The name rule is what makes a path outside the directory unrepresentable, so it is checked
+// directly rather than only through a plugin that happens to try one.
+for badName in ["", ".", "..", ".hidden", "a/b", "../escape", "a\\b", "a b", String(repeating: "x", count: 65), "note..txt", "/etc/passwd"] {
+    expect(AorusPluginFiles.normalizedName(badName) == nil, "file name '\(badName)' is refused")
+}
+for goodName in ["notes.txt", "a", "state-2.json", "A_B.c", String(repeating: "x", count: 64)] {
+    expect(AorusPluginFiles.normalizedName(goodName) == goodName, "file name '\(goodName)' is accepted unchanged")
+}
+
+let quotaDirectory = temporaryDirectory().appendingPathComponent("quota", isDirectory: true)
+let quotaFiles = AorusPluginFiles(directory: quotaDirectory)
+do {
+    try quotaFiles.write("big.txt", text: String(repeating: "x", count: AorusPluginFiles.maximumFileBytes + 1))
+    expect(false, "a file over the per-file limit is refused")
+} catch let error as AorusPluginFiles.FileError {
+    expect(error == .tooLarge, "an oversized file is refused for being oversized")
+} catch {
+    expect(false, "an oversized file is refused with a file error")
+}
+do {
+    try quotaFiles.write("ok.txt", text: "fine")
+    let readBack = try quotaFiles.read("ok.txt")
+    let readMissing = try quotaFiles.read("gone.txt")
+    let removedMissing = try quotaFiles.remove("gone.txt")
+    expect(readBack == "fine", "a file within the limit is written and read back")
+    expect(readMissing == nil, "reading a missing file is nil, not an error")
+    expect(removedMissing == false, "removing a file that is not there is not an error")
+    // Overwriting with something smaller always fits, even at the quota.
+    try quotaFiles.write("ok.txt", text: "f")
+    expect((quotaFiles.usage()["bytes"] as? NSNumber)?.intValue == 1, "an overwrite replaces rather than adds")
+    expect(quotaFiles.clear() == 1, "clear removes the plugin's files")
+    expect(quotaFiles.list().isEmpty, "nothing is left after clear")
+} catch {
+    expect(false, "writing within the limits succeeds")
 }
 
 if failures == 0 {

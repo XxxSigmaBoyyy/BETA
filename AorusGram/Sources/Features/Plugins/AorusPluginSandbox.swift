@@ -71,6 +71,7 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginHaptic(_ pluginId: String, kind: String)
     func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void)
     func pluginClipboardWrite(_ pluginId: String, text: String)
+    func pluginTheme(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
     var pluginDeviceInfo: [String: Any] { get }
     var pluginInterfaceLanguage: String { get }
 }
@@ -95,6 +96,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onOpenURL: ((String, String) -> Void)?
     public var onOpenTelegramLink: ((String, String) -> Void)?
     public var onChatHistory: ((String, Int64?, Bool, Int) -> [[String: Any]])?
+    public var onTheme: ((String) -> [String: Any])?
     // The open chat. Nothing is open unless a test says so, which is also true on a device
     // between chats, so the default answer here is the same one the app gives.
     public var onCurrentChat: ((String) -> [String: Any]?)?
@@ -140,6 +142,17 @@ open class AorusPluginNullHost: AorusPluginHostServices {
         completion(.success(onChatHistory?(pluginId, peerId, toSelf, limit) ?? []))
     }
     open func pluginOpenChat(_ pluginId: String, peerId: Int64?, toSelf: Bool, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+    open func pluginTheme(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        completion(.success(onTheme?(pluginId) ?? [
+            "isDark": NSNumber(value: false),
+            "name": "day",
+            "accent": "007AFF",
+            "background": "FFFFFF",
+            "text": "000000",
+            "secondaryText": "8E8E93",
+            "destructive": "FF3B30",
+        ]))
+    }
     open func pluginCurrentChat(_ pluginId: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         completion(.success(onCurrentChat?(pluginId)))
     }
@@ -392,6 +405,10 @@ public final class AorusPluginSandbox {
     private var storageValues: [String: AorusPluginJSONValue]
     private var settingsValues: [String: AorusPluginJSONValue]
     private(set) public var settingsSchema: [AorusPluginSettingField]
+    /// The plugin's own directory for files, or nil when it has none: the editor's dry run
+    /// has nowhere to write, and a plugin running there is told so rather than writing into
+    /// somebody else's directory.
+    private let files: AorusPluginFiles?
     private var session: URLSession?
     private var networkDelegate: AorusPluginNetworkDelegate?
     private var pendingRequestIds = Set<Int32>()
@@ -418,7 +435,7 @@ public final class AorusPluginSandbox {
         }
     }
 
-    public init(manifest: AorusPluginManifest, source: String, host: AorusPluginHostServices, permissions: Set<AorusPluginPermission> = [], storage: [String: AorusPluginJSONValue] = [:], settings: [String: AorusPluginJSONValue] = [:], settingsSchema: [AorusPluginSettingField] = []) {
+    public init(manifest: AorusPluginManifest, source: String, host: AorusPluginHostServices, permissions: Set<AorusPluginPermission> = [], storage: [String: AorusPluginJSONValue] = [:], settings: [String: AorusPluginJSONValue] = [:], settingsSchema: [AorusPluginSettingField] = [], filesDirectory: URL? = nil) {
         self.manifest = manifest
         self.source = source
         self.hostServices = host
@@ -426,6 +443,7 @@ public final class AorusPluginSandbox {
         self.storageValues = storage
         self.settingsValues = settings
         self.settingsSchema = settingsSchema
+        self.files = filesDirectory.map { AorusPluginFiles(directory: $0) }
         self.queue = DispatchQueue(label: "aorusgram.plugin.\(manifest.id)", qos: .userInitiated)
     }
 
@@ -1206,6 +1224,60 @@ public final class AorusPluginSandbox {
             }
             host.pluginReactToMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId, reaction: reaction) { [weak self] result in
                 self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        // The colours a plugin needs to draw something that looks like it belongs. Nothing
+        // private is in a colour, and `device.isDark` has always been readable, so this is
+        // the same fact in more detail rather than a new capability.
+        case "theme.current":
+            host.pluginTheme(pluginId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        // Files are the plugin's own directory and nobody else's, so there is no permission
+        // to check and no host to go through: the quota and the name rule are the whole of
+        // it, and both are answered here on the plugin's own queue.
+        case "files.write", "files.read", "files.info", "files.list", "files.remove", "files.clear", "files.usage":
+            guard let files = self.files else {
+                settle(id, with: .failure(AorusPluginRequestError("This plugin has no file storage")))
+                return
+            }
+            do {
+                switch kind {
+                case "files.write":
+                    guard let name = string("name"), let text = string("text") else {
+                        settle(id, with: .failure(AorusPluginRequestError("name and text are required")))
+                        return
+                    }
+                    try files.write(name, text: text)
+                    settle(id, with: .success(nil))
+                case "files.read":
+                    guard let name = string("name") else {
+                        settle(id, with: .failure(AorusPluginRequestError("name is required")))
+                        return
+                    }
+                    settle(id, with: .success(try files.read(name).map { $0 as Any }))
+                case "files.info":
+                    guard let name = string("name") else {
+                        settle(id, with: .failure(AorusPluginRequestError("name is required")))
+                        return
+                    }
+                    settle(id, with: .success(try files.info(name).map { $0 as Any }))
+                case "files.list":
+                    settle(id, with: .success(files.list() as Any))
+                case "files.remove":
+                    guard let name = string("name") else {
+                        settle(id, with: .failure(AorusPluginRequestError("name is required")))
+                        return
+                    }
+                    settle(id, with: .success(NSNumber(value: try files.remove(name))))
+                case "files.clear":
+                    settle(id, with: .success(NSNumber(value: files.clear())))
+                default:
+                    settle(id, with: .success(files.usage() as Any))
+                }
+            } catch let error as AorusPluginFiles.FileError {
+                settle(id, with: .failure(AorusPluginRequestError(error.message)))
+            } catch {
+                settle(id, with: .failure(AorusPluginRequestError((error as NSError).localizedDescription)))
             }
         case "chat.current":
             guard require(.chatMetadata, id: id) else { return }
