@@ -84,9 +84,7 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let emptyView = AorusPluginsEmptyView()
     private var manifests: [AorusPluginManifest] = []
-    private var shortcuts: [(pluginId: String, shortcut: AorusPluginSettingsShortcut)] = []
     private var observer: NSObjectProtocol?
-    private var integrationObserver: NSObjectProtocol?
 
     init(context: AccountContext) {
         self.context = context
@@ -101,7 +99,6 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
 
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }
-        if let integrationObserver { NotificationCenter.default.removeObserver(integrationObserver) }
     }
 
     override func loadDisplayNode() {
@@ -118,7 +115,6 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
         tableView.backgroundView = emptyView
         displayNode.view.addSubview(tableView)
         observer = NotificationCenter.default.addObserver(forName: AorusPluginStore.changedNotification, object: nil, queue: .main) { [weak self] _ in self?.reload() }
-        integrationObserver = NotificationCenter.default.addObserver(forName: Notification.Name("aorusgram.plugins.integrationsChanged"), object: nil, queue: .main) { [weak self] _ in self?.reload() }
         reload()
         displayNodeDidLoad()
     }
@@ -132,7 +128,6 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
 
     private func reload() {
         manifests = AorusPluginStore.shared.list()
-        shortcuts = AorusPluginRuntimeManager.shared.pluginSettingsShortcuts()
         emptyView.isHidden = !manifests.isEmpty
         tableView.reloadData()
     }
@@ -149,8 +144,22 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
     private func createPlugin() {
         let manifest = AorusPluginManifest(name: AorusPluginUIString.plugins.text, autostart: false)
         let source = """
-        // AorusGram Plugin API v1
-        // Open Documentation from the plugin menu to start building.
+        aorus.ui.definePages([{
+          id: 'home', title: 'My plugin', sections: [{
+            rows: [{ id: 'hello', type: 'button', title: 'Say hello', icon: 'hand.wave.fill' }]
+          }]
+        }]);
+
+        aorus.integrations.settings.register({
+          id: 'home', title: 'My plugin', icon: 'puzzlepiece.extension',
+          pageId: 'home', placement: 'plugins'
+        });
+
+        aorus.on('uiAction', function (event) {
+          if (event.pageId === 'home' && event.rowId === 'hello') {
+            aorus.ui.toast('Hello!');
+          }
+        });
         """
         let record = AorusPluginRecord(manifest: manifest, source: source)
         do {
@@ -176,29 +185,10 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
         } catch { showError(error) }
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int { shortcuts.isEmpty ? 1 : 2 }
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if !shortcuts.isEmpty, section == 0 { return shortcuts.count }
-        return manifests.count
-    }
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        return !shortcuts.isEmpty && section == 0 ? AorusPluginUIString.settings.text : nil
-    }
+    func numberOfSections(in tableView: UITableView) -> Int { 1 }
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { manifests.count }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        if !shortcuts.isEmpty, indexPath.section == 0 {
-            let item = shortcuts[indexPath.row].shortcut
-            let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-            cell.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
-            cell.textLabel?.text = item.title
-            cell.detailTextLabel?.text = item.subtitle
-            cell.textLabel?.textColor = presentationData.theme.list.itemPrimaryTextColor
-            cell.detailTextLabel?.textColor = presentationData.theme.list.itemSecondaryTextColor
-            cell.imageView?.image = UIImage(systemName: AorusPluginIcon.normalized(item.icon ?? AorusPluginIcon.fallback))
-            cell.imageView?.tintColor = presentationData.theme.list.itemAccentColor
-            cell.accessoryType = .disclosureIndicator
-            return cell
-        }
         let cell = tableView.dequeueReusableCell(withIdentifier: "plugin", for: indexPath) as! AorusPluginCell
         let manifest = manifests[indexPath.row]
         cell.configure(manifest: manifest, record: AorusPluginStore.shared.load(id: manifest.id), theme: presentationData.theme)
@@ -208,17 +198,11 @@ private final class AorusPluginsListController: ViewController, UITableViewDataS
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        if !shortcuts.isEmpty, indexPath.section == 0 {
-            let item = shortcuts[indexPath.row]
-            AorusPluginRuntimeManager.shared.performSettingsShortcut(pluginId: item.pluginId, id: item.shortcut.id)
-            return
-        }
         guard let record = AorusPluginStore.shared.load(id: manifests[indexPath.row].id) else { return }
         (navigationController as? NavigationController)?.pushViewController(AorusPluginDetailController(context: context, record: record))
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        if !shortcuts.isEmpty, indexPath.section == 0 { return nil }
         let manifest = manifests[indexPath.row]
         let delete = UIContextualAction(style: .destructive, title: AorusPluginUIString.delete.text) { _, _, done in
             AorusPluginRuntimeManager.shared.stop(id: manifest.id)
@@ -832,10 +816,6 @@ private final class AorusPluginPickerCell: UICollectionViewCell {
     }
 }
 
-private final class AorusPluginLicenseBoundDebugHost: AorusPluginNullHost {
-    override var pluginExecutionAllowed: Bool { AorusLicenseAccess.isAllowed }
-}
-
 private final class AorusPluginEditorController: ViewController, UITextViewDelegate {
     private let context: AccountContext
     private let presentationData: PresentationData
@@ -843,8 +823,10 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
     private let editor = UITextView()
     private let lineNumbers = UITextView()
     private let console = UITextView()
+    private let consolePlaceholder = UILabel()
     private let editorTools = UIStackView()
-    private var debugSandbox: AorusPluginSandbox?
+    private weak var observedSandbox: AorusPluginSandbox?
+    private var runAfterReview = false
     private var licenseObserver: NSObjectProtocol?
     private var highlightWork: DispatchWorkItem?
     private var currentLayout: ContainerViewLayout?
@@ -863,7 +845,7 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
 
     deinit {
         highlightWork?.cancel()
-        debugSandbox?.stop()
+        observedSandbox?.observeLog(nil)
         if let licenseObserver { NotificationCenter.default.removeObserver(licenseObserver) }
     }
 
@@ -876,10 +858,16 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
         editor.backgroundColor = .clear; editor.textColor = dark ? .white : .black; editor.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         editor.autocorrectionType = .no; editor.autocapitalizationType = .none; editor.smartQuotesType = .no; editor.smartDashesType = .no
         editor.textContainerInset = UIEdgeInsets(top: 14, left: 8, bottom: 80, right: 12); editor.delegate = self; editor.text = record.source
-        console.backgroundColor = UIColor.black.withAlphaComponent(0.94); console.textColor = UIColor(red: 0.55, green: 0.95, blue: 0.68, alpha: 1); console.font = .monospacedSystemFont(ofSize: 12, weight: .regular); console.isEditable = false; console.isHidden = true
+        console.backgroundColor = background; console.textColor = dark ? UIColor(white: 0.86, alpha: 1) : .darkText; console.font = .monospacedSystemFont(ofSize: 12, weight: .regular); console.isEditable = false; console.isHidden = true
+        console.layer.borderColor = UIColor.separator.cgColor; console.layer.borderWidth = 1 / UIScreen.main.scale
+        console.textContainerInset = UIEdgeInsets(top: 42, left: 16, bottom: 12, right: 16)
+        consolePlaceholder.text = AorusPluginUIString.console.text
+        consolePlaceholder.font = .systemFont(ofSize: 13, weight: .semibold)
+        consolePlaceholder.textColor = .secondaryLabel
+        consolePlaceholder.isHidden = true
         editorTools.axis = .horizontal; editorTools.distribution = .fillEqually; editorTools.backgroundColor = dark ? UIColor(white: 0.12, alpha: 0.94) : UIColor(white: 1, alpha: 0.96)
         addTool(AorusPluginUIString.run.text, "play.fill", #selector(runPlugin)); addTool(AorusPluginUIString.stop.text, "stop.fill", #selector(stopPlugin)); addTool(AorusPluginUIString.console.text, "terminal.fill", #selector(toggleConsole)); addTool(AorusPluginUIString.documentation.text, "book.fill", #selector(openDocs))
-        displayNode.view.addSubview(lineNumbers); displayNode.view.addSubview(editor); displayNode.view.addSubview(console); displayNode.view.addSubview(editorTools)
+        displayNode.view.addSubview(lineNumbers); displayNode.view.addSubview(editor); displayNode.view.addSubview(console); displayNode.view.addSubview(consolePlaceholder); displayNode.view.addSubview(editorTools)
         licenseObserver = NotificationCenter.default.addObserver(forName: Notification.Name("aorusgram.licenseLockChanged"), object: nil, queue: .main) { [weak self] _ in
             guard !AorusLicenseAccess.isAllowed else { return }
             self?.stopPlugin()
@@ -896,6 +884,7 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
         transition.updateFrame(view: lineNumbers, frame: CGRect(x: 6, y: top + 14, width: 34, height: max(0, layout.size.height - top - toolbarHeight - 14)))
         transition.updateFrame(view: editor, frame: CGRect(x: 40, y: top, width: layout.size.width - 40, height: max(0, layout.size.height - top - toolbarHeight - consoleHeight)))
         transition.updateFrame(view: console, frame: CGRect(x: 0, y: layout.size.height - toolbarHeight - consoleHeight, width: layout.size.width, height: consoleHeight))
+        transition.updateFrame(view: consolePlaceholder, frame: CGRect(x: 20, y: layout.size.height - toolbarHeight - consoleHeight + 12, width: layout.size.width - 40, height: 22))
         transition.updateFrame(view: editorTools, frame: CGRect(x: 0, y: layout.size.height - toolbarHeight, width: layout.size.width, height: toolbarHeight))
     }
 
@@ -924,7 +913,6 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
         do {
             if sourceChanged {
                 stopPlugin()
-                AorusPluginRuntimeManager.shared.stop(id: record.manifest.id)
             }
             try AorusPluginStore.shared.save(record)
             if let saved = AorusPluginStore.shared.load(id: record.manifest.id) {
@@ -952,7 +940,7 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
             message: AorusPluginUIString.sourceChangedDisabled.text + "\n\n" + detail,
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
+        alert.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel) { [weak self] _ in self?.runAfterReview = false })
         alert.addAction(UIAlertAction(title: AorusPluginUIString.grantAndEnable.text, style: .default) { [weak self] _ in
             guard let self else { return }
             do {
@@ -967,9 +955,10 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
                 AorusPluginRuntimeManager.shared.start(id: manifest.id) { [weak self] error in
                     DispatchQueue.main.async {
                         guard let self else { return }
-                        if let error {
-                            self.appendConsole("ERROR: \(error.message)")
-                        }
+                        if self.runAfterReview {
+                            self.runAfterReview = false
+                            self.attachLiveRuntime(error: error)
+                        } else if let error { self.appendConsole(error.message) }
                     }
                 }
             } catch {
@@ -981,26 +970,55 @@ private final class AorusPluginEditorController: ViewController, UITextViewDeleg
 
     @objc private func runPlugin() {
         guard AorusLicenseAccess.isAllowed else {
-            appendConsole("ERROR: Plugin execution is unavailable")
+            appendConsole("Plugin execution is unavailable")
             return
         }
-        stopPlugin(); record.source = editor.text ?? ""
-        let diagnostics = AorusPluginSandbox.checkSyntax(record.source)
+        let source = editor.text ?? ""
+        let diagnostics = AorusPluginSandbox.checkSyntax(source)
         guard diagnostics.isEmpty else { appendConsole("Line \(diagnostics[0].line): \(diagnostics[0].message)"); return }
-        let host = AorusPluginLicenseBoundDebugHost(); host.onLog = { [weak self] _, level, text in DispatchQueue.main.async { self?.appendConsole("[\(level.rawValue)] \(text)") } }
-        let permissions = AorusPluginStore.shared.permissionState(for: record.manifest.id).granted
-        let sandbox = AorusPluginSandbox(manifest: record.manifest, source: record.source, host: host, permissions: permissions, storage: AorusPluginStore.shared.storage(for: record.manifest.id), settings: AorusPluginStore.shared.settings(for: record.manifest.id))
-        debugSandbox = sandbox; console.isHidden = false; updateLayout(animated: true)
-        sandbox.start { [weak self] error in if let error { DispatchQueue.main.async { self?.appendConsole("ERROR: \(error.message)") } } else { DispatchQueue.main.async { self?.appendConsole(AorusPluginUIString.syntaxReady.text) } } }
+        console.isHidden = false
+        console.text = ""
+        updateConsolePlaceholder()
+        updateLayout(animated: true)
+        if source != record.source {
+            runAfterReview = true
+            save()
+            return
+        }
+        if !record.manifest.isEnabled {
+            runAfterReview = true
+            offerReenable()
+            return
+        }
+        observedSandbox?.observeLog(nil)
+        AorusPluginRuntimeManager.shared.restart(id: record.manifest.id) { [weak self] error in
+            DispatchQueue.main.async { self?.attachLiveRuntime(error: error) }
+        }
     }
 
-    @objc private func stopPlugin() { debugSandbox?.stop(); debugSandbox = nil }
-    @objc private func toggleConsole() { console.isHidden.toggle(); updateLayout(animated: true) }
+    private func attachLiveRuntime(error: AorusPluginRunError?) {
+        guard let sandbox = AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id), error == nil else {
+            appendConsole(error?.message ?? AorusPluginRunError.notRunning.message)
+            return
+        }
+        observedSandbox = sandbox
+        sandbox.observeLog { [weak self] entry in
+            DispatchQueue.main.async { self?.appendConsole("[\(entry.level.rawValue)] \(entry.text)") }
+        }
+    }
+
+    @objc private func stopPlugin() {
+        observedSandbox?.observeLog(nil)
+        observedSandbox = nil
+        AorusPluginRuntimeManager.shared.stop(id: record.manifest.id)
+    }
+    @objc private func toggleConsole() { console.isHidden.toggle(); updateConsolePlaceholder(); updateLayout(animated: true) }
     @objc private func openDocs() { (navigationController as? NavigationController)?.pushViewController(AorusPluginDocsController(context: context)) }
     @objc private func editMetadata() {
         (navigationController as? NavigationController)?.pushViewController(AorusPluginMetadataController(context: context, record: record))
     }
-    private func appendConsole(_ text: String) { console.text += (console.text.isEmpty ? "" : "\n") + text; console.scrollRangeToVisible(NSRange(location: max(0, console.text.count - 1), length: 1)) }
+    private func appendConsole(_ text: String) { console.text += (console.text.isEmpty ? "" : "\n") + text; updateConsolePlaceholder(); console.scrollRangeToVisible(NSRange(location: max(0, console.text.count - 1), length: 1)) }
+    private func updateConsolePlaceholder() { consolePlaceholder.isHidden = console.isHidden || !console.text.isEmpty }
     private func updateLayout(animated: Bool) {
         guard let layout = currentLayout else { return }
         containerLayoutUpdated(layout, transition: animated ? .animated(duration: 0.2, curve: .easeInOut) : .immediate)
@@ -1018,11 +1036,15 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
     private var schemaSandbox: AorusPluginSandbox?
     private var schemaObserver: NSObjectProtocol?
     private var valuesObserver: NSObjectProtocol?
+    private var licenseObserver: NSObjectProtocol?
+    private var colorPickerDelegate: AnyObject?
     init(context: AccountContext, record: AorusPluginRecord) { self.context = context; self.record = record; self.presentationData = context.sharedContext.currentPresentationData.with { $0 }; self.values = AorusPluginStore.shared.settings(for: record.manifest.id); super.init(navigationBarPresentationData: NavigationBarPresentationData(presentationData: presentationData, style: .glass)); title = AorusPluginUIString.settings.text; fields = AorusPluginRuntimeManager.shared.settingsSchema(id: record.manifest.id) }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit {
         if let schemaObserver { NotificationCenter.default.removeObserver(schemaObserver) }
         if let valuesObserver { NotificationCenter.default.removeObserver(valuesObserver) }
+        if let licenseObserver { NotificationCenter.default.removeObserver(licenseObserver) }
+        schemaSandbox?.stop()
     }
     override func loadDisplayNode() {
         displayNode = ViewControllerTracingNode(); displayNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
@@ -1043,8 +1065,13 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
             self.values = AorusPluginStore.shared.settings(for: self.record.manifest.id)
             self.tableView.reloadData()
         }
+        licenseObserver = NotificationCenter.default.addObserver(forName: Notification.Name("aorusgram.licenseLockChanged"), object: nil, queue: .main) { [weak self] _ in
+            guard !AorusLicenseAccess.isAllowed else { return }
+            self?.schemaSandbox?.stop()
+            self?.schemaSandbox = nil
+        }
         refreshEmptyState()
-        if fields.isEmpty { discoverSchema() }
+        if fields.isEmpty, AorusLicenseAccess.isAllowed { discoverSchema() }
         displayNodeDidLoad()
     }
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) { super.containerLayoutUpdated(layout, transition: transition); let top = navigationLayout(layout: layout).navigationFrame.maxY; transition.updateFrame(view: tableView, frame: CGRect(x: 0, y: top, width: layout.size.width, height: layout.size.height - top)) }
@@ -1054,12 +1081,43 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
         cell.textLabel?.text = field.title
         cell.detailTextLabel?.text = displayValue(for: field) ?? field.summary
-        if field.kind == .toggle {
+        if field.kind == .section {
+            cell.textLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+            cell.textLabel?.textColor = .secondaryLabel
+            cell.selectionStyle = .none
+        } else if field.kind == .toggle {
             let toggle = UISwitch()
             toggle.isOn = values[field.key]?.boolValue ?? field.defaultValue?.boolValue ?? false
             toggle.tag = indexPath.row
             toggle.addTarget(self, action: #selector(toggleChanged(_:)), for: .valueChanged)
             cell.accessoryView = toggle
+            cell.selectionStyle = .none
+        } else if field.kind == .slider {
+            let slider = UISlider(frame: CGRect(x: 0, y: 0, width: 142, height: 32))
+            slider.minimumValue = Float(field.minimum ?? 0)
+            slider.maximumValue = Float(field.maximum ?? 100)
+            slider.value = Float(values[field.key]?.doubleValue ?? field.defaultValue?.doubleValue ?? field.minimum ?? 0)
+            slider.tag = indexPath.row
+            slider.addTarget(self, action: #selector(sliderChanged(_:)), for: [.touchUpInside, .touchUpOutside])
+            cell.accessoryView = slider
+            cell.selectionStyle = .none
+        } else if field.kind == .stepper {
+            let stepper = UIStepper()
+            stepper.minimumValue = field.minimum ?? 0
+            stepper.maximumValue = field.maximum ?? 100
+            stepper.stepValue = field.step ?? 1
+            stepper.value = values[field.key]?.doubleValue ?? field.defaultValue?.doubleValue ?? field.minimum ?? 0
+            stepper.tag = indexPath.row
+            stepper.addTarget(self, action: #selector(stepperChanged(_:)), for: .valueChanged)
+            cell.accessoryView = stepper
+            cell.selectionStyle = .none
+        } else if field.kind == .colorPicker {
+            let swatch = UIView(frame: CGRect(x: 0, y: 0, width: 26, height: 26))
+            swatch.layer.cornerRadius = 7
+            swatch.backgroundColor = pluginColor((values[field.key] ?? field.defaultValue)?.stringValue ?? AorusPluginAccent.fallback)
+            cell.accessoryView = swatch
+        } else if field.kind == .button || field.kind == .reset {
+            cell.textLabel?.textColor = presentationData.theme.list.itemAccentColor
         } else {
             cell.accessoryType = .disclosureIndicator
         }
@@ -1068,7 +1126,35 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let field = fields[indexPath.row]
-        guard field.kind != .toggle else { return }
+        guard field.kind != .toggle && field.kind != .slider && field.kind != .stepper && field.kind != .section else { return }
+        if field.kind == .button {
+            AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id)?.dispatch(event: "settings.action", payload: ["pluginId": record.manifest.id, "key": field.key])
+            return
+        }
+        if field.kind == .reset {
+            do {
+                try AorusPluginStore.shared.setSettings([:], for: record.manifest.id)
+                values = [:]
+                if let sandbox = AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id) {
+                    sandbox.updateSettings([:])
+                    sandbox.dispatch(event: "settings.reset", payload: ["pluginId": record.manifest.id])
+                }
+                tableView.reloadData()
+            } catch { showSettingsError(error) }
+            return
+        }
+        if field.kind == .colorPicker, #available(iOS 14.0, *) {
+            let picker = UIColorPickerViewController()
+            picker.supportsAlpha = false
+            picker.selectedColor = pluginColor((values[field.key] ?? field.defaultValue)?.stringValue ?? AorusPluginAccent.fallback)
+            let delegate = AorusPluginColorPickerDelegate { [weak self] color in
+                self?.store(.string("#" + aorusHexString(color)), field: field, indexPath: indexPath)
+            }
+            colorPickerDelegate = delegate
+            picker.delegate = delegate
+            present(picker, animated: true)
+            return
+        }
         if field.kind == .multiline {
             let text = values[field.key]?.stringValue ?? field.defaultValue?.stringValue ?? ""
             (navigationController as? NavigationController)?.pushViewController(AorusPluginLongTextController(
@@ -1080,11 +1166,16 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
             ))
             return
         }
-        if field.kind == .select {
+        if field.kind == .select || field.kind == .multiSelect {
             let sheet = UIAlertController(title: field.title, message: field.summary, preferredStyle: .actionSheet)
             for option in field.options ?? [] {
                 sheet.addAction(UIAlertAction(title: option.title, style: .default) { _ in
-                    self.store(.string(option.value), field: field, indexPath: indexPath)
+                    if field.kind == .multiSelect {
+                        let current: [AorusPluginJSONValue]
+                        if case let .array(items)? = self.values[field.key] ?? field.defaultValue { current = items } else { current = [] }
+                        let selected = AorusPluginJSONValue.string(option.value)
+                        self.store(.array(current.contains(selected) ? current.filter { $0 != selected } : current + [selected]), field: field, indexPath: indexPath)
+                    } else { self.store(.string(option.value), field: field, indexPath: indexPath) }
                 })
             }
             sheet.addAction(UIAlertAction(title: presentationData.strings.Common_Cancel, style: .cancel))
@@ -1121,13 +1212,27 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
         })
         present(alert, animated: true)
     }
-    @objc private func toggleChanged(_ sender: UISwitch) { let field = fields[sender.tag]; values[field.key] = .bool(sender.isOn); try? AorusPluginStore.shared.setSettings(values, for: record.manifest.id); AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id)?.updateSettings(values) }
+    @objc private func toggleChanged(_ sender: UISwitch) {
+        let field = fields[sender.tag]
+        store(.bool(sender.isOn), field: field, indexPath: IndexPath(row: sender.tag, section: 0))
+    }
+    @objc private func sliderChanged(_ sender: UISlider) {
+        let field = fields[sender.tag]
+        let step = field.step ?? 1
+        let value = (Double(sender.value) / step).rounded() * step
+        store(.number(min(field.maximum ?? 100, max(field.minimum ?? 0, value))), field: field, indexPath: IndexPath(row: sender.tag, section: 0))
+    }
+    @objc private func stepperChanged(_ sender: UIStepper) {
+        let field = fields[sender.tag]
+        store(.number(sender.value), field: field, indexPath: IndexPath(row: sender.tag, section: 0))
+    }
     private func displayValue(for field: AorusPluginSettingField) -> String? {
         let value = values[field.key] ?? field.defaultValue
         if let string = value?.stringValue {
             return field.options?.first(where: { $0.value == string })?.title ?? string
         }
         if let number = value?.doubleValue { return String(number) }
+        if case let .array(items)? = value { return items.compactMap { $0.stringValue }.joined(separator: ", ") }
         return nil
     }
     private func store(_ value: AorusPluginJSONValue, field: AorusPluginSettingField, indexPath: IndexPath) {
@@ -1136,11 +1241,13 @@ private final class AorusPluginSettingsController: ViewController, UITableViewDa
             try AorusPluginStore.shared.setSettings(values, for: record.manifest.id)
             AorusPluginRuntimeManager.shared.sandbox(id: record.manifest.id)?.updateSettings(values)
             tableView.reloadRows(at: [indexPath], with: .none)
-        } catch {
-            let alert = UIAlertController(title: AorusPluginUIString.settings.text, message: error.localizedDescription, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            present(alert, animated: true)
-        }
+        } catch { showSettingsError(error) }
+    }
+
+    private func showSettingsError(_ error: Error) {
+        let alert = UIAlertController(title: AorusPluginUIString.settings.text, message: error.localizedDescription, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     private func reloadSchema() {
@@ -1404,21 +1511,41 @@ private enum AorusPluginDocumentation {
             status возвращает адрес, порт, тип, активность и наличие учётных данных, но никогда не возвращает сохранённые username, password или MTProto secret.
 
             Интеграции
-            aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
-            Ярлык может содержать ровно одно из полей pageId или url. Он появляется в основных настройках и в разделе плагинов. Ссылка открывается во встроенном браузере приложения и требует разрешение браузера. Предварительный список доменов не нужен, но loopback, локальная сеть и служебные домены AorusGram заблокированы.
+            aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'play.rectangle.fill', url: 'https://youtube.com', placement: 'interface' })
+            Ярлык содержит ровно одно из полей pageId или url и появляется в основных настройках, но не в списке плагинов. placement: plugins (по умолчанию), privacy, interface, tabs, messages, calls, wall, aorusCode или other. Для url нужна выдача разрешения встроенного браузера при включении плагина. loopback, локальная сеть и служебные домены AorusGram заблокированы.
             aorus.integrations.contextMenu.register({ id: 'reply', title: 'Подготовить ответ', icon: 'message.fill' })
-            При выборе приходит aorus.on('contextAction', event) с actionId и source. Текст сообщения и идентификаторы не передаются автоматически. Для событий новых сообщений требуется отдельное разрешение message. В меню одновременно показываются не более четырёх действий плагинов, чтобы оно всегда помещалось на экране.
+            При выборе приходит aorus.on('contextAction', event) с actionId, source и, когда выбрано одно сообщение, peerId, namespace, messageId и text. События новых сообщений требуют отдельного разрешения. В меню одновременно показываются не более четырёх действий плагинов.
 
             AorusAI
-            const answer = await aorus.ai.ask('Подготовь краткий ответ', { history: [{ role: 'user', content: 'Исходный текст' }] })
+            const answer = await aorus.ai.ask('Подготовь краткий ответ', {
+              history: [{ role: 'user', content: 'Исходный текст' }],
+              onEvent(event) {
+                if (event.type === 'status') console.log(event.label)
+                if (event.type === 'build.phase') console.log(event.label)
+              }
+            })
             await aorus.ai.openArtifact(answer.artifacts[0].id)
             Для многошагового помощника используйте сессию:
             const chat = aorus.ai.createChat()
-            const first = await chat.ask('Предложи ответ')
+            const first = await chat.ask('Предложи ответ', { onEvent(event) { console.log(event.type) } })
             const second = await chat.ask('Сделай его короче')
             chat.messages()
             chat.clear()
+            chat.threadId()
             Сессия сама передаёт последние сообщения как историю. Результат содержит text и artifacts с безопасными метаданными файлов: id, filename, mime, size и format. Открыть можно только файл, выданный AorusAI этому плагину в текущем сеансе; загрузка подписывается и проверяется сервером, затем файл открывается в нативном просмотрщике. HMAC, device secret, токены и внутренние маршруты плагину не передаются. Если серверу требуется доступ к Telegram или подтверждение пользователя, запрос нужно продолжить в полном чате AorusAI.
+
+            Настройки плагина
+            aorus.settings.addSection({ title: 'Переводчик', items: [
+              { key: 'enabled', type: 'toggle', title: 'Включен', default: true },
+              { key: 'interval', type: 'slider', title: 'Интервал', min: 10, max: 300, step: 5, default: 60 },
+              { key: 'accent', type: 'colorPicker', title: 'Цвет', default: '#30D158' },
+              { key: 'reset', type: 'reset', title: 'Сбросить' }
+            ] })
+            aorus.settings.getPlugin('enabled', true)
+            aorus.settings.setPlugin('enabled', false)
+            aorus.on('settings.changed', event => console.log(event.key, event.value))
+            aorus.on('settings.reset', () => console.log('Reset'))
+            Поддерживаются toggle, text, multiline/textarea, number, select, multiSelect, slider, stepper, colorPicker/color, button, reset. button вызывает settings.action с key. Настройки принадлежат конкретному плагину.
 
             Буфер обмена
             await aorus.clipboard.read()
@@ -1568,21 +1695,40 @@ private enum AorusPluginDocumentation {
     status returns the address, port, type, active state and whether credentials exist, but never returns a saved username, password or MTProto secret.
 
     Integrations
-    aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'globe', url: 'https://youtube.com' })
-    A shortcut contains exactly one of pageId or url and appears in the main settings and Plugins screen. Links open in the app browser and require browser permission. No domain declaration is required, but loopback, local networks and AorusGram control-plane domains are blocked.
+    aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'play.rectangle.fill', url: 'https://youtube.com', placement: 'interface' })
+    A shortcut has exactly one of pageId or url and appears in the main settings, never in the plugin library. placement: plugins (default), privacy, interface, tabs, messages, calls, wall, aorusCode or other. URL shortcuts request browser permission when the plugin is enabled. Loopback, local networks and AorusGram control-plane domains are blocked.
     aorus.integrations.contextMenu.register({ id: 'reply', title: 'Prepare reply', icon: 'message.fill' })
-    Selection emits aorus.on('contextAction', event) with actionId and source. Message text and identifiers are not disclosed implicitly. New-message events require their separate message permission. At most four plugin actions are shown at once so the menu always fits on screen.
+    Selection emits aorus.on('contextAction', event) with actionId and source. For a single selected message it also includes peerId, namespace, messageId and text. New-message events require a separate permission. At most four plugin actions appear at once.
 
     AorusAI
-    const answer = await aorus.ai.ask('Prepare a concise reply', { history: [{ role: 'user', content: 'Original text' }] })
+    const answer = await aorus.ai.ask('Prepare a concise reply', {
+      history: [{ role: 'user', content: 'Original text' }],
+      onEvent(event) {
+        if (event.type === 'status' || event.type === 'build.phase') console.log(event.label)
+      }
+    })
     await aorus.ai.openArtifact(answer.artifacts[0].id)
     For a multi-turn assistant use a session:
     const chat = aorus.ai.createChat()
-    const first = await chat.ask('Suggest a reply')
+    const first = await chat.ask('Suggest a reply', { onEvent(event) { console.log(event.type) } })
     const second = await chat.ask('Make it shorter')
     chat.messages()
     chat.clear()
+    chat.threadId()
     The session carries recent messages as history. The result contains text and artifacts with safe file metadata: id, filename, mime, size and format. Only a file returned to this plugin during the current session can be opened; download stays signed and server-authorized, then uses the native preview. HMAC, device secrets, tokens and internal routes never enter the plugin. A request that needs Telegram access or user approval must continue in the full AorusAI chat.
+
+    Plugin settings
+    aorus.settings.addSection({ title: 'Translator', items: [
+      { key: 'enabled', type: 'toggle', title: 'Enabled', default: true },
+      { key: 'interval', type: 'slider', title: 'Interval', min: 10, max: 300, step: 5, default: 60 },
+      { key: 'accent', type: 'colorPicker', title: 'Color', default: '#30D158' },
+      { key: 'reset', type: 'reset', title: 'Reset' }
+    ] })
+    aorus.settings.getPlugin('enabled', true)
+    aorus.settings.setPlugin('enabled', false)
+    aorus.on('settings.changed', event => console.log(event.key, event.value))
+    aorus.on('settings.reset', () => console.log('Reset'))
+    Available controls: toggle, text, multiline/textarea, number, select, multiSelect, slider, stepper, colorPicker/color, button and reset. A button emits settings.action with its key. Settings belong to the plugin.
 
     Clipboard
     await aorus.clipboard.read()

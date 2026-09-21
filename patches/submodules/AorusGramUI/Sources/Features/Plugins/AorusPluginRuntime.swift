@@ -80,7 +80,12 @@ public final class AorusPluginRuntimeManager {
             let state = AorusPluginStore.shared.permissionState(for: record.manifest.id)
             let digest = AorusPluginStore.sourceDigest(record.source)
             let requested = AorusPluginPermission.requestedBySource(record.source)
-            guard state.sourceDigest == digest, requested.isSubset(of: state.granted) else { continue }
+            guard state.sourceDigest == digest, requested.isSubset(of: state.granted) else {
+                var manifest = record.manifest
+                manifest.isEnabled = false
+                try? AorusPluginStore.shared.updateManifest(manifest)
+                continue
+            }
             lock.lock()
             let exists = sandboxes[record.manifest.id] != nil
             lock.unlock()
@@ -571,7 +576,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         }
     }
 
-    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void) {
+    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], threadId: String?, event onEvent: @escaping ([String: Any]) -> Void, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         guard AorusLicenseAccess.isAllowed,
               manager?.isPermissionGranted(.artificialIntelligence, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("AorusAI is unavailable")))
@@ -591,7 +596,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             return AorusAIAgentPayload.Message(role: role, content: content)
         }
         messages.append(AorusAIAgentPayload.Message(role: "user", content: prompt))
-        let payload = AorusAIAgentPayload(messages: messages)
+        let payload = AorusAIAgentPayload(messages: messages, threadId: threadId)
         let stateLock = NSLock()
         var text = ""
         var artifacts: [AorusAIArtifact] = []
@@ -613,12 +618,14 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             stateLock.lock()
             switch event {
             case let .agentStarted(turnId, _):
+                onEvent(["type": "agent.start"])
                 self.aiLock.lock()
                 let active = self.aiReservations.contains(pluginId) || self.aiStreams[pluginId] != nil
                 if active { self.aiTurnIds[pluginId] = turnId }
                 self.aiLock.unlock()
                 if !active { AorusAIClient.shared.cancelTurn(turnId) { _ in } }
             case let .responseDelta(delta):
+                onEvent(["type": "response.delta", "text": delta])
                 let room = max(0, AorusAIRequestLimits.responseCharacters - text.count)
                 if room > 0 { text.append(room >= delta.count ? delta : String(delta.prefix(room))) }
             case let .completion(value, ready):
@@ -627,14 +634,28 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                     if artifacts.count < AorusAIRequestLimits.responseArtifactCount { artifacts.append(artifact) }
                 }
             case let .artifactReady(artifact):
+                onEvent(["type": "artifact.ready", "filename": artifact.filename, "format": artifact.format, "size": artifact.size, "id": artifact.artifactId])
                 if artifacts.count < AorusAIRequestLimits.responseArtifactCount,
                    !artifacts.contains(where: { $0.artifactId == artifact.artifactId }) { artifacts.append(artifact) }
+            case let .status(label, progress):
+                var value: [String: Any] = ["type": "status", "label": label]
+                if let progress { value["progress"] = progress }
+                onEvent(value)
+            case let .buildPhase(phase, label, attempt):
+                onEvent(["type": "build.phase", "phase": phase, "label": label, "attempt": attempt])
+            case let .reasoningSummary(summary):
+                onEvent(["type": "reasoning.summary", "summary": summary])
+            case .responseStarted:
+                onEvent(["type": "response.start"])
+            case .responseDone:
+                onEvent(["type": "response.done"])
             case .toolRequest, .permissionRequest:
                 stateLock.unlock()
                 self.cancelAIStream(pluginId)
                 finish(.failure(AorusPluginRequestError("This AorusAI request needs an interaction in the full AorusAI chat")))
                 return
             case let .done(ok, _):
+                onEvent(["type": "done", "ok": ok])
                 let finalText = text
                 let finalArtifacts = artifacts
                 stateLock.unlock()
@@ -1419,8 +1440,12 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
 
     private func topController() -> UIViewController? {
         var controller = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
-        while let presented = controller?.presentedViewController { controller = presented }
-        if let navigation = controller as? UINavigationController { return navigation.topViewController }
+        while let current = controller {
+            if let presented = current.presentedViewController { controller = presented; continue }
+            if let navigation = current as? UINavigationController, let top = navigation.topViewController { controller = top; continue }
+            if let tabs = current as? UITabBarController, let selected = tabs.selectedViewController { controller = selected; continue }
+            break
+        }
         return controller
     }
 
@@ -1693,17 +1718,21 @@ private enum AorusPluginProxyBroker {
     }
 }
 
-/// Native message-menu contributions from running plugins. Selecting one reports only the
-/// plugin-owned action id. Message contents and Telegram identifiers are not implicitly
-/// disclosed by a UI integration; a plugin that needs message events must request that
-/// separate permission explicitly.
-public func aorusPluginMessageContextMenuItems() -> [ContextMenuItem] {
+/// The selected message is provided only when the native menu represents one message.
+public func aorusPluginMessageContextMenuItems(message: Message?) -> [ContextMenuItem] {
+    var payload: [String: Any] = ["source": "message"]
+    if let message {
+        payload["peerId"] = String(message.id.peerId.toInt64())
+        payload["namespace"] = message.id.namespace
+        payload["messageId"] = message.id.id
+        payload["text"] = message.text
+    }
     return AorusPluginRuntimeManager.shared.pluginContextActions().map { entry in
         .action(ContextMenuActionItem(text: entry.action.title, icon: { theme in
-            UIImage(systemName: AorusPluginIcon.normalized(entry.action.icon ?? AorusPluginIcon.fallback))?.withTintColor(theme.actionSheet.primaryTextColor, renderingMode: .alwaysOriginal)
+            UIImage(systemName: AorusPluginIcon.normalized(entry.action.icon ?? AorusPluginIcon.fallback))?.withTintColor(theme.contextMenu.primaryColor, renderingMode: .alwaysOriginal)
         }, action: { _, complete in
             complete(.default)
-            AorusPluginRuntimeManager.shared.dispatchContextAction(pluginId: entry.pluginId, actionId: entry.action.id, payload: ["source": "message"])
+            AorusPluginRuntimeManager.shared.dispatchContextAction(pluginId: entry.pluginId, actionId: entry.action.id, payload: payload)
         }))
     }
 }

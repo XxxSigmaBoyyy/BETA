@@ -1290,8 +1290,8 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
         if "wallEnabled" not in broker_features or "aorusgram_wall_visibility_changed" not in runtime:
             fail(errors, "plugin feature catalog must expose and immediately apply the AorusGram Wall setting")
     controllers = (ui / "AorusPluginControllers.swift").read_text(encoding="utf-8") if (ui / "AorusPluginControllers.swift").is_file() else ""
-    if "AorusPluginLicenseBoundDebugHost" not in controllers:
-        fail(errors, "plugin editor debug runtime is not bound to the license gate")
+    if "AorusPluginRuntimeManager.shared.restart(id: record.manifest.id)" not in controllers:
+        fail(errors, "plugin editor must run its plugin through the production account host")
     if "AorusPluginExport(record: record, settings: [:])" not in store:
         fail(errors, "plugin exports may include installation-owned settings")
     if "AorusPluginBadgeView(text: state.badge" in controllers:
@@ -1299,7 +1299,7 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
     branding = (root / "scripts/aorus_branding.py").read_text(encoding="utf-8")
     for marker in (
         "AorusPluginRuntimeManager.shared.processOutgoing",
-        "let aorusPluginMessages: [EnqueueMessage] = commit ? messages : messages.compactMap",
+        "let aorusPluginMessages: [EnqueueMessage] = messages.compactMap",
         "guard !aorusPluginMessages.isEmpty else { return }",
         "var messages = aorusPluginMessages",
     ):

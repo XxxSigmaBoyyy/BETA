@@ -20,7 +20,7 @@ public enum AorusPluginPrelude {
     public static let events: [String] = [
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
         "foreground", "background", "settingsChanged", "appSettingsChanged",
-        "connectionChanged", "uiAction", "contextAction",
+        "connectionChanged", "uiAction", "contextAction", "settings.changed", "settings.action", "settings.reset",
     ]
 
     public static let source: String = """
@@ -232,12 +232,19 @@ public enum AorusPluginPrelude {
         var nextRequestId = 1;
         var pending = {};
 
-        function request(kind, payload) {
+        function request(kind, payload, onEvent) {
             return new Promise(function (resolve, reject) {
                 var id = nextRequestId++;
-                pending[id] = { resolve: resolve, reject: reject };
+                pending[id] = { resolve: resolve, reject: reject, onEvent: onEvent };
                 host.request(kind, JSON.stringify(payload === undefined ? {} : payload), id);
             });
+        }
+
+        function requestEvent(id, json) {
+            var entry = pending[id];
+            if (!entry || typeof entry.onEvent !== 'function') { return; }
+            try { entry.onEvent(parseJSON(json, {})); }
+            catch (error) { reportError('AorusAI event handler failed', error); }
         }
 
         function settle(id, isRejection, value) {
@@ -314,6 +321,18 @@ public enum AorusPluginPrelude {
                 settingsSchema = JSON.parse(JSON.stringify(clean));
                 host.settingsDefine(JSON.stringify(settingsSchema));
             },
+            addSection: function (section) {
+                var value = optionalObject(section, 'section');
+                if (!Array.isArray(value.items)) { throw typeError('section.items must be an array'); }
+                var fields = settingsSchema.slice();
+                fields.push({ key: '__section_' + fields.length, type: 'section', title: requireString(value.title, 'section.title') });
+                for (var i = 0; i < value.items.length; i++) {
+                    var item = value.items[i];
+                    if (item && typeof item.key === 'string' && typeof item.type === 'string') { fields.push(item); }
+                }
+                settingsSchema = JSON.parse(JSON.stringify(fields));
+                host.settingsDefine(JSON.stringify(settingsSchema));
+            },
             get: function (key, fallback) {
                 requireString(key, 'key');
                 if (settingsCache.hasOwnProperty(key)) { return JSON.parse(JSON.stringify(settingsCache[key])); }
@@ -325,6 +344,18 @@ public enum AorusPluginPrelude {
                 var json = encodeValue(value, 'value');
                 host.settingsWrite(key, json);
                 settingsCache[key] = JSON.parse(json);
+            },
+            getPlugin: function (key, fallback) { return settings.get(key, fallback); },
+            setPlugin: function (key, value) { settings.set(key, value); },
+            toggle: function (key, fallback) {
+                var next = !settings.get(key, fallback);
+                settings.set(key, next);
+                return next;
+            },
+            remove: function (key) {
+                requireString(key, 'key');
+                host.settingsWrite(key, 'null');
+                delete settingsCache[key];
             },
             all: function () {
                 var result = {};
@@ -450,10 +481,12 @@ public enum AorusPluginPrelude {
         function createAIChat(options) {
             var opts = optionalObject(options, 'options');
             var history = Array.isArray(opts.history) ? JSON.parse(JSON.stringify(opts.history)) : [];
+            var threadId = typeof opts.threadId === 'string' ? opts.threadId : host.crypto('uuid', '', '');
             return freeze({
-                ask: function (prompt) {
+                ask: function (prompt, options) {
                     var text = requireString(prompt, 'prompt');
-                    return request('ai.ask', { prompt: text, history: history }).then(function (answer) {
+                    var call = optionalObject(options, 'options');
+                    return request('ai.ask', { prompt: text, history: history, threadId: threadId }, call.onEvent).then(function (answer) {
                         history.push({ role: 'user', content: text });
                         if (answer && typeof answer.text === 'string' && answer.text.length > 0) {
                             history.push({ role: 'assistant', content: answer.text });
@@ -462,8 +495,9 @@ public enum AorusPluginPrelude {
                         return answer;
                     });
                 },
-                clear: function () { history = []; },
-                messages: function () { return JSON.parse(JSON.stringify(history)); }
+                clear: function () { history = []; threadId = host.crypto('uuid', '', ''); },
+                messages: function () { return JSON.parse(JSON.stringify(history)); },
+                threadId: function () { return threadId; }
             });
         }
 
@@ -937,7 +971,7 @@ public enum AorusPluginPrelude {
                 ask: function (prompt, options) {
                     var opts = optionalObject(options, 'options');
                     var history = Array.isArray(opts.history) ? opts.history : [];
-                    return request('ai.ask', { prompt: requireString(prompt, 'prompt'), history: history });
+                    return request('ai.ask', { prompt: requireString(prompt, 'prompt'), history: history, threadId: opts.threadId || null }, opts.onEvent);
                 },
                 openArtifact: function (artifactId) {
                     return request('ai.openArtifact', { artifactId: requireString(artifactId, 'artifactId') });
@@ -970,6 +1004,7 @@ public enum AorusPluginPrelude {
             timerFire: timerFire,
             resolve: function (id, json) { settle(id, false, parseJSON(json, undefined)); },
             reject: function (id, message) { settle(id, true, message); },
+            requestEvent: requestEvent,
             settingsChanged: function (json) {
                 var values = parseJSON(json, {});
                 settingsCache = (values && typeof values === 'object' && !Array.isArray(values)) ? values : {};

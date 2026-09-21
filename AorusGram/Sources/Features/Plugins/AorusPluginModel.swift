@@ -16,7 +16,7 @@ public enum AorusPluginIcon {
         "globe", "terminal.fill", "clock.fill", "wand.and.stars", "heart.fill", "star.fill",
         "bell.fill", "text.bubble.fill", "arrow.triangle.2.circlepath", "lock.fill",
         "paperplane.fill", "brain.head.profile", "camera.fill", "mic.fill", "play.fill",
-        "music.note", "doc.fill", "folder.fill", "link", "bookmark.fill", "person.fill",
+        "music.note", "play.rectangle.fill", "hand.wave.fill", "doc.fill", "folder.fill", "link", "bookmark.fill", "person.fill",
         "person.2.fill", "gearshape.fill", "slider.horizontal.3", "checkmark.circle.fill",
         "square.and.pencil", "command", "curlybraces", "network", "photo.fill", "calendar",
         "location.fill", "map.fill", "cart.fill", "creditcard.fill", "gamecontroller.fill",
@@ -177,6 +177,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             // A needle this misses is denied at the call itself, with a message saying so.
             (.inAppBrowser, [
                 "aorus.browser.open", "aorus.ui.openURL", "aorus.app.openURL",
+                "aorus.integrations.settings.register",
                 "type: 'link'", "type: \"link\"", "\"type\":\"link\"", ".link({",
             ]),
             (.artificialIntelligence, ["aorus.ai."]),
@@ -375,14 +376,30 @@ public struct AorusPluginSettingsShortcut: Codable, Equatable {
     public var icon: String?
     public var pageId: String?
     public var url: String?
+    /// Main AorusGram settings destination. Never shown in the plugin library itself.
+    public var placement: String
 
-    public init(id: String, title: String, subtitle: String? = nil, icon: String? = nil, pageId: String? = nil, url: String? = nil) {
+    public init(id: String, title: String, subtitle: String? = nil, icon: String? = nil, pageId: String? = nil, url: String? = nil, placement: String = "plugins") {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.icon = icon
         self.pageId = pageId
         self.url = url
+        self.placement = placement
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, title, subtitle, icon, pageId, url, placement }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        subtitle = try values.decodeIfPresent(String.self, forKey: .subtitle)
+        icon = try values.decodeIfPresent(String.self, forKey: .icon)
+        pageId = try values.decodeIfPresent(String.self, forKey: .pageId)
+        url = try values.decodeIfPresent(String.self, forKey: .url)
+        placement = try values.decodeIfPresent(String.self, forKey: .placement) ?? "plugins"
     }
 
     public static func validated(from data: Data) -> [AorusPluginSettingsShortcut]? {
@@ -396,6 +413,7 @@ public struct AorusPluginSettingsShortcut: Codable, Equatable {
             guard identifier?.firstMatch(in: item.id, range: NSRange(location: 0, length: item.id.utf16.count)) != nil,
                   ids.insert(item.id).inserted,
                   !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  ["plugins", "privacy", "interface", "tabs", "messages", "calls", "wall", "aorusCode", "other"].contains(item.placement),
                   (item.pageId != nil) != (item.url != nil) else { return nil }
             if let pageId = item.pageId,
                identifier?.firstMatch(in: pageId, range: NSRange(location: 0, length: pageId.utf16.count)) == nil { return nil }
@@ -613,6 +631,13 @@ public struct AorusPluginSettingField: Codable, Equatable {
         case multiline
         case number
         case select
+        case multiSelect
+        case slider
+        case stepper
+        case colorPicker
+        case button
+        case reset
+        case section
     }
 
     public struct Option: Codable, Equatable {
@@ -633,9 +658,10 @@ public struct AorusPluginSettingField: Codable, Equatable {
     public var options: [Option]?
     public var minimum: Double?
     public var maximum: Double?
+    public var step: Double?
     public var placeholder: String?
 
-    public init(key: String, kind: Kind, title: String, summary: String? = nil, defaultValue: AorusPluginJSONValue? = nil, options: [Option]? = nil, minimum: Double? = nil, maximum: Double? = nil, placeholder: String? = nil) {
+    public init(key: String, kind: Kind, title: String, summary: String? = nil, defaultValue: AorusPluginJSONValue? = nil, options: [Option]? = nil, minimum: Double? = nil, maximum: Double? = nil, step: Double? = nil, placeholder: String? = nil) {
         self.key = key
         self.kind = kind
         self.title = title
@@ -644,6 +670,7 @@ public struct AorusPluginSettingField: Codable, Equatable {
         self.options = options
         self.minimum = minimum
         self.maximum = maximum
+        self.step = step
         self.placeholder = placeholder
     }
 
@@ -653,7 +680,7 @@ public struct AorusPluginSettingField: Codable, Equatable {
     public init?(definition: [String: Any]) {
         guard let key = definition["key"] as? String, !key.isEmpty,
               let rawKind = definition["type"] as? String,
-              let kind = Kind(rawValue: rawKind) else {
+              let kind = Kind(rawValue: rawKind == "textarea" ? "multiline" : (rawKind == "color" ? "colorPicker" : rawKind)) else {
             return nil
         }
         self.key = key
@@ -679,6 +706,7 @@ public struct AorusPluginSettingField: Codable, Equatable {
         }
         self.minimum = (definition["min"] as? NSNumber)?.doubleValue
         self.maximum = (definition["max"] as? NSNumber)?.doubleValue
+        self.step = (definition["step"] as? NSNumber)?.doubleValue
         self.placeholder = definition["placeholder"] as? String
     }
 
@@ -696,6 +724,15 @@ public struct AorusPluginSettingField: Codable, Equatable {
             field.placeholder = field.placeholder.map { String($0.prefix(200)) }
             field.options = field.options.map { options in
                 options.prefix(100).map { Option(value: String($0.value.prefix(256)), title: String($0.title.prefix(120))) }
+            }
+            if field.kind == .slider || field.kind == .stepper {
+                let minimum = field.minimum ?? 0
+                let maximum = field.maximum ?? 100
+                guard minimum.isFinite, maximum.isFinite, minimum < maximum,
+                      abs(minimum) < 1_000_000, abs(maximum) < 1_000_000 else { continue }
+                field.minimum = minimum
+                field.maximum = maximum
+                if let step = field.step, (!step.isFinite || step <= 0 || step > maximum - minimum) { continue }
             }
             if seen.insert(field.key).inserted {
                 fields.append(field)

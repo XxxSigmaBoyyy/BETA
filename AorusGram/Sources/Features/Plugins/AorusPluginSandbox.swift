@@ -47,7 +47,7 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginOpenURL(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginOpenTelegramLink(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void)
-    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], threadId: String?, event: @escaping ([String: Any]) -> Void, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginAppFeatures(_ pluginId: String, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
     func pluginSetAppFeature(_ pluginId: String, featureId: String, value: Any, completion: @escaping (Result<[String: Any], Error>) -> Void)
@@ -87,6 +87,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onOpenTelegramLink: ((String, String) -> Void)?
     public var onChatHistory: ((String, Int64?, Bool, Int) -> [[String: Any]])?
     public var onAIAsk: ((String, String, [[String: String]]) -> [String: Any])?
+    public var onAIEvent: ((String, [String: Any]) -> Void)?
     public var onAIOpenArtifact: ((String, String) -> Void)?
     public var onAppFeatures: ((String) -> [[String: Any]])?
     public var onSetAppFeature: ((String, String, Any) -> [String: Any])?
@@ -148,7 +149,9 @@ open class AorusPluginNullHost: AorusPluginHostServices {
         onOpenTelegramLink?(pluginId, url)
         completion(.success(()))
     }
-    open func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], completion: @escaping (Result<[String: Any], Error>) -> Void) {
+    open func pluginAIAsk(_ pluginId: String, prompt: String, history: [[String: String]], threadId: String?, event: @escaping ([String: Any]) -> Void, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        onAIEvent?(pluginId, ["type": "status", "label": "Working"])
+        event(["type": "status", "label": "Working"])
         completion(.success(onAIAsk?(pluginId, prompt, history) ?? ["text": "", "artifacts": []]))
     }
     open func pluginAIOpenArtifact(_ pluginId: String, artifactId: String, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -263,6 +266,13 @@ public final class AorusPluginSandbox {
     /// Called on the sandbox queue for every log line, after the host has been told. The
     /// editor's console attaches here.
     public var onLog: ((AorusPluginLogEntry) -> Void)?
+
+    public func observeLog(_ observer: ((AorusPluginLogEntry) -> Void)?) {
+        queue.async {
+            self.onLog = observer
+            if let observer { self.recentLog.forEach(observer) }
+        }
+    }
 
     public init(manifest: AorusPluginManifest, source: String, host: AorusPluginHostServices, permissions: Set<AorusPluginPermission> = [], storage: [String: AorusPluginJSONValue] = [:], settings: [String: AorusPluginJSONValue] = [:], settingsSchema: [AorusPluginSettingField] = []) {
         self.manifest = manifest
@@ -504,11 +514,15 @@ public final class AorusPluginSandbox {
     public func updateSettings(_ values: [String: AorusPluginJSONValue]) {
         queue.async {
             self.stateLock.lock()
+            let previous = self.settingsValues
             self.settingsValues = values
             self.stateLock.unlock()
             guard let dispatcher = self.dispatcher, self.context != nil, !self.isHung else { return }
             let json = String(decoding: AorusPluginJSONValue.object(values).serialized(), as: UTF8.self)
             dispatcher.invokeMethod("settingsChanged", withArguments: [json])
+            for (key, value) in values where previous[key] != value {
+                self.deliver(event: "settings.changed", payload: ["pluginId": self.manifest.id, "key": key, "value": value.anyValue])
+            }
         }
     }
 
@@ -729,7 +743,7 @@ public final class AorusPluginSandbox {
                   let value = AorusPluginJSONValue.parse(data) else { return }
             self.stateLock.lock()
             let previous = self.settingsValues
-            self.settingsValues[key] = value
+            self.settingsValues[key] = value.isNull ? nil : value
             let snapshot = self.settingsValues
             if AorusPluginJSONValue.object(snapshot).serialized().count > AorusPluginStore.storageLimitBytes {
                 self.settingsValues = previous
@@ -893,6 +907,16 @@ public final class AorusPluginSandbox {
             case let .failure(error):
                 dispatcher.invokeMethod("reject", withArguments: [NSNumber(value: id), AorusPluginSandbox.message(for: error)])
             }
+        }
+    }
+
+    private func deliverRequestEvent(_ id: Int32, value: [String: Any]) {
+        queue.async {
+            guard self.hostServices.pluginExecutionAllowed,
+                  self.pendingRequestIds.contains(id),
+                  let dispatcher = self.dispatcher, self.context != nil,
+                  let json = AorusPluginJSONValue(any: value) else { return }
+            dispatcher.invokeMethod("requestEvent", withArguments: [NSNumber(value: id), String(decoding: json.serialized(), as: UTF8.self)])
         }
     }
 
@@ -1232,7 +1256,10 @@ public final class AorusPluginSandbox {
                       let content = item["content"] as? String, !content.isEmpty else { return nil }
                 return ["role": role, "content": String(content.prefix(8_000))]
             }
-            host.pluginAIAsk(pluginId, prompt: prompt, history: Array(history)) { [weak self] result in
+            let threadId = string("threadId").flatMap { UUID(uuidString: $0)?.uuidString }
+            host.pluginAIAsk(pluginId, prompt: prompt, history: Array(history), threadId: threadId, event: { [weak self] value in
+                self?.deliverRequestEvent(id, value: value)
+            }) { [weak self] result in
                 self?.settle(id, with: result.map { $0 as Any })
             }
         case "ai.openArtifact":

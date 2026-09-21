@@ -17704,7 +17704,7 @@ def patch_plugin_outgoing_messages(tg: Path) -> None:
         "\n"
         "        // AorusGram plugins: only human-authored plain text enters the plugin chain.\n"
         "        // Media captions, forwards, service messages and background sends bypass it.\n"
-        "        let aorusPluginMessages: [EnqueueMessage] = commit ? messages : messages.compactMap { message in\n"
+        "        let aorusPluginMessages: [EnqueueMessage] = messages.compactMap { message in\n"
         "            guard case let .message(text, attributes, inlineStickers, mediaReference, threadId, replyToMessageId, replyToStoryId, localGroupingKey, correlationId, bubbleUpEmojiOrStickersets) = message,\n"
         "                  mediaReference == nil, inlineStickers.isEmpty, !text.isEmpty else {\n"
         "                return message\n"
@@ -17756,7 +17756,7 @@ def patch_plugin_context_menu(tg: Path) -> None:
         raise SystemExit("Plugins: context-menu reply anchor not found")
     injection = (
         "        " + sentinel + "\n"
-        "        actions.append(contentsOf: aorusPluginMessageContextMenuItems())\n"
+        "        actions.append(contentsOf: aorusPluginMessageContextMenuItems(message: messages.count == 1 ? messages[0] : nil))\n"
         "\n"
     )
     path.write_text(source.replace(anchor, injection + anchor, 1), encoding="utf-8")

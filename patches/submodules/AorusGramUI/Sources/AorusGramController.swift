@@ -496,7 +496,7 @@ private enum AorusEntry: ItemListNodeEntry {
     case accountBackupHeader(PresentationTheme, String)
     case accountBackup(PresentationTheme, String)
     case plugins(PresentationTheme, String)
-    case pluginShortcut(PresentationTheme, String, String, String, String, Int32)
+    case pluginShortcut(PresentationTheme, String, String, String, String, Int32, ItemListSectionId, Int32)
     case misc(PresentationTheme, String)
 
     case aorusCodeHeader(PresentationTheme, String)
@@ -550,8 +550,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.antiSpoof.rawValue
         case .accountBackupHeader, .accountBackup:
             return AorusSection.accountBackup.rawValue
-        case .plugins, .pluginShortcut:
+        case .plugins:
             return AorusSection.plugins.rawValue
+        case let .pluginShortcut(_, _, _, _, _, _, section, _):
+            return section
         case .misc:
             return AorusSection.misc.rawValue
         case .aorusCodeHeader, .aorusCodeEnabled:
@@ -644,7 +646,7 @@ private enum AorusEntry: ItemListNodeEntry {
         case .aorusCodeHeader:      return 97
         case .aorusCodeEnabled:     return 98
         case .plugins:              return 99
-        case let .pluginShortcut(_, _, _, _, _, stableId): return stableId
+        case let .pluginShortcut(_, _, _, _, _, stableId, _, _): return stableId
         case .misc:                 return 130
         case .subscription:         return 136
         case .officialChannel:      return 137
@@ -654,7 +656,11 @@ private enum AorusEntry: ItemListNodeEntry {
     }
 
     static func < (lhs: AorusEntry, rhs: AorusEntry) -> Bool {
-        return lhs.stableId < rhs.stableId
+        func order(_ entry: AorusEntry) -> Int32 {
+            if case let .pluginShortcut(_, _, _, _, _, _, _, placementOrder) = entry { return placementOrder }
+            return entry.stableId * 1000
+        }
+        return order(lhs) < order(rhs)
     }
 
     static func == (lhs: AorusEntry, rhs: AorusEntry) -> Bool {
@@ -799,9 +805,9 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .accountBackup(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .plugins(lt, ls):
             if case let .plugins(rt, rs) = rhs { return lt === rt && ls == rs }
-        case let .pluginShortcut(lt, ltitle, lsubtitle, lplugin, lid, lstable):
-            if case let .pluginShortcut(rt, rtitle, rsubtitle, rplugin, rid, rstable) = rhs {
-                return lt === rt && ltitle == rtitle && lsubtitle == rsubtitle && lplugin == rplugin && lid == rid && lstable == rstable
+        case let .pluginShortcut(lt, ltitle, lsubtitle, lplugin, lid, lstable, lsection, lorder):
+            if case let .pluginShortcut(rt, rtitle, rsubtitle, rplugin, rid, rstable, rsection, rorder) = rhs {
+                return lt === rt && ltitle == rtitle && lsubtitle == rsubtitle && lplugin == rplugin && lid == rid && lstable == rstable && lsection == rsection && lorder == rorder
             }
         case let .misc(lt, ls):
             if case let .misc(rt, rs) = rhs { return lt === rt && ls == rs }
@@ -982,7 +988,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openAccountBackup)
         case let .plugins(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openPlugins)
-        case let .pluginShortcut(_, title, subtitle, pluginId, id, _):
+        case let .pluginShortcut(_, title, subtitle, pluginId, id, _, _, _):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: subtitle, sectionId: section, style: .blocks, action: { args.openPluginShortcut(pluginId, id) })
         case let .misc(_, title):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openMisc)
@@ -1129,12 +1135,25 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .proxyDiagnostics(theme, l10n.proxyDiagnostics), // AORUS-DIAG
     ]
 
-    if let pluginIndex = entries.firstIndex(where: { if case .plugins = $0 { return true }; return false }) {
-        let shortcuts = AorusPluginRuntimeManager.shared.pluginSettingsShortcuts().prefix(24)
-        entries.insert(contentsOf: shortcuts.enumerated().map { offset, item in
-            .pluginShortcut(theme, item.shortcut.title, item.shortcut.subtitle ?? "", item.pluginId, item.shortcut.id, Int32(100 + offset))
-        }, at: pluginIndex + 1)
+    let shortcuts = AorusPluginRuntimeManager.shared.pluginSettingsShortcuts().prefix(24)
+    for (offset, item) in shortcuts.enumerated() {
+        let placement = item.shortcut.placement
+        let anchor = entries.firstIndex(where: { entry in
+            switch (placement, entry) {
+            case ("privacy", .privacyHeader), ("interface", .uiHeader),
+                 ("tabs", .tabsHeader), ("messages", .editLocalHeader),
+                 ("calls", .callsHeader), ("wall", .wallHeader),
+                 ("aorusCode", .aorusCodeHeader), ("other", .misc),
+                 ("plugins", .plugins):
+                return true
+            default: return false
+            }
+        })
+        guard let anchor else { continue }
+        let entry: AorusEntry = .pluginShortcut(theme, item.shortcut.title, item.shortcut.subtitle ?? "", item.pluginId, item.shortcut.id, Int32(100 + offset), entries[anchor].section, entries[anchor].stableId * 1000 + Int32(offset + 1))
+        entries.insert(entry, at: anchor + 1)
     }
+    entries.sort()
 
     if state.antiSpamEnabled, let idx = entries.firstIndex(where: {
         if case .antiSpam = $0 { return true }; return false

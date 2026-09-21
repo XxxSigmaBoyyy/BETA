@@ -126,6 +126,18 @@ let unsafeLinkPage = Data("[{\"id\":\"main\",\"title\":\"Main\",\"sections\":[{\
 expect(AorusPluginUIPage.validated(from: unsafeLinkPage) == nil, "native page links reject non-web schemes")
 let shortcutJSON = Data("[{\"id\":\"youtube\",\"title\":\"YouTube\",\"url\":\"https://youtube.com\"}]".utf8)
 expect(AorusPluginSettingsShortcut.validated(from: shortcutJSON)?.count == 1, "valid settings shortcut is accepted")
+let placedShortcutJSON = Data("[{\"id\":\"youtube\",\"title\":\"YouTube\",\"url\":\"https://youtube.com\",\"placement\":\"interface\"}]".utf8)
+expect(AorusPluginSettingsShortcut.validated(from: placedShortcutJSON)?.first?.placement == "interface", "settings shortcut can choose its native destination")
+let invalidPlacementJSON = Data("[{\"id\":\"wrong\",\"title\":\"Wrong\",\"url\":\"https://example.com\",\"placement\":\"license\"}]".utf8)
+expect(AorusPluginSettingsShortcut.validated(from: invalidPlacementJSON) == nil, "plugins cannot inject into the license screen")
+let settingSchema = AorusPluginSettingField.schema(from: [
+    ["key": "__section_0", "type": "section", "title": "General"],
+    ["key": "interval", "type": "slider", "title": "Interval", "min": 10, "max": 300, "step": 5],
+    ["key": "accent", "type": "color", "title": "Accent"],
+    ["key": "notes", "type": "textarea", "title": "Notes"],
+    ["key": "reset", "type": "reset", "title": "Reset"],
+])
+expect(settingSchema.map { $0.kind } == [.section, .slider, .colorPicker, .multiline, .reset], "plugin setting sections support native controls")
 let ambiguousShortcutJSON = Data("[{\"id\":\"bad\",\"title\":\"Bad\",\"pageId\":\"main\",\"url\":\"https://example.com\"}]".utf8)
 expect(AorusPluginSettingsShortcut.validated(from: ambiguousShortcutJSON) == nil, "shortcut cannot mix page and URL destinations")
 let unsafeShortcutJSON = Data("[{\"id\":\"bad\",\"title\":\"Bad\",\"url\":\"javascript:alert(1)\"}]".utf8)
@@ -271,6 +283,34 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(!verdict.consumed && verdict.replacement == "HELLO", "chat command replaces outgoing text")
     command.stop()
 
+    let asyncHost = AorusPluginNullHost()
+    var translatedMessages: [String] = []
+    let translated = DispatchSemaphore(value: 0)
+    asyncHost.onAIAsk = { _, prompt, _ in ["text": "Translated: \(prompt)", "artifacts": []] }
+    asyncHost.onSendMessage = { _, _, _, _, text, _ in translatedMessages.append(text); translated.signal() }
+    let asyncCommand = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Translate command"),
+        source: """
+        aorus.commands.register('tr', async function (args, context) {
+            var answer = await aorus.ai.ask(args, { onEvent: function (event) {
+                if (event.type === 'status') { aorus.storage.set('phase', event.label); }
+            }});
+            return answer.text;
+        });
+        """,
+        host: asyncHost,
+        permissions: [.outgoingMessages, .artificialIntelligence, .sendMessages]
+    )
+    let asyncStarted = DispatchSemaphore(value: 0)
+    asyncCommand.start { error in expect(error == nil, "async command starts"); asyncStarted.signal() }
+    _ = asyncStarted.wait(timeout: .now() + 2)
+    let asyncVerdict = asyncCommand.processOutgoing(text: ".tr hello", peerId: 100, accountId: 200, timeout: 0.5)
+    expect(asyncVerdict.consumed, "async command consumes original text before Telegram enqueue")
+    expect(translated.wait(timeout: .now() + 2) == .success, "async command completes its send")
+    expect(translatedMessages == ["Translated: hello"], "async AI command sends the answer exactly once")
+    expect(asyncCommand.storageSnapshot["phase"]?.stringValue == "Working", "AI progress events reach the plugin")
+    asyncCommand.stop()
+
     let integrationHost = AorusPluginNullHost()
     var receivedPages: [AorusPluginUIPage] = []
     var receivedShortcuts: [AorusPluginSettingsShortcut] = []
@@ -311,6 +351,32 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(receivedActions.first?.id == "reply", "JavaScript context action reaches the native host")
     expect(sharedText == "Prepared securely", "native share broker reaches the host without exposing UIApplication")
     integration.stop()
+
+    let linkHost = AorusPluginNullHost()
+    var linkedShortcuts: [AorusPluginSettingsShortcut] = []
+    linkHost.onSettingsShortcutsChanged = { _, value in linkedShortcuts = value }
+    let linkSource = "aorus.integrations.settings.register({ id: 'youtube', title: 'YouTube', icon: 'play.rectangle.fill', url: 'https://youtube.com', placement: 'interface' });"
+    expect(AorusPluginPermission.requestedBySource(linkSource).contains(.inAppBrowser), "settings link requests browser permission during review")
+    let link = AorusPluginSandbox(manifest: AorusPluginManifest(name: "YouTube"), source: linkSource, host: linkHost, permissions: [.settingsIntegration, .inAppBrowser])
+    let linkStarted = DispatchSemaphore(value: 0)
+    link.start { error in expect(error == nil, "documented URL shortcut starts with reviewed permissions"); linkStarted.signal() }
+    _ = linkStarted.wait(timeout: .now() + 2)
+    expect(linkedShortcuts.first?.placement == "interface", "URL shortcut reaches its chosen section")
+    link.stop()
+
+    let settingsHost = AorusPluginNullHost()
+    var declaredSettings: [AorusPluginSettingField] = []
+    settingsHost.onSettingsSchemaChanged = { _, fields in declaredSettings = fields }
+    let settingsPlugin = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Settings form"),
+        source: "aorus.settings.addSection({ title: 'General', items: [{ key: 'delay', type: 'slider', title: 'Delay', min: 1, max: 10, default: 3 }] });",
+        host: settingsHost
+    )
+    let settingsStarted = DispatchSemaphore(value: 0)
+    settingsPlugin.start { error in expect(error == nil, "settings form plugin starts"); settingsStarted.signal() }
+    _ = settingsStarted.wait(timeout: .now() + 2)
+    expect(declaredSettings.map { $0.kind } == [.section, .slider], "addSection publishes its native settings controls")
+    settingsPlugin.stop()
 
     let customizationHost = AorusPluginNullHost()
     var changedFeature: String?
