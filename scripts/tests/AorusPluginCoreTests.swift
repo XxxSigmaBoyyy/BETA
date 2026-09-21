@@ -595,6 +595,65 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(slowActions == 1, "events are still delivered while the outgoing hook is cooling down")
     expect(slow.registration().commands.isEmpty, "a send handler is not a command")
     slow.stop()
+
+    // Formatted text. Telegram counts entity offsets in UTF-16 code units, which is not
+    // what a character count gives once an emoji is in the string — get it wrong and the
+    // formatting lands on the wrong characters instead of failing, so the offsets are
+    // checked against a string that has one.
+    let formatHost = AorusPluginNullHost()
+    var sentText: String?
+    var sentEntities: [AorusPluginTextEntity] = []
+    formatHost.onSendMessage = { _, _, _, _, text, _ in sentText = text }
+    formatHost.onSendEntities = { _, entities in sentEntities = entities }
+    let formatSource = """
+    aorus.on('start', function () {
+        var payload = aorus.text.compose([
+            '💎 ', aorus.text.bold('жирный'), ' ',
+            aorus.text.link('сайт', 'https://example.com'), ' ',
+            aorus.text.customEmoji('🔥', '5234567890'), ' ',
+            aorus.text.pre('code()', 'swift')
+        ]);
+        aorus.messages.send('me', payload);
+    });
+    """
+    let format = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Formatting"),
+        source: formatSource,
+        host: formatHost,
+        permissions: [.sendMessages]
+    )
+    let formatStarted = DispatchSemaphore(value: 0)
+    format.start { error in expect(error == nil, "formatting plugin starts"); formatStarted.signal() }
+    _ = formatStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(sentText == "💎 жирный сайт 🔥 code()", "compose joins the parts in order")
+    expect(sentEntities.count == 4, "every styled part becomes an entity")
+    if sentEntities.count == 4 {
+        let utf16 = Array((sentText ?? "").utf16)
+        expect(sentEntities[0].kind == .bold, "the first entity is the bold run")
+        // "💎 " is three UTF-16 units, not two: the diamond is a surrogate pair.
+        expect(sentEntities[0].offset == 3, "an emoji before the run is counted in UTF-16 units")
+        expect(sentEntities[0].length == 6, "the bold run covers exactly its own text")
+        let boldUnits = Array(utf16[sentEntities[0].offset ..< (sentEntities[0].offset + sentEntities[0].length)])
+        expect(String(utf16CodeUnits: boldUnits, count: boldUnits.count) == "жирный", "the bold range lands on the bold text")
+        expect(sentEntities[1].kind == .textLink && sentEntities[1].url == "https://example.com", "a link carries its url")
+        expect(sentEntities[2].kind == .customEmoji && sentEntities[2].customEmojiId == 5_234_567_890, "a custom emoji carries its numeric id")
+        expect(sentEntities[3].kind == .pre && sentEntities[3].language == "swift", "a pre block carries its language")
+    }
+    format.stop()
+
+    // Everything a plugin can get wrong in an entity is dropped rather than shifting the
+    // rest of the formatting: a range past the end, a link that is not a web link, an
+    // emoji id that is not a number, a type nobody knows.
+    let rejected = AorusPluginTextEntity.validated([
+        ["type": "bold", "offset": NSNumber(value: 0), "length": NSNumber(value: 4)],
+        ["type": "bold", "offset": NSNumber(value: 3), "length": NSNumber(value: 99)],
+        ["type": "text_link", "offset": NSNumber(value: 0), "length": NSNumber(value: 2), "url": "file:///etc/passwd"],
+        ["type": "custom_emoji", "offset": NSNumber(value: 0), "length": NSNumber(value: 2), "customEmojiId": "not-a-number"],
+        ["type": "rainbow", "offset": NSNumber(value: 0), "length": NSNumber(value: 2)],
+        ["type": "italic", "offset": NSNumber(value: -1), "length": NSNumber(value: 2)]
+    ], text: "abcd")
+    expect(rejected.count == 1 && rejected[0].kind == .bold, "only the entity that fits the text survives validation")
 }
 
 if failures == 0 {

@@ -1058,7 +1058,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         stream?.cancelTransport()
     }
 
-    func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
+    func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, entities: [AorusPluginTextEntity], replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
         guard manager?.isPermissionGranted(.sendMessages, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Send messages permission is not granted")))
             return
@@ -1076,8 +1076,13 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             completion(.failure(AorusPluginRequestError("peerId is required")))
             return
         }
+        var attributes: [MessageAttribute] = []
+        let converted = aorusPluginMessageEntities(entities)
+        if !converted.isEmpty {
+            attributes.append(TextEntitiesMessageAttribute(entities: converted))
+        }
         let signal = enqueueMessages(account: context.account, peerId: target, messages: [
-            .message(text: text, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])
+            .message(text: text, attributes: attributes, inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])
         ])
         let _ = signal.start(completed: { completion(.success(())) })
     }
@@ -1781,6 +1786,41 @@ private enum AorusPluginProxyBroker {
 }
 
 /// The selected message is provided only when the native menu represents one message.
+/// Formatting a plugin described, in Telegram's own terms.
+///
+/// The offsets arrive in UTF-16 code units, already checked against the text, which is what
+/// `MessageTextEntity` counts in too — so the ranges carry over directly. A custom emoji
+/// with no sticker pack reference is exactly what Telegram builds for an emoji sent by id.
+private func aorusPluginMessageEntities(_ entities: [AorusPluginTextEntity]) -> [MessageTextEntity] {
+    return entities.compactMap { entity in
+        let range = entity.offset ..< (entity.offset + entity.length)
+        switch entity.kind {
+        case .bold:
+            return MessageTextEntity(range: range, type: .Bold)
+        case .italic:
+            return MessageTextEntity(range: range, type: .Italic)
+        case .underline:
+            return MessageTextEntity(range: range, type: .Underline)
+        case .strikethrough:
+            return MessageTextEntity(range: range, type: .Strikethrough)
+        case .spoiler:
+            return MessageTextEntity(range: range, type: .Spoiler)
+        case .code:
+            return MessageTextEntity(range: range, type: .Code)
+        case .pre:
+            return MessageTextEntity(range: range, type: .Pre(language: entity.language))
+        case .blockquote:
+            return MessageTextEntity(range: range, type: .BlockQuote(isCollapsed: entity.collapsed))
+        case .textLink:
+            guard let url = entity.url else { return nil }
+            return MessageTextEntity(range: range, type: .TextUrl(url: url))
+        case .customEmoji:
+            guard let fileId = entity.customEmojiId else { return nil }
+            return MessageTextEntity(range: range, type: .CustomEmoji(stickerPack: nil, fileId: fileId))
+        }
+    }
+}
+
 /// A shortcut a plugin registered, ready to be drawn as a row in Telegram's own settings
 /// list. The row is built by the settings screen, which lives in another module and cannot
 /// see anything of ours, so everything it needs — including the rendered icon — comes

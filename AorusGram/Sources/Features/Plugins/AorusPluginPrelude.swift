@@ -369,6 +369,98 @@ public enum AorusPluginPrelude {
             }
         });
 
+        // ---- formatted text ---------------------------------------------------------------
+
+        // Telegram counts entity offsets in UTF-16 code units, which is not what
+        // `String.length` gives you once an emoji is involved — and getting it wrong moves
+        // the formatting onto the wrong characters rather than failing. `compose` walks the
+        // parts and counts for you.
+        var ENTITY_TYPES = ['bold', 'italic', 'underline', 'strikethrough', 'spoiler', 'code', 'pre', 'blockquote', 'text_link', 'custom_emoji'];
+
+        function utf16Length(value) { return String(value).length; }
+
+        function textPart(value, entity) {
+            return { __aorusTextPart: true, text: String(value), entity: entity || null };
+        }
+
+        function styled(type) {
+            return function (value) { return textPart(value, { type: type }); };
+        }
+
+        function entityDescriptor(type, offset, length, extra) {
+            requireString(type, 'type');
+            if (ENTITY_TYPES.indexOf(type) === -1) { throw new Error('Unknown entity type: ' + type); }
+            var entity = { type: type, offset: Math.max(0, Math.floor(Number(offset) || 0)), length: Math.max(0, Math.floor(Number(length) || 0)) };
+            var options = optionalObject(extra, 'extra');
+            if (typeof options.url === 'string') { entity.url = options.url; }
+            if (typeof options.language === 'string') { entity.language = options.language; }
+            if (typeof options.customEmojiId === 'string') { entity.customEmojiId = options.customEmojiId; }
+            if (options.collapsed !== undefined) { entity.collapsed = !!options.collapsed; }
+            return entity;
+        }
+
+        var textApi = freeze({
+            bold: styled('bold'),
+            italic: styled('italic'),
+            underline: styled('underline'),
+            strikethrough: styled('strikethrough'),
+            spoiler: styled('spoiler'),
+            code: styled('code'),
+            pre: function (value, language) {
+                return textPart(value, typeof language === 'string' ? { type: 'pre', language: language } : { type: 'pre' });
+            },
+            blockquote: function (value, collapsed) {
+                return textPart(value, { type: 'blockquote', collapsed: !!collapsed });
+            },
+            link: function (value, url) {
+                return textPart(value, { type: 'text_link', url: requireString(url, 'url') });
+            },
+            customEmoji: function (value, customEmojiId) {
+                return textPart(value, { type: 'custom_emoji', customEmojiId: requireString(customEmojiId, 'customEmojiId') });
+            },
+            entity: entityDescriptor,
+            compose: function (parts) {
+                if (!Array.isArray(parts)) { throw typeError('parts must be an array'); }
+                var text = '';
+                var entities = [];
+                for (var i = 0; i < parts.length; i++) {
+                    var part = parts[i];
+                    if (part && part.__aorusTextPart) {
+                        var offset = utf16Length(text);
+                        var length = utf16Length(part.text);
+                        text += part.text;
+                        if (part.entity && length > 0) {
+                            var entity = { type: part.entity.type, offset: offset, length: length };
+                            if (part.entity.url !== undefined) { entity.url = part.entity.url; }
+                            if (part.entity.language !== undefined) { entity.language = part.entity.language; }
+                            if (part.entity.customEmojiId !== undefined) { entity.customEmojiId = part.entity.customEmojiId; }
+                            if (part.entity.collapsed !== undefined) { entity.collapsed = part.entity.collapsed; }
+                            entities.push(entity);
+                        }
+                    } else {
+                        text += String(part === undefined || part === null ? '' : part);
+                    }
+                }
+                return { text: text, entities: entities };
+            }
+        });
+
+        // A send payload may be a plain string or the object `text.compose` returns.
+        function textPayload(value, fallbackOptions) {
+            if (typeof value === 'string') {
+                return { text: value, entities: [] };
+            }
+            var payload = optionalObject(value, 'text');
+            var text = requireString(payload.text, 'text');
+            var entities = Array.isArray(payload.entities) ? payload.entities : [];
+            var clean = [];
+            for (var i = 0; i < entities.length && clean.length < 128; i++) {
+                var item = optionalObject(entities[i], 'entity');
+                clean.push(entityDescriptor(item.type, item.offset, item.length, item));
+            }
+            return { text: text, entities: clean };
+        }
+
         // ---- native UI and integrations -------------------------------------------------
 
         var settingsShortcuts = [];
@@ -771,12 +863,13 @@ public enum AorusPluginPrelude {
             messages: freeze({
                 send: function (peerId, text, options) {
                     var target = toPeerId(peerId);
-                    requireString(text, 'text');
+                    var payload = textPayload(text);
                     var opts = optionalObject(options, 'options');
                     return request('messages.send', {
                         peerId: target === 'me' ? null : target,
                         toSelf: target === 'me',
-                        text: text,
+                        text: payload.text,
+                        entities: payload.entities,
                         replyTo: typeof opts.replyTo === 'number' ? opts.replyTo : null,
                         accountId: (typeof opts.accountId === 'string' && /^-?\\d+$/.test(opts.accountId)) ? opts.accountId : (typeof opts.accountId === 'number' && Number.isSafeInteger(opts.accountId) ? String(opts.accountId) : null)
                     });
@@ -977,6 +1070,7 @@ public enum AorusPluginPrelude {
                     return request('ai.openArtifact', { artifactId: requireString(artifactId, 'artifactId') });
                 }
             }),
+            text: textApi,
             clipboard: freeze({
                 read: function () { return request('clipboard.read', {}); },
                 write: function (text) { host.clipboardWrite(requireString(text, 'text')); }

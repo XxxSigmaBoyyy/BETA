@@ -24,7 +24,7 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginStorageChanged(_ pluginId: String, values: [String: AorusPluginJSONValue])
     func pluginSettingsSchemaChanged(_ pluginId: String, fields: [AorusPluginSettingField])
     func pluginSettingsChanged(_ pluginId: String, values: [String: AorusPluginJSONValue])
-    func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, entities: [AorusPluginTextEntity], replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginEditMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, text: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginDeleteMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, forEveryone: Bool, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginForwardMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, toPeerId: Int64, completion: @escaping (Result<Void, Error>) -> Void)
@@ -76,6 +76,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onSettingsSchemaChanged: ((String, [AorusPluginSettingField]) -> Void)?
     public var onSettingsChanged: ((String, [String: AorusPluginJSONValue]) -> Void)?
     public var onSendMessage: ((String, Int64?, Bool, Int64?, String, Int32?) -> Void)?
+    public var onSendEntities: ((String, [AorusPluginTextEntity]) -> Void)?
     public var onMessageAction: ((String, String, Int64, Int32, Int32) -> Void)?
     public var onToast: ((String, String) -> Void)?
     public var onShare: ((String, String?, String?) -> Void)?
@@ -107,7 +108,8 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     open func pluginStorageChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) { onStorageChanged?(pluginId, values) }
     open func pluginSettingsSchemaChanged(_ pluginId: String, fields: [AorusPluginSettingField]) { onSettingsSchemaChanged?(pluginId, fields) }
     open func pluginSettingsChanged(_ pluginId: String, values: [String: AorusPluginJSONValue]) { onSettingsChanged?(pluginId, values) }
-    open func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
+    open func pluginSendMessage(_ pluginId: String, peerId: Int64?, toSelf: Bool, accountId: Int64?, text: String, entities: [AorusPluginTextEntity], replyTo: Int32?, completion: @escaping (Result<Void, Error>) -> Void) {
+        onSendEntities?(pluginId, entities)
         onSendMessage?(pluginId, peerId, toSelf, accountId, text, replyTo)
         completion(.success(()))
     }
@@ -186,6 +188,75 @@ open class AorusPluginNullHost: AorusPluginHostServices {
         return ["language": language, "systemVersion": "0", "appVersion": "0", "isDark": false]
     }
     open var pluginInterfaceLanguage: String { return language }
+}
+
+/// One piece of formatting on a message a plugin sends. Offsets and lengths are UTF-16
+/// code units — what Telegram counts in and what JavaScript strings are indexed by — and
+/// they are checked against the text before anything is built from them.
+public struct AorusPluginTextEntity: Equatable {
+    public enum Kind: String {
+        case bold
+        case italic
+        case underline
+        case strikethrough
+        case spoiler
+        case code
+        case pre
+        case blockquote
+        case textLink = "text_link"
+        case customEmoji = "custom_emoji"
+    }
+
+    public var kind: Kind
+    public var offset: Int
+    public var length: Int
+    public var url: String?
+    public var language: String?
+    public var customEmojiId: Int64?
+    public var collapsed: Bool
+
+    public init(kind: Kind, offset: Int, length: Int, url: String? = nil, language: String? = nil, customEmojiId: Int64? = nil, collapsed: Bool = false) {
+        self.kind = kind
+        self.offset = offset
+        self.length = length
+        self.url = url
+        self.language = language
+        self.customEmojiId = customEmojiId
+        self.collapsed = collapsed
+    }
+
+    /// Everything a plugin can get wrong here is caught before the message is built: an
+    /// unknown type, a range outside the text, a link that is not a web link, an emoji id
+    /// that is not a number. A bad entity drops out; it never truncates or shifts the rest.
+    public static func validated(_ items: [[String: Any]], text: String) -> [AorusPluginTextEntity] {
+        let limit = text.utf16.count
+        var result: [AorusPluginTextEntity] = []
+        for item in items.prefix(128) {
+            guard let raw = item["type"] as? String, let kind = Kind(rawValue: raw) else { continue }
+            guard let offset = (item["offset"] as? NSNumber)?.intValue,
+                  let length = (item["length"] as? NSNumber)?.intValue,
+                  offset >= 0, length > 0, offset + length <= limit else { continue }
+            var entity = AorusPluginTextEntity(kind: kind, offset: offset, length: length)
+            switch kind {
+            case .textLink:
+                guard let value = item["url"] as? String, value.count <= 2_048,
+                      let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https", url.host?.isEmpty == false else { continue }
+                entity.url = value
+            case .pre:
+                if let language = item["language"] as? String { entity.language = String(language.prefix(32)) }
+            case .blockquote:
+                entity.collapsed = (item["collapsed"] as? NSNumber)?.boolValue ?? false
+            case .customEmoji:
+                guard let value = item["customEmojiId"] as? String, let identifier = Int64(value) else { continue }
+                entity.customEmojiId = identifier
+            default:
+                break
+            }
+            result.append(entity)
+        }
+        return result
+    }
 }
 
 public enum AorusPluginRunError: Error, Equatable {
@@ -1016,7 +1087,8 @@ public final class AorusPluginSandbox {
                 return
             }
             let replyTo: Int32? = (payload["replyTo"] as? NSNumber).map { $0.int32Value }
-            host.pluginSendMessage(pluginId, peerId: int64("peerId"), toSelf: toSelf, accountId: int64("accountId"), text: text, replyTo: replyTo) { [weak self] result in
+            let entities = AorusPluginTextEntity.validated(payload["entities"] as? [[String: Any]] ?? [], text: text)
+            host.pluginSendMessage(pluginId, peerId: int64("peerId"), toSelf: toSelf, accountId: int64("accountId"), text: text, entities: entities, replyTo: replyTo) { [weak self] result in
                 self?.settle(id, with: result.map { _ -> Any? in nil })
             }
         case "messages.edit":
