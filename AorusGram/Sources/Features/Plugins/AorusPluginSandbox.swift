@@ -477,6 +477,10 @@ public final class AorusPluginSandbox {
     public static let responseLimitBytes = 5 * 1024 * 1024
     public static let requestBodyLimitBytes = 2 * 1024 * 1024
     public static let requestPayloadLimitBytes = 256 * 1024
+    // A 4 MB UTF-8 file can occupy six times as many bytes when JSON escapes every byte.
+    // Only files.write gets this larger bridge allowance; AorusPluginFiles still enforces
+    // the per-file and per-plugin quotas after decoding.
+    public static let fileWritePayloadLimitBytes = AorusPluginFiles.maximumFileBytes * 6 + 1024
     public static let pendingRequestLimit = 32
     /// What every call on the open chat answers when there is none. One sentence, in one
     /// place, so a plugin can compare against it and the two hosts cannot drift apart.
@@ -1184,7 +1188,10 @@ public final class AorusPluginSandbox {
 
         let request: @convention(block) (String, String, Int32) -> Void = { [weak self] kind, payload, id in
             guard let self = self else { return }
-            guard payload.lengthOfBytes(using: .utf8) <= AorusPluginSandbox.requestPayloadLimitBytes else {
+            let limit = kind == "files.write"
+                ? AorusPluginSandbox.fileWritePayloadLimitBytes
+                : AorusPluginSandbox.requestPayloadLimitBytes
+            guard payload.lengthOfBytes(using: .utf8) <= limit else {
                 self.rejectImmediately(id, message: "Request payload is too large")
                 return
             }

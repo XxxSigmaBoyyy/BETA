@@ -920,6 +920,29 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(fileResults["count"] == .number(1), "usage counts what is left")
     fileSandbox.stop()
 
+    let largeFileHost = AorusPluginNullHost()
+    var largeFileResult: [String: AorusPluginJSONValue] = [:]
+    let largeFileFinished = DispatchSemaphore(value: 0)
+    largeFileHost.onStorageChanged = { _, values in
+        largeFileResult = values
+        if values["bytes"] != nil || values["error"] != nil {
+            largeFileFinished.signal()
+        }
+    }
+    let largeFileSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Large Files"),
+        source: "aorus.on('start', function () { aorus.files.writeText('large.txt', 'x'.repeat(300000)).then(function () { return aorus.files.info('large.txt'); }).then(function (info) { aorus.storage.set('bytes', info.size); }, function (error) { aorus.storage.set('error', String(error.message || error)); }); });",
+        host: largeFileHost,
+        permissions: [],
+        filesDirectory: temporaryDirectory().appendingPathComponent("large-files", isDirectory: true)
+    )
+    let largeFileStarted = DispatchSemaphore(value: 0)
+    largeFileSandbox.start { error in expect(error == nil, "large file plugin starts"); largeFileStarted.signal() }
+    _ = largeFileStarted.wait(timeout: .now() + 2)
+    expect(largeFileFinished.wait(timeout: .now() + 3) == .success, "large file operation finishes")
+    expect(largeFileResult["bytes"] == .number(300000), "files.write accepts a file beyond the ordinary request limit")
+    largeFileSandbox.stop()
+
     // What a plugin draws over the chat. Every number is clamped rather than rejected — a
     // plugin asking for a 900-point button has made a mistake, not an attack, and the useful
     // answer is the largest button that still fits.
@@ -1119,6 +1142,10 @@ if AorusPluginSandbox.watchdogAvailable {
         try { aorus.moderation.ban('42'); } catch (error) { aorus.storage.set('noChat', 'rejected'); }
     });
     """
+    expect(
+        AorusPluginPermission.requestedBySource("aorus.media.share(ref); aorus.media.saveToFiles(ref);") == [.messageHistory, .dialogs],
+        "sharing media requests both history and dialog permissions"
+    )
     let mediaSandbox = AorusPluginSandbox(
         manifest: AorusPluginManifest(name: "Media"),
         source: mediaSource,
@@ -1369,6 +1396,29 @@ do {
     expect(quotaFiles.list().isEmpty, "nothing is left after clear")
 } catch {
     expect(false, "writing within the limits succeeds")
+}
+
+let importFixture = temporaryDirectory()
+let importSource = importFixture.appendingPathComponent("source.bin")
+let importFiles = AorusPluginFiles(directory: importFixture.appendingPathComponent("plugin-files"))
+do {
+    let bytes = Data(repeating: 0xa5, count: AorusPluginFiles.maximumImportedFileBytes)
+    try bytes.write(to: importSource)
+    let imported = try importFiles.importBase64("picked.bin", from: importSource)
+    expect(imported == bytes.count, "a maximum-size imported file reports its original size")
+    let importedText = try importFiles.read("picked.bin")
+    expect(importedText == bytes.base64EncodedString(), "import preserves the base64 file contract")
+    try Data(repeating: 0xa5, count: AorusPluginFiles.maximumImportedFileBytes + 1).write(to: importSource)
+    do {
+        _ = try importFiles.importBase64("picked.bin", from: importSource)
+        expect(false, "an oversized import must fail")
+    } catch let error as AorusPluginFiles.FileError {
+        expect(error == .importedFileTooLarge, "an oversized import reports its specific limit")
+    }
+    let preservedText = try importFiles.read("picked.bin")
+    expect(preservedText == bytes.base64EncodedString(), "a refused import preserves the existing file")
+} catch {
+    expect(false, "a file within the base64 import limit is accepted")
 }
 
 if failures == 0 {

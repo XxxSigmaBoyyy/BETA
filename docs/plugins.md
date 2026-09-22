@@ -17,14 +17,16 @@
 6. [Команды в чате](#6-команды-в-чате)
 7. [Перехват исходящих](#7-перехват-исходящих)
 8. [Сообщения](#8-сообщения)
+8a. [Вложения](#8a-вложения)
+8b. [Модерация](#8b-модерация)
 9. [Чаты](#9-чаты)
 9a. [Открытый чат](#9a-открытый-чат)
 10. [Аккаунты](#10-аккаунты)
 11. [Нативные экраны](#11-нативные-экраны)
 11a. [Кнопки и панели поверх чата](#11a-кнопки-и-панели-поверх-чата)
-12. [Форматированный текст](#13a-форматированный-текст)
 12. [Интеграции: настройки и контекстное меню](#12-интеграции-настройки-и-контекстное-меню)
 13. [Настройки плагина](#13-настройки-плагина)
+13a. [Форматированный текст](#13a-форматированный-текст)
 14. [Хранилище](#14-хранилище)
 14a. [Файлы](#14a-файлы)
 14b. [Тема](#14b-тема)
@@ -103,14 +105,14 @@ aorus.commands.register('hello', function (args, context) {
 |---|---|---|
 | `network` | HTTP-запросы | `aorus.http` |
 | `sendMessages` | Отправка сообщений | `aorus.messages.send` |
-| `manageMessages` | Правка, удаление, пересылка, реакции | `aorus.messages.edit/delete/forward/react` |
-| `messageHistory` | Чтение истории чата | `aorus.chats.history` |
+| `manageMessages` | Правка, удаление, пересылка, реакции и модерация участников | `aorus.messages.edit/delete/forward/react`, `aorus.moderation.` |
+| `messageHistory` | Чтение истории чата и сведений о вложениях | `aorus.chats.history`, `aorus.media.` |
 | `chatMetadata` | Название и идентификатор чата, что видно на экране | `aorus.chats.resolve`, `aorus.chats.get`, `aorus.chat.current`, `aorus.chat.messages` |
 | `composer` | Поле ввода открытого чата: чтение, запись, статус печати, прокрутка | `aorus.chat.draft/setDraft/insert/clear/setTyping/markRead/scrollTo`, `aorus.on('inputChanged'…)` |
 | `openChats` | Открытие чатов и ссылок Telegram | `aorus.chats.open`, `aorus.app.openChat`, `aorus.telegram.openLink` |
 | `accountProfile` | Имя и идентификатор текущего аккаунта | `aorus.account.current`, `aorus.app.currentAccount` |
 | `accountSwitching` | Список аккаунтов и переключение | `aorus.accounts.` |
-| `dialogs` | Тосты, алерты, подтверждения, ввод, share | `aorus.ui.toast/alert/confirm/prompt/share` |
+| `dialogs` | Тосты, алерты, подтверждения, ввод, share и системный выбор файла | `aorus.ui.toast/alert/confirm/prompt/share`, `aorus.files.pick/share`, `aorus.media.share/saveToFiles` |
 | `clipboardRead` / `clipboardWrite` | Буфер обмена | `aorus.clipboard.read` / `.write` |
 | `incomingMessages` | События входящих, удалённых, изменённых | `aorus.on('message'…)` и родственные |
 | `outgoingMessages` | Команды и перехват исходящего текста | `aorus.commands`, `aorus.on('send'…)` |
@@ -214,6 +216,40 @@ await aorus.messages.react(ref, '🔥');
 
 `send` требует `sendMessages`, остальные — `manageMessages`. `peerId` — десятичная строка
 или `'me'` для «Избранного».
+
+## 8a. Вложения
+
+```js
+const ref = { peerId: '-1001234567890', namespace: 0, messageId: 42 };
+const info = await aorus.media.info(ref);       // null, если вложения нет
+if (info && info.downloaded) {
+    const file = await aorus.media.download(ref); // копия в файлах плагина, base64
+    const content = await aorus.files.readText(file.name);
+}
+await aorus.media.share(ref);                    // системное меню отправки файла
+```
+
+`forMessage` и `selected` сейчас являются синонимами `info`. Ответ содержит `kind`,
+`mimeType`, `downloaded` и доступные `sizeBytes`, `dimensions`, `duration`, `name`.
+`download` **не запускает загрузку из Telegram**: он копирует уже загруженный файл из
+кеша в файлы плагина. Если файла в кеше нет, запрос возвращает ошибку. Для бинарного
+содержимого `files.readText` возвращает base64, а не исходные байты.
+
+`save` сохраняет изображение в Фото; для других вложений открывает системное меню.
+`saveToFiles` и `share` открывают системное меню с копией вложения. Все методы требуют
+`messageHistory`; `saveToFiles` и `share` дополнительно требуют `dialogs`. Копия в файлах
+плагина подчиняется лимиту base64-импорта ниже.
+
+## 8b. Модерация
+
+```js
+const result = await aorus.moderation.ban(userPeerId, { chatPeerId: groupPeerId });
+// { ok: true } либо { ok: false }
+```
+
+Доступны `ban`, `kick`, `restrict`, `unban`. Каждому нужен конкретный `userPeerId` и
+`options.chatPeerId`; требуется разрешение `manageMessages`. Права в группе проверяет
+Telegram. `ok: false` означает, что операция не была подтверждена.
 
 ## 9. Чаты
 
@@ -460,12 +496,18 @@ await aorus.files.list();               // [{ name, size, modified }, …]
 await aorus.files.remove('state.json'); // true, если файл был
 await aorus.files.clear();              // сколько удалено
 await aorus.files.usage();              // { count, bytes, maximumBytes, maximumFileBytes, maximumCount }
+const picked = await aorus.files.pick(); // { name, sizeBytes, encoding: 'base64' } либо null при отмене
+await aorus.files.share('notes.txt');   // системное меню отправки
 ```
 
 Директория своя у каждого плагина, внутри его собственной папки: удаление плагина удаляет
 и файлы, осиротеть им негде. Разрешения нет — это его собственное место, как и `storage`.
 
-Лимиты: 4 МБ на файл, 32 МБ на всё, 256 файлов. Перезапись файла чем-то меньшим проходит
+Лимиты: 4 МБ на файл, 32 МБ на всё, 256 файлов. Бинарный файл из `pick` или
+`media.download` кодируется в base64, поэтому максимальный размер исходника — 3 МБ.
+Больший файл отклоняется с ошибкой и не заменяет существующий файл с тем же именем.
+`pick` и `share` требуют разрешения `dialogs`; `pick` показывает системный выбор файла.
+Перезапись файла чем-то меньшим проходит
 всегда, даже когда квота занята: считается то, что будет лежать после записи.
 
 Имя проверяется, а не чинится: до 64 символов, только буквы, цифры, точка, дефис и

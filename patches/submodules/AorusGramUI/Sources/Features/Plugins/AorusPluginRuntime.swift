@@ -572,6 +572,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     private let aiLock = NSLock()
     /// Held while the document picker is on screen: UIKit keeps only a weak delegate.
     fileprivate var filePicker: AorusPluginFilePickerDelegate?
+    private var photoSaves: [UUID: AorusPluginPhotoSaveDelegate] = [:]
     private var aiStreams: [String: AorusAIStreamHandle] = [:]
     private var aiReservations = Set<String>()
     private var aiArtifacts: [String: [String: AorusAIArtifact]] = [:]
@@ -1319,12 +1320,7 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 let files = AorusPluginFiles(directory: directory)
                 let name = AorusPluginFiles.normalizedName(described.suggestedName) ?? "attachment.bin"
                 do {
-                    let data = try Data(contentsOf: URL(fileURLWithPath: source))
-                    guard data.count <= AorusPluginFiles.maximumFileBytes else {
-                        completion(.failure(AorusPluginRequestError(AorusPluginFiles.FileError.tooLarge.message)))
-                        return
-                    }
-                    try files.write(name, text: data.base64EncodedString())
+                    _ = try files.importBase64(name, from: URL(fileURLWithPath: source))
                     var payload = described.payload
                     payload["name"] = name
                     payload["encoding"] = "base64"
@@ -1341,8 +1337,21 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 }
                 DispatchQueue.main.async {
                     if action == "save", described.isImage, let image = UIImage(contentsOfFile: source) {
-                        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-                        completion(.success(["saved": NSNumber(value: true)]))
+                        let saveId = UUID()
+                        let delegate = AorusPluginPhotoSaveDelegate { [weak self] error in
+                            self?.photoSaves.removeValue(forKey: saveId)
+                            if let error {
+                                completion(.failure(AorusPluginRequestError(error.localizedDescription)))
+                            } else {
+                                completion(.success(["saved": NSNumber(value: true)]))
+                            }
+                        }
+                        self.photoSaves[saveId] = delegate
+                        UIImageWriteToSavedPhotosAlbum(
+                            image, delegate,
+                            #selector(AorusPluginPhotoSaveDelegate.didSave(_:didFinishSavingWithError:contextInfo:)),
+                            nil
+                        )
                         return
                     }
                     // A copy with the message's own name, because the share sheet shows the
@@ -1375,13 +1384,23 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         let chat = PeerId(chatPeerId)
         let member = PeerId(userPeerId)
         let engine = context.engine
+        let replyLock = NSLock()
+        var didReply = false
+        let reply: (Bool) -> Void = { allowed in
+            replyLock.lock()
+            let shouldReply = !didReply
+            didReply = true
+            replyLock.unlock()
+            if shouldReply {
+                completion(.success(["ok": NSNumber(value: allowed)]))
+            }
+        }
         // Telegram's own rights decide. Without them the request comes back refused, and
         // that is an answer to the question rather than an error in the plugin.
-        let refused: [String: Any] = ["ok": NSNumber(value: false)]
         switch action {
         case "kick":
             let _ = (engine.peers.removePeerMember(peerId: chat, memberId: member) |> take(1)).start(completed: {
-                completion(.success(["ok": NSNumber(value: true)]))
+                reply(true)
             })
         case "ban":
             let _ = (engine.peers.updateChannelMemberBannedRights(
@@ -1389,9 +1408,9 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 memberId: member,
                 rights: TelegramChatBannedRights(flags: [.banReadMessages], untilDate: Int32.max)
             ) |> take(1)).start(next: { _, _, _ in
-                completion(.success(["ok": NSNumber(value: true)]))
+                reply(true)
             }, completed: {
-                completion(.success(refused))
+                reply(false)
             })
         case "restrict":
             let _ = (engine.peers.updateChannelMemberBannedRights(
@@ -1402,20 +1421,20 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                     untilDate: Int32.max
                 )
             ) |> take(1)).start(next: { _, _, _ in
-                completion(.success(["ok": NSNumber(value: true)]))
+                reply(true)
             }, completed: {
-                completion(.success(refused))
+                reply(false)
             })
         case "unban":
             let _ = (engine.peers.updateChannelMemberBannedRights(
                 peerId: chat, memberId: member, rights: nil
             ) |> take(1)).start(next: { _, _, _ in
-                completion(.success(["ok": NSNumber(value: true)]))
+                reply(true)
             }, completed: {
-                completion(.success(refused))
+                reply(false)
             })
         default:
-            completion(.success(refused))
+            reply(false)
         }
     }
 
@@ -1434,11 +1453,9 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             // The person picks, and the app copies the file into the plugin's own directory.
             // A plugin never reaches into anybody's documents: it is handed one file, by
             // name, the same as one it wrote itself.
-            let delegate = AorusPluginFilePickerDelegate(directory: directory) { result in
-                completion(.success(result))
-            }
+            let delegate = AorusPluginFilePickerDelegate(directory: directory, answer: completion)
             self.filePicker = delegate
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+            let picker = UIDocumentPickerViewController(documentTypes: ["public.data"], in: .import)
             picker.delegate = delegate
             picker.allowsMultipleSelection = false
             presenter.view.window?.rootViewController?.present(picker, animated: true)
@@ -2479,24 +2496,39 @@ struct AorusPluginMediaDescription {
 
 /// Answers the document picker once, whichever way it closes. UIKit keeps only a weak
 /// delegate, so the runtime holds this for as long as the picker is on screen.
+final class AorusPluginPhotoSaveDelegate: NSObject {
+    private var answer: ((Error?) -> Void)?
+
+    init(answer: @escaping (Error?) -> Void) {
+        self.answer = answer
+        super.init()
+    }
+
+    @objc func didSave(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer?) {
+        let answer = self.answer
+        self.answer = nil
+        answer?(error)
+    }
+}
+
 final class AorusPluginFilePickerDelegate: NSObject, UIDocumentPickerDelegate {
     private let directory: URL
-    private var answer: (([String: Any]?) -> Void)?
+    private var answer: ((Result<[String: Any]?, Error>) -> Void)?
 
-    init(directory: URL, answer: @escaping ([String: Any]?) -> Void) {
+    init(directory: URL, answer: @escaping (Result<[String: Any]?, Error>) -> Void) {
         self.directory = directory
         self.answer = answer
         super.init()
     }
 
-    private func finish(_ value: [String: Any]?) {
+    private func finish(_ value: Result<[String: Any]?, Error>) {
         let answer = self.answer
         self.answer = nil
         answer?(value)
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let source = urls.first else { finish(nil); return }
+        guard let source = urls.first else { finish(.success(nil)); return }
         let files = AorusPluginFiles(directory: directory)
         // The person's own file name, brought onto the rule the plugin's directory uses.
         // Anything that would have to be repaired becomes a plain name rather than a refusal:
@@ -2506,17 +2538,16 @@ final class AorusPluginFilePickerDelegate: NSObject, UIDocumentPickerDelegate {
             ?? "picked.bin"
         let accessed = source.startAccessingSecurityScopedResource()
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: source) else { finish(nil); return }
         do {
-            try files.write(name, text: data.base64EncodedString())
-            finish(["name": name, "sizeBytes": NSNumber(value: data.count), "encoding": "base64"])
+            let size = try files.importBase64(name, from: source)
+            finish(.success(["name": name, "sizeBytes": NSNumber(value: size), "encoding": "base64"]))
         } catch {
-            finish(nil)
+            finish(.failure(error))
         }
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        finish(nil)
+        finish(.success(nil))
     }
 }
 

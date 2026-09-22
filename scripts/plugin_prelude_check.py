@@ -79,7 +79,7 @@ def extract(root: Path) -> tuple[str, list[str], str]:
 
     # The two interpolations the literal actually uses.
     text = text.replace(
-        r'\(events.map { "'"'"'\($0)'"'"'" }.joined(separator: ", "))',
+        r'''\(events.map { "'\($0)'" }.joined(separator: ", "))''',
         ", ".join("'%s'" % name for name in names),
     )
     text = text.replace(r"\(apiVersion)", version.group(1))

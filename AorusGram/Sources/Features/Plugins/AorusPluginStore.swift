@@ -461,6 +461,7 @@ public final class AorusPluginStore {
 // catch.
 public struct AorusPluginFiles {
     public static let maximumFileBytes = 4 * 1024 * 1024
+    public static let maximumImportedFileBytes = maximumFileBytes / 4 * 3
     public static let maximumTotalBytes = 32 * 1024 * 1024
     public static let maximumFileCount = 256
     public static let maximumNameLength = 64
@@ -468,6 +469,7 @@ public struct AorusPluginFiles {
     public enum FileError: Error, Equatable {
         case invalidName
         case tooLarge
+        case importedFileTooLarge
         case quota
         case tooMany
         case io(String)
@@ -478,6 +480,8 @@ public struct AorusPluginFiles {
                 return "A file name may hold up to \(AorusPluginFiles.maximumNameLength) letters, digits, dot, dash and underscore, and may not begin with a dot"
             case .tooLarge:
                 return "A single file may not exceed \(AorusPluginFiles.maximumFileBytes / (1024 * 1024)) MB"
+            case .importedFileTooLarge:
+                return "An imported file may not exceed \(AorusPluginFiles.maximumImportedFileBytes / (1024 * 1024)) MB when encoded as base64"
             case .quota:
                 return "The plugin's files may not exceed \(AorusPluginFiles.maximumTotalBytes / (1024 * 1024)) MB in total"
             case .tooMany:
@@ -544,6 +548,20 @@ public struct AorusPluginFiles {
         } catch {
             throw FileError.io(error.localizedDescription)
         }
+    }
+
+    /// Imported binary files stay base64 text for compatibility with readText and share.
+    /// Read only one byte beyond the limit so a large document never enters app memory.
+    @discardableResult
+    public func importBase64(_ name: String, from source: URL) throws -> Int {
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { handle.closeFile() }
+        let data = handle.readData(ofLength: AorusPluginFiles.maximumImportedFileBytes + 1)
+        guard data.count <= AorusPluginFiles.maximumImportedFileBytes else {
+            throw FileError.importedFileTooLarge
+        }
+        try write(name, text: data.base64EncodedString())
+        return data.count
     }
 
     public func read(_ name: String) throws -> String? {

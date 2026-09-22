@@ -167,7 +167,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             // `toast` is gated on the same permission as the other dialogs and had no
             // needle, so a plugin whose only visible output is a toast was granted nothing
             // and every message it showed went nowhere, silently.
-            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast", "aorus.ui.showSheet", "aorus.users.select", "aorus.files.pick", "aorus.files.share"]),
+            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast", "aorus.ui.showSheet", "aorus.users.select", "aorus.files.pick", "aorus.files.share", "aorus.media.share", "aorus.media.saveToFiles"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
             (.incomingMessages, [

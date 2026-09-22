@@ -74,6 +74,10 @@ func aorusProbeHolding(_ textView: UITextView, table: UITableView) -> Bool {
     return held && inCell
 }
 
+func aorusProbePluginFilePicker() -> UIDocumentPickerViewController {
+    return UIDocumentPickerViewController(documentTypes: ["public.data"], in: .import)
+}
+
 /// Every delegate method the AI chat implements, with the signatures it implements them with.
 final class AorusProbeTextViewDelegate: NSObject, UITextViewDelegate {
     @available(iOS 17.0, *)
