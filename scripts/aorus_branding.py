@@ -18132,6 +18132,61 @@ def patch_internal_delete_maintenance(tg: Path) -> None:
     print(f"InternalDelete: bracketed {applied} maintenance deletes")
 
 
+def patch_settings_route_registration(tg: Path) -> None:
+    """Leave the recipe for the AorusGram settings screen where anything can find it.
+
+    `aorusGramController` takes three closures because the screens it links to — the
+    wallpaper grid, the appearance screen, Telegram's proxy settings — each live in a module
+    AorusGramUI cannot import. Anything else that wants to open settings has the same problem
+    and no way out of it, which is why a plugin asking to open settings could only be told no.
+
+    The settings actions file already builds all three, right where it pushes the screen. It
+    now registers the same recipe on its way past, so `AorusSettingsRoute.make` answers for
+    everyone else. Registering on the tap rather than at launch is deliberate: this is the
+    only place the three screens are known, and by the time anything else asks, someone has
+    almost always opened settings at least once — and when they have not, the caller falls
+    back rather than failing.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoScreenSettingsActions.swift"
+    if not path.is_file():
+        raise SystemExit("SettingsRoute: PeerInfoScreenSettingsActions.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "AorusSettingsRoute.register" in source:
+        print("SettingsRoute: already patched")
+        return
+    anchor = (
+        "            let context = self.context\n"
+        "            let updatedPresentationData = self.controller?.updatedPresentationData\n"
+        "            push(aorusGramController(\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("SettingsRoute: aorusGramController anchor not found")
+    replacement = (
+        "            let context = self.context\n"
+        "            let updatedPresentationData = self.controller?.updatedPresentationData\n"
+        "            // AorusGram: the same recipe, left where anything else can ask for it.\n"
+        "            AorusSettingsRoute.register { routeContext in\n"
+        "                return aorusGramController(\n"
+        "                    context: routeContext,\n"
+        "                    shortcutRoutes: AorusSettingsShortcutRoutes(\n"
+        "                        animatedWallpapers: { return ThemeGridController(context: routeContext) },\n"
+        "                        animatedBanner: {\n"
+        "                            return UserAppearanceScreen(\n"
+        "                                context: routeContext,\n"
+        "                                updatedPresentationData: nil,\n"
+        "                                focusOnItemTag: .aorusAnimatedBackground\n"
+        "                            )\n"
+        "                        },\n"
+        "                        connectionSettings: { return proxySettingsController(context: routeContext) }\n"
+        "                    )\n"
+        "                )\n"
+        "            }\n"
+        "            push(aorusGramController(\n"
+    )
+    path.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
+    print("SettingsRoute: AorusGram settings screen registered for every caller")
+
+
 def patch_plugin_chat_surface(tg: Path) -> None:
     """Register the open chat with the plugin bridge.
 
@@ -26853,6 +26908,7 @@ def main() -> None:
     patch_plugin_outgoing_hook_composer(tg)
     patch_plugin_context_menu(tg)
     patch_plugin_settings_rows(tg)
+    patch_settings_route_registration(tg)
     patch_internal_delete_maintenance(tg)
     patch_hide_tabs(tg)
     patch_tab_bar_visibility_controls(tg)

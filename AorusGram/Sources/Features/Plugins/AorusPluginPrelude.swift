@@ -21,7 +21,7 @@ public enum AorusPluginPrelude {
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
         "foreground", "background", "settingsChanged", "appSettingsChanged",
         "connectionChanged", "uiAction", "contextAction", "settings.changed", "settings.action", "settings.reset",
-        "chatOpened", "chatClosed", "inputChanged", "overlayAction",
+        "chatOpened", "chatClosed", "inputChanged", "overlayAction", "pluginMessage",
     ]
 
     public static let source: String = """
@@ -125,7 +125,16 @@ public enum AorusPluginPrelude {
             info: function () { log('info', arguments); },
             warn: function () { log('warn', arguments); },
             error: function () { log('error', arguments); },
-            debug: function () { log('debug', arguments); }
+            debug: function () { log('debug', arguments); },
+            // The same lines the console screen shows, as data. A plugin that draws its own
+            // diagnostics page should be able to show what it has been saying.
+            history: function (limit) {
+                var count = limit === undefined ? 100 : Number(limit);
+                if (!Number.isSafeInteger(count) || count < 1 || count > 500) {
+                    throw new RangeError('limit must be between 1 and 500');
+                }
+                return freeze(parseJSON(host.logHistory(count), []));
+            }
         });
 
         // ---- events -------------------------------------------------------------------
@@ -170,6 +179,7 @@ public enum AorusPluginPrelude {
             // An overlay carries the function that was handed to `add*`, so a plugin does not
             // have to subscribe to a stream and work out which of its buttons was pressed.
             // The event is also emitted, for a plugin that prefers to listen.
+            if (event === 'pluginMessage') { pluginMessageReceived(payload); }
             if (event === 'overlayAction' && payload && overlayHandlers.hasOwnProperty(payload.id)) {
                 try {
                     var direct = overlayHandlers[payload.id](payload);
@@ -303,6 +313,28 @@ public enum AorusPluginPrelude {
                 requireString(key, 'key');
                 host.storageWrite(key, null);
                 delete storageCache[key];
+            },
+            has: function (key) { return storageCache.hasOwnProperty(requireString(key, 'key')); },
+            // `getJSON`/`setJSON` are the same bucket. Storage already holds JSON values, so
+            // these exist to match the shape people write against, and to give a fallback a
+            // name rather than leaving it to `|| {}` at every call site.
+            getJSON: function (key, fallback) {
+                requireString(key, 'key');
+                if (!storageCache.hasOwnProperty(key)) { return fallback === undefined ? null : fallback; }
+                return JSON.parse(JSON.stringify(storageCache[key]));
+            },
+            setJSON: function (key, value) { return storage.set(key, value === undefined ? null : value); },
+            // Appends to an array, creating it when it is not there, and answers the new
+            // length. Doing this by hand is a read, a type check, a push and a write, and
+            // the type check is the part people skip.
+            push: function (key, value) {
+                requireString(key, 'key');
+                var current = storageCache.hasOwnProperty(key) ? storageCache[key] : [];
+                if (!Array.isArray(current)) { current = []; }
+                current = current.slice();
+                current.push(value === undefined ? null : value);
+                storage.set(key, current);
+                return current.length;
             },
             keys: function () { return Object.keys(storageCache); },
             clear: function () {
@@ -882,7 +914,9 @@ public enum AorusPluginPrelude {
                 if (typeof enabled !== 'boolean') { throw typeError('enabled must be a boolean'); }
                 return request('proxy.set', { key: 'stableCalls', value: enabled });
             },
-            refresh: function () { return request('proxy.refresh', {}); }
+            refresh: function () { return request('proxy.refresh', {}); },
+            startAutoSwitch: function () { return request('proxy.autoSwitch', { enabled: true }); },
+            stopAutoSwitch: function () { return request('proxy.autoSwitch', { enabled: false }); }
         });
 
         var accountsApi = freeze({
@@ -932,6 +966,84 @@ public enum AorusPluginPrelude {
             remove: function (name) { return request('files.remove', { name: requireString(name, 'name') }); },
             clear: function () { return request('files.clear', {}); },
             usage: function () { return request('files.usage', {}); }
+        });
+
+        // Words the app draws, replaced. The whole set is republished on every change, so
+        // removing one override is publishing the rest — the same shape as the other things
+        // a plugin registers.
+        var stringOverrides = {};
+        function publishStrings() {
+            if (!host.stringsDefine(JSON.stringify(stringOverrides))) {
+                throw new Error('App customization permission is not granted');
+            }
+        }
+        var stringsApi = freeze({
+            override: function (key, value) {
+                requireString(key, 'key');
+                requireString(value, 'value');
+                var previous = stringOverrides[key];
+                stringOverrides[key] = value;
+                try {
+                    publishStrings();
+                } catch (error) {
+                    if (previous === undefined) { delete stringOverrides[key]; } else { stringOverrides[key] = previous; }
+                    throw error;
+                }
+            },
+            restore: function (key) {
+                requireString(key, 'key');
+                if (!stringOverrides.hasOwnProperty(key)) { return false; }
+                delete stringOverrides[key];
+                publishStrings();
+                return true;
+            },
+            restoreAll: function () {
+                var count = Object.keys(stringOverrides).length;
+                if (count === 0) { return 0; }
+                stringOverrides = {};
+                publishStrings();
+                return count;
+            },
+            all: function () { return freeze(JSON.parse(JSON.stringify(stringOverrides))); }
+        });
+
+        // Plugins talking to each other, through the app. A message carries the sender's id,
+        // so a plugin always knows who is talking to it, and topics are filtered here rather
+        // than making every plugin do it.
+        var pluginTopics = {};
+        function pluginMessageReceived(event) {
+            if (!event || typeof event.topic !== 'string') { return; }
+            var list = pluginTopics[event.topic];
+            if (!list) { return; }
+            var snapshot = list.slice();
+            for (var i = 0; i < snapshot.length; i++) {
+                try {
+                    snapshot[i](event);
+                } catch (error) {
+                    reportError('Handler for plugin topic \'' + event.topic + '\' failed', error);
+                }
+            }
+        }
+        var pluginsApi = freeze({
+            emit: function (topic, payload) {
+                requireString(topic, 'topic');
+                if (!host.pluginBroadcast(topic, JSON.stringify(payload === undefined ? null : payload))) {
+                    throw new Error('Plugin messaging permission is not granted');
+                }
+            },
+            on: function (topic, handler) {
+                requireString(topic, 'topic');
+                requireFunction(handler, 'handler');
+                if (!pluginTopics.hasOwnProperty(topic)) { pluginTopics[topic] = []; }
+                pluginTopics[topic].push(handler);
+                return function () {
+                    var list = pluginTopics[topic] || [];
+                    for (var i = list.length - 1; i >= 0; i--) {
+                        if (list[i] === handler) { list.splice(i, 1); }
+                    }
+                };
+            },
+            topics: function () { return freeze(Object.keys(pluginTopics)); }
         });
 
         // The chat that is open right now. Everything here answers while a chat is on screen
@@ -1061,7 +1173,14 @@ public enum AorusPluginPrelude {
                     if (reaction !== null) { requireString(reaction, 'reaction'); }
                     ref.reaction = reaction;
                     return request('messages.react', ref);
-                }
+                },
+                // Removes it from this device only. The other side keeps theirs, which is
+                // the whole difference from `delete` and the reason it is its own call.
+                deleteLocal: function (message) {
+                    return request('messages.deleteLocal', messageReference(message));
+                },
+                visible: function (options) { return chatApi.messages(options); },
+                current: function () { return chatApi.current(); }
             }),
             chats: freeze({
                 resolve: function (username) {
@@ -1088,8 +1207,65 @@ public enum AorusPluginPrelude {
             }),
             chat: chatApi,
             files: filesApi,
+            strings: stringsApi,
+            plugins: pluginsApi,
+            // Someone, rather than a conversation. `chats.get` answers about a chat; this
+            // answers about a person, which is the same lookup and a different question.
+            users: freeze({
+                me: function () { return request('account.current', {}); },
+                get: function (peerId) {
+                    var target = toPeerId(peerId);
+                    if (target === 'me') { return request('account.current', {}); }
+                    return request('users.get', { peerId: target });
+                },
+                resolve: function (username) {
+                    return request('users.get', { username: requireString(username, 'username').replace(/^@/, '') });
+                },
+                search: function (query, options) {
+                    var opts = optionalObject(options, 'options');
+                    var limit = opts.limit === undefined ? 20 : Number(opts.limit);
+                    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+                        throw new RangeError('limit must be between 1 and 50');
+                    }
+                    return request('users.search', { query: requireString(query, 'query'), limit: limit });
+                },
+                // The person chooses. A plugin that needs to know who to act on asks the app
+                // to ask, instead of being handed the address book.
+                select: function (options) {
+                    var opts = optionalObject(options, 'options');
+                    return request('users.pick', { title: typeof opts.title === 'string' ? opts.title : null });
+                }
+            }),
+            navigation: freeze({
+                openChat: function (peerId) {
+                    var target = toPeerId(peerId);
+                    return request('chats.open', { peerId: target === 'me' ? null : target, toSelf: target === 'me' });
+                },
+                openProfile: function (peerId) {
+                    var target = toPeerId(peerId);
+                    if (target === 'me') { throw typeError('peerId must identify a person or a chat'); }
+                    return request('navigation.openProfile', { peerId: target });
+                },
+                openUrl: function (url) { return request('browser.open', { url: requireString(url, 'url') }); },
+                openTelegramLink: function (url) { return request('telegram.openLink', { url: requireString(url, 'url') }); },
+                openSettings: function (section) {
+                    return request('navigation.openSettings', { section: section === undefined ? null : requireString(section, 'section') });
+                }
+            }),
+            // What this plugin is, and what it may do. A plugin that can ask stops having to
+            // call something and read the refusal to find out whether it is allowed to.
+            runtime: freeze({
+                pluginId: info.id,
+                apiVersion: '\(apiVersion)',
+                permissions: function () { return freeze(host.grantedPermissions()); },
+                hasPermission: function (name) { return host.hasPermission(requireString(name, 'name')); }
+            }),
             theme: freeze({
-                current: function () { return request('theme.current', {}); }
+                current: function () { return request('theme.current', {}); },
+                setAccentColor: function (color) {
+                    return request('theme.setAccent', { color: requireString(color, 'color') });
+                },
+                resetAccentColor: function () { return request('theme.setAccent', { color: null }); }
             }),
             account: freeze({
                 current: function () { return request('account.current', {}); }
@@ -1230,6 +1406,12 @@ public enum AorusPluginPrelude {
                         text: typeof opts.text === 'string' ? opts.text : null,
                         url: typeof opts.url === 'string' ? opts.url : null
                     });
+                },
+                // Whether the app is in front, and whether it is behind the lock. A plugin
+                // with a timer wants to know before it draws something nobody can see.
+                state: function () { return request('app.state', {}); },
+                openSettings: function (section) {
+                    return request('navigation.openSettings', { section: section === undefined ? null : requireString(section, 'section') });
                 }
             }),
             integrations: freeze({

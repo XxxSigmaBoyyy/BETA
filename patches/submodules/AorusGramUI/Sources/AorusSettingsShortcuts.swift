@@ -1,5 +1,7 @@
 import UIKit
 import Display
+import Foundation
+import AccountContext
 
 public struct AorusSettingsShortcutRoutes {
     public let animatedWallpapers: () -> ViewController
@@ -83,5 +85,33 @@ public enum AorusSettingsShortcutHighlight {
             candidate = current.superview
         }
         pulse(view: target, color: color)
+    }
+}
+
+/// How to build the AorusGram settings screen, registered by the one place that can.
+///
+/// The screen needs three other screens — the wallpaper grid, the appearance screen and
+/// Telegram's proxy settings — and each of them lives in a module this one cannot import,
+/// which is why `aorusGramController` takes them as closures. Anything else that wants to
+/// open settings, the plugin API among them, has the same problem and no way to solve it.
+///
+/// So the settings list, which is built in a module that *can* see all three, leaves the
+/// recipe here on its way past. Asking for a screen nobody has registered yet answers nil
+/// rather than a screen missing two of its rows.
+public enum AorusSettingsRoute {
+    private static let lock = NSLock()
+    private static var builder: ((AccountContext) -> ViewController)?
+
+    public static func register(_ value: @escaping (AccountContext) -> ViewController) {
+        lock.lock()
+        builder = value
+        lock.unlock()
+    }
+
+    public static func make(_ context: AccountContext) -> ViewController? {
+        lock.lock()
+        let value = builder
+        lock.unlock()
+        return value?(context)
     }
 }

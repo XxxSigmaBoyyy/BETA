@@ -999,6 +999,135 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(deniedOverlayResults["add"] == .string("refused"), "an ungranted add reports rather than returning an id")
     deniedOverlays.stop()
 
+    // Storage's JSON conveniences, the console's own history, and what a plugin may do.
+    let shelfHost = AorusPluginNullHost()
+    var shelfResults: [String: AorusPluginJSONValue] = [:]
+    shelfHost.onStorageChanged = { _, values in shelfResults = values }
+    let shelfSource = """
+    aorus.on('start', function () {
+        aorus.storage.setJSON('state', { count: 1 });
+        aorus.storage.set('log', 'line');
+        var length = aorus.storage.push('items', 'a');
+        length = aorus.storage.push('items', 'b');
+        // Pushing onto something that is not an array starts a new one rather than throwing:
+        // a plugin recovering from its own bad write should not have to clear the key first.
+        aorus.storage.push('log', 'c');
+        aorus.storage.set('read', aorus.storage.getJSON('state').count + '/' + length
+            + '/' + aorus.storage.getJSON('missing', 'fallback')
+            + '/' + (aorus.storage.has('state') ? 'yes' : 'no')
+            + '/' + aorus.storage.get('items').join(''));
+        console.log('first');
+        console.warn('second');
+        aorus.storage.set('history', aorus.console.history(10).length >= 2 ? 'kept' : 'lost');
+        aorus.storage.set('runtime', aorus.runtime.pluginId.length > 0
+            ? (aorus.runtime.hasPermission('sendMessages') ? 'granted' : 'denied') : 'noId');
+        aorus.storage.set('unknownPermission', aorus.runtime.hasPermission('notAPermission') ? 'yes' : 'no');
+    });
+    """
+    let shelf = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Shelf"),
+        source: shelfSource,
+        host: shelfHost,
+        permissions: [.sendMessages]
+    )
+    let shelfStarted = DispatchSemaphore(value: 0)
+    shelf.start { error in expect(error == nil, "storage plugin starts"); shelfStarted.signal() }
+    _ = shelfStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.3)
+    expect(shelfResults["read"] == .string("1/2/fallback/yes/ab"), "the JSON helpers, push, the fallback and has all answer")
+    expect(shelfResults["log"] == .array([.string("c")]), "pushing onto something that is not an array starts a new one")
+    expect(shelfResults["history"] == .string("kept"), "a plugin can read its own console back")
+    expect(shelfResults["runtime"] == .string("granted"), "a plugin knows its own id and what it was granted")
+    expect(shelfResults["unknownPermission"] == .string("no"), "a permission that does not exist is not granted")
+    shelf.stop()
+
+    // Words the app draws, replaced by a plugin, and put back.
+    let stringsHost = AorusPluginNullHost()
+    var publishedStrings: [String: String] = [:]
+    var stringPublishes = 0
+    stringsHost.onStringOverridesChanged = { _, values in publishedStrings = values; stringPublishes += 1 }
+    var stringsResults: [String: AorusPluginJSONValue] = [:]
+    stringsHost.onStorageChanged = { _, values in stringsResults = values }
+    let stringsSource = """
+    aorus.on('start', function () {
+        aorus.strings.override('Chat_Title', 'Разговор');
+        aorus.strings.override('Common_OK', 'Ладно');
+        aorus.strings.restore('Common_OK');
+        aorus.storage.set('left', Object.keys(aorus.strings.all()).join(','));
+        aorus.storage.set('restored', String(aorus.strings.restoreAll()));
+    });
+    """
+    let stringsSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Strings"),
+        source: stringsSource,
+        host: stringsHost,
+        permissions: [.appCustomization]
+    )
+    let stringsStarted = DispatchSemaphore(value: 0)
+    stringsSandbox.start { error in expect(error == nil, "strings plugin starts"); stringsStarted.signal() }
+    _ = stringsStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.3)
+    expect(stringsResults["left"] == .string("Chat_Title"), "a restored key is gone and the other one stays")
+    expect(stringsResults["restored"] == .string("1"), "restoreAll answers how many it put back")
+    expect(publishedStrings.isEmpty, "the last publish is the empty set, because restoreAll republishes")
+    expect(stringPublishes == 4, "every change republishes the whole set")
+    stringsSandbox.stop()
+
+    let deniedStringsHost = AorusPluginNullHost()
+    var deniedStringPublishes = 0
+    deniedStringsHost.onStringOverridesChanged = { _, _ in deniedStringPublishes += 1 }
+    var deniedStringsResults: [String: AorusPluginJSONValue] = [:]
+    deniedStringsHost.onStorageChanged = { _, values in deniedStringsResults = values }
+    let deniedStrings = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Denied strings"),
+        source: "aorus.on('start', function () { try { aorus.strings.override('a', 'b'); } catch (error) { aorus.storage.set('override', 'refused'); } });",
+        host: deniedStringsHost,
+        permissions: []
+    )
+    let deniedStringsStarted = DispatchSemaphore(value: 0)
+    deniedStrings.start { error in expect(error == nil, "denied strings plugin starts"); deniedStringsStarted.signal() }
+    _ = deniedStringsStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(deniedStringPublishes == 0, "an ungranted override never reaches the app")
+    expect(deniedStringsResults["override"] == .string("refused"), "and the plugin is told, rather than believing it worked")
+    deniedStrings.stop()
+
+    // One plugin talking to another, through the app.
+    let busHost = AorusPluginNullHost()
+    var broadcast: (topic: String, json: String)?
+    busHost.onBroadcast = { _, topic, json in broadcast = (topic, json) }
+    var busResults: [String: AorusPluginJSONValue] = [:]
+    busHost.onStorageChanged = { _, values in busResults = values }
+    let busSource = """
+    aorus.plugins.on('weather', function (event) {
+        aorus.storage.set('heard', event.from + ':' + event.payload.city);
+    });
+    aorus.plugins.on('other', function () { aorus.storage.set('wrongTopic', 'yes'); });
+    aorus.on('start', function () {
+        aorus.plugins.emit('weather', { city: 'Riga' });
+        aorus.storage.set('topics', aorus.plugins.topics().sort().join(','));
+    });
+    """
+    let bus = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Bus"),
+        source: busSource,
+        host: busHost,
+        permissions: [.pluginMessaging]
+    )
+    let busStarted = DispatchSemaphore(value: 0)
+    bus.start { error in expect(error == nil, "bus plugin starts"); busStarted.signal() }
+    _ = busStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(broadcast?.topic == "weather", "an emit reaches the app with its topic")
+    expect(broadcast?.json == "{\"city\":\"Riga\"}", "and with its payload")
+    expect(busResults["topics"] == .string("other,weather"), "a plugin can list what it is listening for")
+    // What the app sends back, as another plugin would have caused.
+    bus.dispatch(event: "pluginMessage", payload: ["topic": "weather", "from": "other-plugin", "payload": ["city": "Riga"]])
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(busResults["heard"] == .string("other-plugin:Riga"), "a message reaches the handler for its topic, carrying who sent it")
+    expect(busResults["wrongTopic"] == nil, "and reaches no other topic's handler")
+    bus.stop()
+
     // The theme a plugin draws against.
     let themeHost = AorusPluginNullHost()
     var themeResults: [String: AorusPluginJSONValue] = [:]

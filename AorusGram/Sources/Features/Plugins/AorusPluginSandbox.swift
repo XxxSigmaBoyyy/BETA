@@ -73,6 +73,17 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginClipboardRead(_ pluginId: String, completion: @escaping (String?) -> Void)
     func pluginClipboardWrite(_ pluginId: String, text: String)
     func pluginTheme(_ pluginId: String, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginSetAccentColor(_ pluginId: String, hex: String?, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginUser(_ pluginId: String, peerId: Int64?, username: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    func pluginSearchUsers(_ pluginId: String, query: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void)
+    func pluginPickUser(_ pluginId: String, title: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    func pluginOpenProfile(_ pluginId: String, peerId: Int64, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginOpenAppSettings(_ pluginId: String, section: String?, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginDeleteLocalMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void)
+    func pluginSetAutoSwitch(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginStringOverridesChanged(_ pluginId: String, overrides: [String: String])
+    func pluginBroadcast(_ pluginId: String, topic: String, json: String)
+    var pluginAppState: [String: Any] { get }
     var pluginDeviceInfo: [String: Any] { get }
     var pluginInterfaceLanguage: String { get }
 }
@@ -99,6 +110,16 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onOpenTelegramLink: ((String, String) -> Void)?
     public var onChatHistory: ((String, Int64?, Bool, Int) -> [[String: Any]])?
     public var onTheme: ((String) -> [String: Any])?
+    public var onSetAccentColor: ((String, String?) -> Void)?
+    public var onUser: ((String, Int64?, String?) -> [String: Any]?)?
+    public var onSearchUsers: ((String, String, Int) -> [[String: Any]])?
+    public var onPickUser: ((String) -> [String: Any]?)?
+    public var onOpenProfile: ((String, Int64) -> Void)?
+    public var onOpenAppSettings: ((String, String?) -> Void)?
+    public var onDeleteLocalMessage: ((String, Int64, Int32, Int32) -> Void)?
+    public var onSetAutoSwitch: ((String, Bool) -> Void)?
+    public var onStringOverridesChanged: ((String, [String: String]) -> Void)?
+    public var onBroadcast: ((String, String, String) -> Void)?
     // The open chat. Nothing is open unless a test says so, which is also true on a device
     // between chats, so the default answer here is the same one the app gives.
     public var onCurrentChat: ((String) -> [String: Any]?)?
@@ -154,6 +175,44 @@ open class AorusPluginNullHost: AorusPluginHostServices {
             "secondaryText": "8E8E93",
             "destructive": "FF3B30",
         ]))
+    }
+    open func pluginSetAccentColor(_ pluginId: String, hex: String?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        onSetAccentColor?(pluginId, hex)
+        completion(.success(["accent": hex ?? ""]))
+    }
+    open func pluginUser(_ pluginId: String, peerId: Int64?, username: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(onUser?(pluginId, peerId, username)))
+    }
+    open func pluginSearchUsers(_ pluginId: String, query: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        completion(.success(onSearchUsers?(pluginId, query, limit) ?? []))
+    }
+    open func pluginPickUser(_ pluginId: String, title: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(onPickUser?(pluginId)))
+    }
+    open func pluginOpenProfile(_ pluginId: String, peerId: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        onOpenProfile?(pluginId, peerId)
+        completion(.success(()))
+    }
+    open func pluginOpenAppSettings(_ pluginId: String, section: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        onOpenAppSettings?(pluginId, section)
+        completion(.success(()))
+    }
+    open func pluginDeleteLocalMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void) {
+        onDeleteLocalMessage?(pluginId, peerId, namespace, messageId)
+        completion(.success(()))
+    }
+    open func pluginSetAutoSwitch(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        onSetAutoSwitch?(pluginId, enabled)
+        completion(.success(["autoSwitch": NSNumber(value: enabled)]))
+    }
+    open func pluginStringOverridesChanged(_ pluginId: String, overrides: [String: String]) {
+        onStringOverridesChanged?(pluginId, overrides)
+    }
+    open func pluginBroadcast(_ pluginId: String, topic: String, json: String) {
+        onBroadcast?(pluginId, topic, json)
+    }
+    open var pluginAppState: [String: Any] {
+        return ["foreground": NSNumber(value: true), "locked": NSNumber(value: false)]
     }
     open func pluginCurrentChat(_ pluginId: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         completion(.success(onCurrentChat?(pluginId)))
@@ -704,6 +763,7 @@ public final class AorusPluginSandbox {
         // it. That is the composer, not chat metadata.
         if event == "inputChanged" && !permissions.contains(.composer) { return }
         if event == "overlayAction" && !permissions.contains(.customUI) { return }
+        if event == "pluginMessage" && !permissions.contains(.pluginMessaging) { return }
         queue.async {
             self.deliver(event: event, payload: payload)
         }
@@ -1023,6 +1083,37 @@ public final class AorusPluginSandbox {
         }
         hostObject.setObject(overlaysDefine, forKeyedSubscript: "overlaysDefine" as NSString)
 
+        // Words a plugin replaces in the app's own interface. Same shape as the other
+        // integrations: the whole set is republished, so removing one is publishing the rest.
+        // Bounded hard, because these are strings the app draws in places a plugin does not
+        // control: a thousand overrides is not a translation, it is a way to make the app
+        // unreadable.
+        let stringsDefine: @convention(block) (String) -> Bool = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.appCustomization) else { return false }
+            guard let raw = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any], raw.count <= 128 else { return false }
+            var overrides: [String: String] = [:]
+            for (key, value) in raw {
+                guard let text = value as? String, !key.isEmpty, key.count <= 256, text.count <= 512 else { continue }
+                overrides[key] = text
+            }
+            self.hostServices.pluginStringOverridesChanged(pluginId, overrides: overrides)
+            return true
+        }
+        hostObject.setObject(stringsDefine, forKeyedSubscript: "stringsDefine" as NSString)
+
+        // One plugin talking to another. The message goes out through the app, which knows
+        // which plugins are running, and comes back as a `pluginMessage` event carrying the
+        // sender's id — so a plugin always knows who is talking to it and can ignore the
+        // rest. Nothing is delivered to a plugin that was not granted the same capability.
+        let pluginBroadcast: @convention(block) (String, String) -> Bool = { [weak self] topic, json in
+            guard let self, self.hostServices.pluginExecutionAllowed,
+                  self.permissions.contains(.pluginMessaging),
+                  !topic.isEmpty, topic.count <= 64, json.count <= 64 * 1024 else { return false }
+            self.hostServices.pluginBroadcast(pluginId, topic: topic, json: json)
+            return true
+        }
+        hostObject.setObject(pluginBroadcast, forKeyedSubscript: "pluginBroadcast" as NSString)
+
         let timerSchedule: @convention(block) (Int32, Double, Bool) -> Void = { [weak self] id, milliseconds, repeats in
             self?.scheduleTimer(id: id, milliseconds: milliseconds, repeats: repeats)
         }
@@ -1045,6 +1136,37 @@ public final class AorusPluginSandbox {
             self.handleRequest(kind: kind, payload: object, id: id)
         }
         hostObject.setObject(request, forKeyedSubscript: "request" as NSString)
+
+        // What the plugin has written to its own log. The console screen reads the same
+        // array; this is so a plugin can read it too — a diagnostics page a plugin draws for
+        // itself should be able to show what it has been saying.
+        let logHistory: @convention(block) (Int32) -> String = { [weak self] limit in
+            guard let self else { return "[]" }
+            let bounded = Int(max(1, min(limit, Int32(AorusPluginSandbox.recentLogLimit))))
+            let entries = self.recentLog.suffix(bounded).map { entry -> [String: Any] in
+                return [
+                    "level": entry.level.rawValue,
+                    "text": entry.text,
+                    "date": NSNumber(value: Int64(entry.date.timeIntervalSince1970)),
+                ]
+            }
+            guard let value = AorusPluginJSONValue(any: entries) else { return "[]" }
+            return String(decoding: value.serialized(), as: UTF8.self)
+        }
+        hostObject.setObject(logHistory, forKeyedSubscript: "logHistory" as NSString)
+
+        // What this plugin was granted. A plugin that can ask stops having to call something
+        // and read the refusal to find out whether it may.
+        let grantedPermissions: @convention(block) () -> [String] = { [permissions] in
+            return permissions.map { $0.rawValue }.sorted()
+        }
+        hostObject.setObject(grantedPermissions, forKeyedSubscript: "grantedPermissions" as NSString)
+
+        let hasPermission: @convention(block) (String) -> Bool = { [permissions] name in
+            guard let value = AorusPluginPermission(rawValue: name) else { return false }
+            return permissions.contains(value)
+        }
+        hostObject.setObject(hasPermission, forKeyedSubscript: "hasPermission" as NSString)
 
         let crypto: @convention(block) (String, String, String) -> JSValue = { [weak self] operation, first, second in
             let context = self?.context ?? JSContext()!
@@ -1277,6 +1399,85 @@ public final class AorusPluginSandbox {
         // The colours a plugin needs to draw something that looks like it belongs. Nothing
         // private is in a colour, and `device.isDark` has always been readable, so this is
         // the same fact in more detail rather than a new capability.
+        // Someone, by id or by username. `chats.get` answers about a conversation; this
+        // answers about a person, which is the same lookup and a different question.
+        case "users.get":
+            guard require(.chatMetadata, id: id) else { return }
+            let username = string("username")?.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "@", with: "")
+            guard int64("peerId") != nil || (username?.isEmpty == false) else {
+                settle(id, with: .failure(AorusPluginRequestError("peerId or username is required")))
+                return
+            }
+            host.pluginUser(pluginId, peerId: int64("peerId"), username: username) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value.map { $0 as Any } })
+            }
+        case "users.search":
+            guard require(.chatMetadata, id: id) else { return }
+            guard let query = string("query")?.trimmingCharacters(in: .whitespacesAndNewlines), query.count >= 2, query.count <= 64 else {
+                settle(id, with: .failure(AorusPluginRequestError("query must be between 2 and 64 characters")))
+                return
+            }
+            let limit = min(50, max(1, (payload["limit"] as? NSNumber)?.intValue ?? 20))
+            host.pluginSearchUsers(pluginId, query: query, limit: limit) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        // The person chooses. A plugin that needs to know who to act on asks the app to ask,
+        // rather than being handed the address book.
+        case "users.pick":
+            guard require(.dialogs, id: id) else { return }
+            host.pluginPickUser(pluginId, title: string("title")) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value.map { $0 as Any } })
+            }
+        case "navigation.openProfile":
+            guard require(.openChats, id: id) else { return }
+            guard let peerId = int64("peerId") else {
+                settle(id, with: .failure(AorusPluginRequestError("peerId is required")))
+                return
+            }
+            host.pluginOpenProfile(pluginId, peerId: peerId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "navigation.openSettings":
+            guard require(.appCustomization, id: id) else { return }
+            host.pluginOpenAppSettings(pluginId, section: string("section")) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        // Removes a message from this device only. The other side keeps theirs, which is the
+        // whole difference from `messages.delete` and the reason it is a separate call.
+        case "messages.deleteLocal":
+            guard require(.manageMessages, id: id) else { return }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId") else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid message reference is required")))
+                return
+            }
+            host.pluginDeleteLocalMessage(pluginId, peerId: peerId, namespace: namespace, messageId: messageId) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
+        case "theme.setAccent":
+            guard require(.appCustomization, id: id) else { return }
+            let hex = string("color").flatMap { value -> String? in
+                let trimmed = value.hasPrefix("#") ? String(value.dropFirst()) : value
+                guard trimmed.count == 6, trimmed.allSatisfy({ $0.isHexDigit }) else { return nil }
+                return trimmed.uppercased()
+            }
+            guard hex != nil || payload["color"] is NSNull || payload["color"] == nil else {
+                settle(id, with: .failure(AorusPluginRequestError("color must be six hex digits or null")))
+                return
+            }
+            host.pluginSetAccentColor(pluginId, hex: hex) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "proxy.autoSwitch":
+            guard require(.connectionControl, id: id) else { return }
+            guard let enabled = boolean("enabled") else {
+                settle(id, with: .failure(AorusPluginRequestError("enabled must be a boolean")))
+                return
+            }
+            host.pluginSetAutoSwitch(pluginId, enabled: enabled) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "app.state":
+            settle(id, with: .success(host.pluginAppState as Any))
         case "theme.current":
             host.pluginTheme(pluginId) { [weak self] result in
                 self?.settle(id, with: result.map { value -> Any? in value as Any })

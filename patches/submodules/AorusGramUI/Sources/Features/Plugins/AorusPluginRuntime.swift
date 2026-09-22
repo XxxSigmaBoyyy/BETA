@@ -6,6 +6,7 @@ import AccountContext
 import SwiftSignalKit
 import Display
 import TelegramPresentationData
+import TelegramUIPreferences
 import ContextUI
 import UndoUI
 import QuickLook
@@ -1237,6 +1238,173 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             }
             action(id)
         })
+    }
+
+    // MARK: - People, navigation and the app itself
+
+    func pluginUser(_ pluginId: String, peerId: Int64?, username: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.chatMetadata, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Chat metadata permission is not granted")))
+            return
+        }
+        if let username, !username.isEmpty {
+            pluginResolveChat(pluginId, username: username, completion: completion)
+            return
+        }
+        guard let peerId else {
+            completion(.failure(AorusPluginRequestError("peerId or username is required")))
+            return
+        }
+        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(peerId))) |> take(1)).start(next: { peer in
+            completion(.success(peer.map(self.pluginPeerDictionary)))
+        })
+    }
+
+    func pluginSearchUsers(_ pluginId: String, query: String, limit: Int, completion: @escaping (Result<[[String: Any]], Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.chatMetadata, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Chat metadata permission is not granted")))
+            return
+        }
+        // Local only. A plugin searching the whole directory is a different capability from
+        // looking up a name it was given, and the people already in someone's list is what a
+        // plugin actually needs to act on them.
+        let bounded = min(50, max(1, limit))
+        let _ = (context.account.postbox.searchPeers(query: query.lowercased()) |> take(1)).start(next: { results in
+            let peers = results.compactMap { $0.peer }.prefix(bounded)
+            completion(.success(peers.map { self.pluginPeerDictionary(EnginePeer($0)) }))
+        })
+    }
+
+    func pluginPickUser(_ pluginId: String, title: String?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Dialogs permission is not granted")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard let presenter = self.topController(),
+                  let navigation = presenter.navigationController as? NavigationController else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            let answered = Atomic<Bool>(value: false)
+            let answer: ([String: Any]?) -> Void = { value in
+                if !answered.swap(true) { completion(.success(value)) }
+            }
+            // Telegram's own picker. A plugin never sees the list — only the one person
+            // somebody chose out of it, and nothing at all if they backed out.
+            let controller = self.context.sharedContext.makeContactSelectionController(
+                ContactSelectionControllerParams(
+                    context: self.context,
+                    autoDismiss: false,
+                    title: { strings in return title ?? strings.Contacts_Title }
+                )
+            )
+            let _ = (controller.result
+            |> take(1)
+            |> deliverOnMainQueue).start(next: { [weak controller] result in
+                controller?.dismiss()
+                guard let (peers, _, _, _, _, _) = result, let first = peers.first,
+                      case let .peer(peer, _, _) = first else {
+                    answer(nil)
+                    return
+                }
+                answer(self.pluginPeerDictionary(EnginePeer(peer)))
+            })
+            navigation.pushViewController(controller)
+        }
+    }
+
+    func pluginOpenProfile(_ pluginId: String, peerId: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.openChats, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Open chats permission is not granted")))
+            return
+        }
+        let _ = (context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: PeerId(peerId)))
+        |> take(1)
+        |> deliverOnMainQueue).start(next: { peer in
+            guard let peer else {
+                completion(.failure(AorusPluginRequestError("Chat is not available")))
+                return
+            }
+            guard let navigation = self.topController()?.navigationController as? NavigationController,
+                  let controller = self.context.sharedContext.makePeerInfoController(
+                    context: self.context, updatedPresentationData: nil, peer: peer,
+                    mode: .generic, avatarInitiallyExpanded: false, fromChat: false, requestsContext: nil
+                  ) else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            navigation.pushViewController(controller)
+            completion(.success(()))
+        })
+    }
+
+    func pluginOpenAppSettings(_ pluginId: String, section: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("App customization permission is not granted")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard let navigation = self.topController()?.navigationController as? NavigationController else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            // The settings screen is built by the module that can see the three screens it
+            // links to; this asks for it rather than reaching for what it cannot import. A
+            // build where nobody has registered it yet still opens something useful.
+            let controller = AorusSettingsRoute.make(self.context) ?? aorusPluginsController(context: self.context)
+            navigation.pushViewController(controller)
+            completion(.success(()))
+        }
+    }
+
+    func pluginDeleteLocalMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Manage messages permission is not granted")))
+            return
+        }
+        let id = MessageId(peerId: PeerId(peerId), namespace: namespace, id: messageId)
+        let _ = context.engine.messages.deleteMessagesInteractively(messageIds: [id], type: .forLocalPeer).start()
+        completion(.success(()))
+    }
+
+    func pluginSetAccentColor(_ pluginId: String, hex: String?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.appCustomization, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("App customization permission is not granted")))
+            return
+        }
+        let value = hex.flatMap { UInt32($0, radix: 16) }
+        // The accent is stored per theme, which is why this reads the current theme rather
+        // than writing one global colour: switching between day and night keeps each one's
+        // accent, and a plugin setting it should behave the same way the settings screen does.
+        // Removing the entry is what "reset" means — the theme goes back to its own accent
+        // rather than to a colour this code would have to choose.
+        let _ = updatePresentationThemeSettingsInteractively(accountManager: context.sharedContext.accountManager) { current in
+            var accents = current.themeSpecificAccentColors
+            let index = current.theme.index
+            if let value {
+                accents[index] = PresentationThemeAccentColor(index: -1, baseColor: .custom, accentColor: value)
+            } else {
+                accents.removeValue(forKey: index)
+            }
+            return current.withUpdatedThemeSpecificAccentColors(accents)
+        }.start()
+        completion(.success(["accent": hex ?? ""]))
+    }
+
+    var pluginAppState: [String: Any] {
+        return [
+            "foreground": NSNumber(value: UIApplication.shared.applicationState == .active),
+            "locked": NSNumber(value: !AorusPluginEntitlement.isAllowed),
+            "language": pluginInterfaceLanguage,
+        ]
     }
 
     func pluginResolveChat(_ pluginId: String, username: String, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {

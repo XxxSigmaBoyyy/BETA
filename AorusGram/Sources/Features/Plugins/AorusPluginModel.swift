@@ -144,6 +144,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
     case telegramProxy
     case manageMessages
     case composer
+    case pluginMessaging
 
     /// What each permission looks like in a plugin's source. The consent sheet is built
     /// from this, so a capability with no needle here is one the person is never asked
@@ -154,13 +155,19 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.sendMessages, ["aorus.messages.send"]),
             // `chats.*` names a chat by id; `chat.*` is the one on screen. Reading either is
             // the same capability: a title, an identifier and what is in view.
-            (.chatMetadata, ["aorus.chats.resolve", "aorus.chats.get", "aorus.chat.current", "aorus.chat.messages"]),
-            (.openChats, ["aorus.chats.open", "aorus.app.openChat", "aorus.telegram.openLink"]),
-            (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount"]),
+            (.chatMetadata, [
+                "aorus.chats.resolve", "aorus.chats.get", "aorus.chat.current", "aorus.chat.messages",
+                "aorus.users.get", "aorus.users.resolve", "aorus.users.search", "aorus.messages.visible",
+            ]),
+            (.openChats, [
+                "aorus.chats.open", "aorus.app.openChat", "aorus.telegram.openLink",
+                "aorus.navigation.openChat", "aorus.navigation.openProfile", "aorus.navigation.openTelegramLink",
+            ]),
+            (.accountProfile, ["aorus.account.current", "aorus.app.currentAccount", "aorus.users.me"]),
             // `toast` is gated on the same permission as the other dialogs and had no
             // needle, so a plugin whose only visible output is a toast was granted nothing
             // and every message it showed went nowhere, silently.
-            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast"]),
+            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast", "aorus.ui.showSheet", "aorus.users.select"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
             (.incomingMessages, [
@@ -185,15 +192,31 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             // A needle this misses is denied at the call itself, with a message saying so.
             (.inAppBrowser, [
                 "aorus.browser.open", "aorus.ui.openURL", "aorus.app.openURL",
-                "aorus.integrations.settings.register",
+                "aorus.integrations.settings.register", "aorus.navigation.openUrl",
                 "type: 'link'", "type: \"link\"", "\"type\":\"link\"", ".link({",
             ]),
             (.artificialIntelligence, ["aorus.ai."]),
-            (.appCustomization, ["aorus.features.", "aorus.interface.", "aorus.tabs.", "aorus.avatars.", "aorus.wall."]),
+            (.appCustomization, [
+                "aorus.features.", "aorus.interface.", "aorus.tabs.", "aorus.avatars.", "aorus.wall.",
+                "aorus.strings.override", "aorus.strings.restore",
+                "aorus.theme.setAccentColor", "aorus.theme.resetAccentColor",
+                "aorus.navigation.openSettings", "aorus.app.openSettings",
+            ]),
             (.connectionControl, ["aorus.proxy."]),
             (.accountSwitching, ["aorus.accounts."]),
             (.telegramProxy, ["aorus.telegramProxy."]),
-            (.manageMessages, ["aorus.messages.edit", "aorus.messages.delete", "aorus.messages.forward", "aorus.messages.react"]),
+            (.manageMessages, [
+                "aorus.messages.edit", "aorus.messages.delete", "aorus.messages.forward", "aorus.messages.react",
+                "aorus.messages.deleteLocal",
+            ]),
+            // One plugin talking to another. Separate from everything else because it is
+            // the one capability whose other side is not the app but code somebody else
+            // wrote, and a plugin should be able to refuse to be in that conversation.
+            (.pluginMessaging, [
+                "aorus.plugins.emit", "aorus.plugins.on",
+                "aorus.on('pluginMessage'", "aorus.on(\"pluginMessage\"",
+                "aorus.once('pluginMessage'", "aorus.once(\"pluginMessage\"",
+            ]),
             // Writing into the box someone is typing in, and watching them type. Reading the
             // open chat is `chatMetadata`; changing what is in it is this.
             (.composer, [
