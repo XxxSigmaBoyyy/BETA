@@ -18187,6 +18187,122 @@ def patch_settings_route_registration(tg: Path) -> None:
     print("SettingsRoute: AorusGram settings screen registered for every caller")
 
 
+AORUS_HEADER_BADGE_SWIFT = '''
+// AorusGram: the badge a plugin sets with `aorus.ui.setChatHeaderBadge`.
+//
+// Kept beside the title rather than inside its layout: `updateLayout` measures a title
+// against icons, a status line and a typing indicator, and inserting another width into that
+// arithmetic is how titles start truncating for people who have no plugins at all. Laid out
+// after the title has decided its own size, it costs nothing when there is no badge.
+private var aorusPluginHeaderBadgeKey: UInt8 = 0
+private var aorusPluginHeaderBadgeObserverKey: UInt8 = 0
+
+extension ChatTitleView {
+    private var aorusPluginHeaderBadge: UILabel? {
+        get { return objc_getAssociatedObject(self, &aorusPluginHeaderBadgeKey) as? UILabel }
+        set { objc_setAssociatedObject(self, &aorusPluginHeaderBadgeKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    private var aorusPluginHeaderBadgeObserver: NSObjectProtocol? {
+        get { return objc_getAssociatedObject(self, &aorusPluginHeaderBadgeObserverKey) as? NSObjectProtocol }
+        set { objc_setAssociatedObject(self, &aorusPluginHeaderBadgeObserverKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    func aorusLayoutPluginHeaderBadge() {
+        if self.aorusPluginHeaderBadgeObserver == nil {
+            self.aorusPluginHeaderBadgeObserver = NotificationCenter.default.addObserver(
+                forName: AorusPluginChatBridge.headerBadgeChangedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setNeedsLayout()
+            }
+        }
+        guard let badge = AorusPluginChatBridge.headerBadge else {
+            self.aorusPluginHeaderBadge?.removeFromSuperview()
+            self.aorusPluginHeaderBadge = nil
+            return
+        }
+        let label: UILabel
+        if let existing = self.aorusPluginHeaderBadge {
+            label = existing
+        } else {
+            label = UILabel()
+            label.textAlignment = .center
+            label.font = UIFont.systemFont(ofSize: 11.0, weight: .semibold)
+            label.layer.cornerRadius = 7.0
+            label.layer.masksToBounds = true
+            label.isUserInteractionEnabled = false
+            self.aorusPluginHeaderBadge = label
+            self.addSubview(label)
+        }
+        label.text = badge.text
+        var background = UIColor.systemBlue
+        if let hex = badge.color, let value = UInt32(hex, radix: 16) {
+            background = UIColor(
+                red: CGFloat((value >> 16) & 0xff) / 255.0,
+                green: CGFloat((value >> 8) & 0xff) / 255.0,
+                blue: CGFloat(value & 0xff) / 255.0,
+                alpha: 1.0
+            )
+        }
+        label.backgroundColor = background
+        // White on anything dark, black on anything light, decided from the colour itself so
+        // a plugin cannot pick a badge nobody can read.
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        if background.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
+            let luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+            label.textColor = luminance > 0.6 ? .black : .white
+        } else {
+            label.textColor = .white
+        }
+        let size = label.sizeThatFits(CGSize(width: 120.0, height: 14.0))
+        let width = min(120.0, max(20.0, size.width + 10.0))
+        label.frame = CGRect(
+            x: max(0.0, self.bounds.width - width),
+            y: max(0.0, (self.bounds.height - 14.0) / 2.0),
+            width: width,
+            height: 14.0
+        )
+        self.bringSubviewToFront(label)
+    }
+}
+'''
+
+
+def patch_plugin_header_badge(tg: Path) -> None:
+    """Draw the word a plugin put in the chat's title bar.
+
+    The badge sits at the trailing edge of the title view, over it rather than inside its
+    layout: `updateLayout` measures a title against icons, a status line and a typing
+    indicator, and inserting another width into that arithmetic is how a title starts
+    truncating for people who have no plugins at all. Laid out in `layoutSubviews` after the
+    title has decided its own size, it costs nothing when there is no badge.
+    """
+    path = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift"
+    if not path.is_file():
+        raise SystemExit("HeaderBadge: ChatTitleView.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "aorusPluginHeaderBadge" in source:
+        print("HeaderBadge: already patched")
+        return
+    anchor = (
+        "    override public func layoutSubviews() {\n"
+        "        super.layoutSubviews()\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("HeaderBadge: layoutSubviews anchor not found")
+    source = source.replace(
+        anchor,
+        anchor + "        // AorusGram: a word a plugin put here.\n        self.aorusLayoutPluginHeaderBadge()\n",
+        1,
+    )
+    if "import ObjectiveC\n" not in source:
+        source = source.replace("import Foundation\n", "import Foundation\nimport ObjectiveC\n", 1)
+    path.write_text(source + AORUS_HEADER_BADGE_SWIFT, encoding="utf-8")
+    print("HeaderBadge: chat title badge installed")
+
+
 def patch_plugin_chat_surface(tg: Path) -> None:
     """Register the open chat with the plugin bridge.
 
@@ -26917,6 +27033,7 @@ def main() -> None:
     # After the Wall patches: they anchor on the same two chat-controller lifecycle
     # methods, and their anchors span the lines this one inserts.
     patch_plugin_chat_surface(tg)
+    patch_plugin_header_badge(tg)
     patch_settings_live_refresh(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)

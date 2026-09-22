@@ -166,6 +166,10 @@ public final class AorusPluginRuntimeManager {
         overlays[id] = nil
         lock.unlock()
         publishIntegrationsChanged()
+        publishOverlaysChanged()
+        // A badge outliving the plugin that set it is a word in the title bar nobody can
+        // explain or remove.
+        AorusPluginChatBridge.clearHeaderBadge(pluginId: id)
         currentHost()?.clearPluginState(id)
         sandbox?.stop(completion: completion)
         if sandbox == nil { completion?() }
@@ -1412,6 +1416,16 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             picker.allowsMultipleSelection = false
             presenter.view.window?.rootViewController?.present(picker, animated: true)
         }
+    }
+
+    func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else { return }
+        guard let text else {
+            AorusPluginChatBridge.clearHeaderBadge(pluginId: pluginId)
+            return
+        }
+        AorusPluginChatBridge.setHeaderBadge(AorusPluginChatBridge.HeaderBadge(pluginId: pluginId, text: text, color: color))
     }
 
     func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void) {

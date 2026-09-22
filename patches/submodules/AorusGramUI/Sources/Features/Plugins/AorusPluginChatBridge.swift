@@ -108,6 +108,54 @@ public final class AorusPluginChatBridge {
         )
     }
 
+    /// A word a plugin has put in the chat's title bar, and the colour to draw it in.
+    ///
+    /// One at a time, deliberately: this is the title bar, and two plugins stacking labels
+    /// there would leave a chat nobody can read the name of. The last one to set it wins,
+    /// which is also the only rule that needs no arbitration.
+    public struct HeaderBadge: Equatable {
+        public let pluginId: String
+        public let text: String
+        public let color: String?
+
+        public init(pluginId: String, text: String, color: String?) {
+            self.pluginId = pluginId
+            self.text = text
+            self.color = color
+        }
+    }
+
+    public static let headerBadgeChangedNotification = Notification.Name("aorusgram.plugins.headerBadgeChanged")
+
+    private static let badgeLock = NSLock()
+    private static var headerBadgeValue: HeaderBadge?
+
+    public static var headerBadge: HeaderBadge? {
+        badgeLock.lock(); defer { badgeLock.unlock() }
+        return headerBadgeValue
+    }
+
+    public static func setHeaderBadge(_ value: HeaderBadge?) {
+        badgeLock.lock()
+        let changed = headerBadgeValue != value
+        headerBadgeValue = value
+        badgeLock.unlock()
+        guard changed else { return }
+        let post = {
+            NotificationCenter.default.post(name: AorusPluginChatBridge.headerBadgeChangedNotification, object: nil)
+        }
+        if Thread.isMainThread { post() } else { DispatchQueue.main.async(execute: post) }
+    }
+
+    /// Clears whatever a plugin left behind when it stops. A badge outliving the plugin that
+    /// set it is a word in the title bar nobody can explain or remove.
+    public static func clearHeaderBadge(pluginId: String) {
+        badgeLock.lock()
+        let shouldClear = headerBadgeValue?.pluginId == pluginId
+        badgeLock.unlock()
+        if shouldClear { setHeaderBadge(nil) }
+    }
+
     public static func describe(_ host: AorusPluginChatHost) -> [String: Any] {
         var info: [String: Any] = [
             "peerId": String(host.aorusPluginPeerId),

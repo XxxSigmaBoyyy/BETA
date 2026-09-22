@@ -17,6 +17,10 @@ import AorusGramUI
 private let aorusOverlayPanelHeight: CGFloat = 46.0
 private let aorusOverlayPanelHeightWithSubtitle: CGFloat = 58.0
 private let aorusOverlayMargin: CGFloat = 12.0
+// What the composer takes at the bottom of the chat. Telegram's own input panel is laid out
+// by the chat controller and its height changes with the text, so this is the resting height
+// an accessory sits above; a plugin that wants it elsewhere says so with an offset.
+private let aorusOverlayInputPanelHeight: CGFloat = 56.0
 
 final class AorusPluginOverlayHost: UIView {
     /// The chat this is drawn over, for the payload a tap carries.
@@ -90,7 +94,7 @@ final class AorusPluginOverlayHost: UIView {
         switch overlay.kind {
         case .floatingButton:
             return self.buildButton(pluginId, overlay)
-        case .chatPanel:
+        case .chatPanel, .inputAccessory:
             return self.buildPanel(pluginId, overlay)
         }
     }
@@ -208,10 +212,23 @@ final class AorusPluginOverlayHost: UIView {
         super.layoutSubviews()
         let insets = self.safeAreaInsets
         var panelTop = insets.top + aorusOverlayMargin
+        // Accessories stack upwards from just above the composer, so the one registered
+        // first sits closest to it — the order somebody reading them expects.
+        var accessoryBottom = self.bounds.height - insets.bottom - aorusOverlayInputPanelHeight - aorusOverlayMargin
         for item in self.items {
             let key = AorusPluginOverlayHost.key(item.pluginId, item.overlay.id)
             guard let view = self.views[key] else { continue }
             switch item.overlay.kind {
+            case .inputAccessory:
+                let height = item.overlay.height.map { CGFloat($0) }
+                    ?? (item.overlay.subtitle == nil ? aorusOverlayPanelHeight : aorusOverlayPanelHeightWithSubtitle)
+                view.frame = CGRect(
+                    x: aorusOverlayMargin + CGFloat(item.overlay.offsetX),
+                    y: accessoryBottom - height + CGFloat(item.overlay.offsetY),
+                    width: max(0.0, self.bounds.width - aorusOverlayMargin * 2.0),
+                    height: height
+                )
+                accessoryBottom -= height + 8.0
             case .chatPanel:
                 // Panels stack under the navigation bar in the order they were added, which
                 // is the order the plugin registered them in.

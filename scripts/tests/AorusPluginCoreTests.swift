@@ -978,6 +978,38 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(overlayResults["tapped"] == .string("floatingButton-1"), "a tap reaches the handler the plugin passed in")
     overlaySandbox.stop()
 
+    // A strip above the composer is a panel that sits somewhere else, and a word in the
+    // title bar is one at a time across every plugin.
+    let accessoryHost = AorusPluginNullHost()
+    var accessoryOverlays: [AorusPluginOverlay] = []
+    accessoryHost.onOverlaysChanged = { _, items in accessoryOverlays = items }
+    var headerBadges: [(String?, String?)] = []
+    accessoryHost.onHeaderBadge = { _, text, color in headerBadges.append((text, color)) }
+    let accessorySandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Accessory"),
+        source: """
+        aorus.on('start', function () {
+            aorus.ui.addInputAccessory({ title: 'AI', icon: 'sparkles' }, function () {});
+            aorus.ui.setChatHeaderBadge('LIVE', '#37FF8B');
+            aorus.ui.setChatHeaderBadge('REC');
+            aorus.ui.clearChatHeaderBadge();
+        });
+        """,
+        host: accessoryHost,
+        permissions: [.customUI]
+    )
+    let accessoryStarted = DispatchSemaphore(value: 0)
+    accessorySandbox.start { error in expect(error == nil, "accessory plugin starts"); accessoryStarted.signal() }
+    _ = accessoryStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(accessoryOverlays.count == 1 && accessoryOverlays[0].kind == .inputAccessory, "an accessory is published as its own kind")
+    expect(accessoryOverlays.first?.position == .topLeft, "and does not inherit the floating button's corner")
+    expect(headerBadges.count == 3, "every badge change reaches the app")
+    expect(headerBadges.first?.0 == "LIVE" && headerBadges.first?.1 == "37FF8B", "a badge carries its word and its colour without the hash")
+    expect(headerBadges.count == 3 && headerBadges[1].1 == nil, "a badge with no colour asks for none rather than for black")
+    expect(headerBadges.last?.0 == nil, "clearing asks for no badge at all")
+    accessorySandbox.stop()
+
     // Without the grant nothing is drawn at all, and the add says so rather than reporting
     // an id for something that does not exist.
     let deniedOverlayHost = AorusPluginNullHost()

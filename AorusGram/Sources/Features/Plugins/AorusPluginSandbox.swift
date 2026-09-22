@@ -87,6 +87,7 @@ public protocol AorusPluginHostServices: AnyObject {
     /// `action` is `ban`, `kick`, `restrict` or `unban`.
     func pluginModerate(_ pluginId: String, action: String, chatPeerId: Int64, userPeerId: Int64, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?)
     func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginBroadcast(_ pluginId: String, topic: String, json: String)
     var pluginAppState: [String: Any] { get }
@@ -128,6 +129,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onMedia: ((String, String, Int64, Int32, Int32) -> [String: Any]?)?
     public var onModerate: ((String, String, Int64, Int64) -> [String: Any])?
     public var onPickFile: ((String) -> [String: Any]?)?
+    public var onHeaderBadge: ((String, String?, String?) -> Void)?
     public var onShareFile: ((String, URL) -> Void)?
     public var onBroadcast: ((String, String, String) -> Void)?
     // The open chat. Nothing is open unless a test says so, which is also true on a device
@@ -229,6 +231,9 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     }
     open func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         completion(.success(onPickFile?(pluginId)))
+    }
+    open func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?) {
+        onHeaderBadge?(pluginId, text, color)
     }
     open func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         onShareFile?(pluginId, path)
@@ -1123,6 +1128,17 @@ public final class AorusPluginSandbox {
             return true
         }
         hostObject.setObject(stringsDefine, forKeyedSubscript: "stringsDefine" as NSString)
+
+        // A word in the chat's title bar. One at a time across every plugin: two labels
+        // stacked there would leave a chat nobody can read the name of.
+        let headerBadge: @convention(block) (JSValue, JSValue) -> Bool = { [weak self] text, color in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.customUI) else { return false }
+            let value = text.isString ? String(text.toString().prefix(16)) : nil
+            let tint = color.isString ? AorusPluginOverlay.normalizedColor(color.toString()) : nil
+            self.hostServices.pluginSetHeaderBadge(pluginId, text: (value?.isEmpty == false) ? value : nil, color: tint)
+            return true
+        }
+        hostObject.setObject(headerBadge, forKeyedSubscript: "headerBadge" as NSString)
 
         // One plugin talking to another. The message goes out through the app, which knows
         // which plugins are running, and comes back as a `pluginMessage` event carrying the

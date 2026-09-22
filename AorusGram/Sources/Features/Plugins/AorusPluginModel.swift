@@ -514,6 +514,10 @@ public struct AorusPluginOverlay: Codable, Equatable {
     public enum Kind: String, Codable {
         case floatingButton
         case chatPanel
+        /// A strip directly above the composer, where the keyboard pushes it. Same data as a
+        /// panel; the difference is only where it sits, which is the whole reason the
+        /// contract names it separately.
+        case inputAccessory
     }
 
     public enum Position: String, Codable {
@@ -623,11 +627,15 @@ public struct AorusPluginOverlay: Codable, Equatable {
     /// `AorusPluginAccent.normalized` answers with the fallback colour for what it does not
     /// recognise, which would turn a typo into a colour the plugin never asked for instead
     /// of leaving the theme's own.
-    private static func colour(_ value: Any?) -> String? {
-        guard let text = value as? String else { return nil }
+    public static func normalizedColor(_ text: String) -> String? {
         let trimmed = text.hasPrefix("#") ? String(text.dropFirst()) : text
         guard trimmed.count == 6, trimmed.allSatisfy({ $0.isHexDigit }) else { return nil }
         return trimmed.uppercased()
+    }
+
+    private static func colour(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        return normalizedColor(text)
     }
 
     public static func validated(from data: Data) -> [AorusPluginOverlay]? {
@@ -650,12 +658,12 @@ public struct AorusPluginOverlay: Codable, Equatable {
             let icon = (item["icon"] as? String).flatMap { normalizedSymbol($0) }
             // A button with neither a glyph nor a word on it is an invisible tap target.
             if kind == .floatingButton, icon == nil, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-            if kind == .chatPanel, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, subtitle == nil { continue }
+            if kind != .floatingButton, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, subtitle == nil, icon == nil { continue }
             let displayMode = (item["displayMode"] as? String).flatMap { DisplayMode(rawValue: $0) }
                 ?? (icon == nil ? .text : (title.isEmpty ? .icon : .iconText))
             let position = (item["position"] as? String).flatMap { raw in
                 Position.allPositions.first { $0.rawValue.lowercased() == raw.lowercased() }
-            } ?? (kind == .chatPanel ? .topLeft : .bottomRight)
+            } ?? (kind == .floatingButton ? .bottomRight : .topLeft)
             result.append(AorusPluginOverlay(
                 id: id,
                 kind: kind,

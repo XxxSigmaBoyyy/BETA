@@ -1405,7 +1405,26 @@ public enum AorusPluginPrelude {
                 addChatPanel: function (config, handler) { return addOverlay('chatPanel', config, handler); },
                 updateChatPanel: function (id, config) { return updateOverlay('chatPanel', id, config); },
                 removeChatPanel: removeOverlay,
+                // A strip directly above the composer. The same data as a panel; the
+                // difference is only where it sits.
+                addInputAccessory: function (config, handler) { return addOverlay('inputAccessory', config, handler); },
+                updateInputAccessory: function (id, config) { return updateOverlay('inputAccessory', id, config); },
+                removeInputAccessory: removeOverlay,
                 overlays: function () { return freeze(JSON.parse(JSON.stringify(overlays))); },
+                // A word in the chat's title bar. One at a time across every plugin: two
+                // labels stacked there would leave a chat nobody can read the name of.
+                setChatHeaderBadge: function (text, color) {
+                    requireString(text, 'text');
+                    if (color !== undefined && color !== null) { requireString(color, 'color'); }
+                    if (!host.headerBadge(text, color === undefined ? null : color)) {
+                        throw new Error('Custom UI permission is not granted');
+                    }
+                },
+                clearChatHeaderBadge: function () {
+                    if (!host.headerBadge(null, null)) {
+                        throw new Error('Custom UI permission is not granted');
+                    }
+                },
                 removeAllOverlays: removeAllOverlays,
                 showSheet: function (options) {
                     var opts = typeof options === 'string' ? { text: options } : optionalObject(options, 'options');
