@@ -1100,7 +1100,10 @@ public enum AorusPluginPrelude {
                     }
                 };
             },
-            topics: function () { return freeze(Object.keys(pluginTopics)); }
+            // A fresh array, not a frozen one. `Object.keys` already builds a copy, and
+            // freezing it only means the caller cannot sort or filter what it was given —
+            // which is what anyone does with a list of topics.
+            topics: function () { return Object.keys(pluginTopics); }
         });
 
         function moderate(action, userPeerId, options) {
@@ -1273,6 +1276,10 @@ public enum AorusPluginPrelude {
             }),
             chat: chatApi,
             files: filesApi,
+            // The same object as the global `console`. Both spellings are in the contract,
+            // and a plugin that reaches for the one that was missing got a TypeError in the
+            // middle of its own start handler with nothing to say why.
+            console: console,
             strings: stringsApi,
             plugins: pluginsApi,
             // A message's attachment: what it is, and the four things anyone ever wants to

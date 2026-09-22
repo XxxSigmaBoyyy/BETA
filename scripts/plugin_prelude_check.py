@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 PRELUDE = "AorusGram/Sources/Features/Plugins/AorusPluginPrelude.swift"
@@ -144,9 +145,17 @@ const host = new Proxy({}, {
                 dispatcher.reject(id, globalThis.__requestFailures[kind]);
                 return;
             }
-            const answer = Object.prototype.hasOwnProperty.call(globalThis.__answers, kind)
-                ? globalThis.__answers[kind]
-                : null;
+            // A shape that does not crash a plugin written against the real thing. The
+            // point of running these sources is to catch what throws on the way in, not to
+            // model every host answer.
+            let answer = null;
+            if (Object.prototype.hasOwnProperty.call(globalThis.__answers, kind)) {
+                answer = globalThis.__answers[kind];
+            } else if (/\.(list|search|messages|history|accounts)$/.test(kind)) {
+                answer = [];
+            } else if (kind !== 'chat.current' && kind !== 'users.pick' && kind !== 'files.info') {
+                answer = {};
+            }
             dispatcher.resolve(id, JSON.stringify(answer));
         };
         case 'timerSchedule': return (id, ms, repeats) => {
@@ -295,11 +304,72 @@ aorus.chat.current().then(function (value) {
         }
     );
 }).then(function () {
+VERDICT_TAIL
     globalThis.__nodeLog('VERDICT ' + JSON.stringify(problems));
 }, function (error) {
     problems.push('the behaviour checks threw: ' + error.message);
     globalThis.__nodeLog('VERDICT ' + JSON.stringify(problems));
 });
+"""
+
+
+TESTS = "scripts/tests/AorusPluginCoreTests.swift"
+
+
+def plugin_sources(root: Path) -> list[str]:
+    """Every plugin the Swift tests run, as JavaScript.
+
+    The two failures the first version of this check missed were both in test sources it
+    never executed: `aorus.console.history(...)` on a namespace that had no `console`, and
+    `.sort()` on a frozen array. Reading the same sources the tests use closes that: what CI
+    runs is what runs here.
+    """
+    text = (root / TESTS).read_text(encoding="utf-8")
+    sources: list[str] = []
+    # `source: """ ... """` and the inline single-line form both appear.
+    for match in re.finditer(r'"""\n(.*?)\n\s*"""', text, re.S):
+        body = match.group(1)
+        if "aorus." not in body:
+            continue
+        sources.append(textwrap.dedent(body))
+    for match in re.finditer(r'source: "((?:[^"\\]|\\.)*)"', text):
+        body = match.group(1)
+        if "aorus." not in body:
+            continue
+        sources.append(body.replace('\\"', '"').replace("\\\\", "\\"))
+    return sources
+
+
+RUN_SOURCES = r"""
+// Each plugin the Swift tests run, evaluated the way the sandbox evaluates it. A source that
+// throws here is a plugin that would fail to start there.
+//
+// Only what throws on the way in is reported. A promise that rejects because this harness
+// answered a host call with a shape the plugin did not expect says nothing about the plugin;
+// the sandbox hands those to the plugin's own error handler and carries on, so this does too.
+const sourceProblems = [];
+process.on('unhandledRejection', function () {});
+for (let index = 0; index < PLUGIN_SOURCES.length; index++) {
+    // A handler that throws does not reach here: the prelude catches it and writes an error
+    // to the plugin's log, exactly as the sandbox does. That log line is the signal — in the
+    // app it is the difference between a plugin that ran and one whose start handler died
+    // halfway through with nothing on screen to say so.
+    const before = globalThis.__calls.length;
+    try {
+        (0, eval)(PLUGIN_SOURCES[index]);
+        if (globalThis.__dispatcher) { globalThis.__dispatcher.dispatch('start'); }
+    } catch (error) {
+        sourceProblems.push('test plugin ' + (index + 1) + ' threw: ' + error.message);
+        continue;
+    }
+    for (let i = before; i < globalThis.__calls.length; i++) {
+        const call = globalThis.__calls[i];
+        if (call.name === 'log' && call.args[0] === 'error') {
+            sourceProblems.push('test plugin ' + (index + 1) + ' logged an error: ' + call.args[1]);
+        }
+    }
+}
+for (const problem of sourceProblems) { problems.push(problem); }
 """
 
 
@@ -318,12 +388,17 @@ def main() -> int:
         and len(needle.split(".")) > 1
     })
 
+    sources = plugin_sources(root)
+    if not sources:
+        print("Plugin prelude check FAILED: no plugin sources found in the tests")
+        return 1
     script = "\n".join([
         HARNESS,
         "const EXPECTED_NAMESPACES = " + json.dumps(namespaces) + ";",
         "const EXPECTED_EVENTS = " + json.dumps(events) + ";",
+        "const PLUGIN_SOURCES = " + json.dumps(sources) + ";",
         prelude,
-        CHECKS,
+        CHECKS.replace("VERDICT_TAIL", RUN_SOURCES),
     ])
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "prelude-check.js"
