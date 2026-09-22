@@ -367,17 +367,79 @@ public struct AorusAIToolRequest: Equatable {
 ///
 /// Either it carries a `limit` (that many newest messages) or `mode == "period"`,
 /// which asks for a date range instead. The client never invents options.
+/// A human-facing timeline line as the gateway sends it.
+///
+/// The gateway still sends the Russian sentence it would have shown, and now also a stable
+/// `key` with the parameters that go in it. The key is what the app localizes; `text` is what
+/// it shows when the key is one this build does not know, which is the contract's rule and
+/// the reason a new server string never leaves a blank row on an old client.
+///
+/// Parsed here and localized in the UI module, because nothing in this module holds display
+/// text — the whole point of the key is that the sentence is written where the translation
+/// table lives.
+public struct AorusAITimelineText: Equatable {
+    public var key: String?
+    public var params: [String: String]
+    public var text: String
+
+    public init(key: String?, params: [String: String] = [:], text: String) {
+        self.key = key
+        self.params = params
+        self.text = text
+    }
+
+    public var isEmpty: Bool {
+        return (key ?? "").isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// `params` as the contract sends it: numbers, strings, nothing else. Anything with no
+    /// sensible one-line rendering is dropped rather than interpolated as a debug
+    /// description into a sentence someone reads.
+    public static func parameters(_ value: Any?) -> [String: String] {
+        guard let raw = value as? [String: Any] else { return [:] }
+        var result: [String: String] = [:]
+        for (name, item) in raw.prefix(16) {
+            guard name.count <= 32 else { continue }
+            if let text = item as? String {
+                result[name] = String(text.prefix(128))
+            } else if let number = item as? NSNumber {
+                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                    result[name] = number.boolValue ? "1" : "0"
+                } else if number.doubleValue == number.doubleValue.rounded(.towardZero) {
+                    result[name] = String(number.int64Value)
+                } else {
+                    result[name] = String(number.doubleValue)
+                }
+            }
+        }
+        return result
+    }
+
+    /// The key, the parameters and the server's own sentence, from one event body.
+    public static func from(_ object: [String: Any], keyField: String = "key", textFields: [String]) -> AorusAITimelineText? {
+        let key = (object[keyField] as? String).flatMap { $0.count <= 64 ? $0 : nil }
+        var text = ""
+        for field in textFields {
+            if let value = object[field] as? String, !value.isEmpty { text = value; break }
+        }
+        let value = AorusAITimelineText(key: key, params: parameters(object["params"]), text: text)
+        return value.isEmpty ? nil : value
+    }
+}
+
 public struct AorusAIPermissionOption: Equatable {
     public static let periodMode = "period"
 
     public var id: String
     public var label: String
+    public var key: String?
     public var limit: Int?
     public var mode: String?
 
-    public init(id: String, label: String, limit: Int?, mode: String?) {
+    public init(id: String, label: String, key: String? = nil, limit: Int?, mode: String?) {
         self.id = id
         self.label = label
+        self.key = key
         self.limit = limit
         self.mode = mode
     }
@@ -394,15 +456,21 @@ public struct AorusAIPermissionRequest: Equatable {
     public var tool: String
     public var title: String?
     public var text: String?
+    public var titleKey: String?
+    public var textKey: String?
+    public var params: [String: String]
     public var username: String?
     public var options: [AorusAIPermissionOption]
     public var allowCancel: Bool
 
-    public init(requestId: String, tool: String, title: String?, text: String?, username: String?, options: [AorusAIPermissionOption], allowCancel: Bool) {
+    public init(requestId: String, tool: String, title: String?, text: String?, titleKey: String? = nil, textKey: String? = nil, params: [String: String] = [:], username: String?, options: [AorusAIPermissionOption], allowCancel: Bool) {
         self.requestId = requestId
         self.tool = tool
         self.title = title
         self.text = text
+        self.titleKey = titleKey
+        self.textKey = textKey
+        self.params = params
         self.username = username
         self.options = options
         self.allowCancel = allowCancel
@@ -890,13 +958,16 @@ public enum AorusAIEvent: Equatable {
     /// server — never a second assistant message, which the contract states outright.
     case turnResume(AorusAIResumeInfo)
     case agentStarted(turnId: String, context: String?)
-    case status(label: String, progress: Double?)
+    /// The gateway's name for a brand-new chat. Fire-and-forget on the first turn only:
+    /// the client shows its own placeholder until this arrives and never waits for it.
+    case threadTitle(turnId: String, title: String)
+    case status(label: AorusAITimelineText, progress: Double?)
     /// A build/repair/diagnose/finalize phase. Only `label` is ever shown; `phase` is the
     /// backend's own name for it and stays out of the chat.
     case buildPhase(phase: String, label: String, attempt: Int)
     /// A file the agent created, edited or deleted during the turn.
     case fileChange(AorusAIFileChange)
-    case reasoningSummary(String)
+    case reasoningSummary(AorusAITimelineText)
     case responseStarted
     case responseDelta(String)
     case artifactReady(AorusAIArtifact)
@@ -904,7 +975,7 @@ public enum AorusAIEvent: Equatable {
     /// production answer for an artifact turn is this, not a stream of `artifact.ready`.
     case completion(text: String?, artifacts: [AorusAIArtifact])
     case toolRequest(AorusAIToolRequest)
-    case toolResult(tool: String, ok: Bool, label: String?)
+    case toolResult(tool: String, ok: Bool, label: AorusAITimelineText?)
     case permissionRequest(AorusAIPermissionRequest)
     case responseDone
     case quota(AorusAIQuota)

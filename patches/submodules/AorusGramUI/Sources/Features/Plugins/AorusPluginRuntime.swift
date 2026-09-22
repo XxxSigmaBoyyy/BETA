@@ -779,13 +779,20 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 if artifacts.count < AorusAIRequestLimits.responseArtifactCount,
                    !artifacts.contains(where: { $0.artifactId == artifact.artifactId }) { artifacts.append(artifact) }
             case let .status(label, progress):
-                var value: [String: Any] = ["type": "status", "label": label]
+                var value: [String: Any] = [
+                    "type": "status",
+                    "label": aorusAITimelineText(key: label.key, params: label.params, fallback: label.text),
+                ]
+                if let key = label.key { value["key"] = key }
                 if let progress { value["progress"] = progress }
                 onEvent(value)
             case let .buildPhase(phase, label, attempt):
                 onEvent(["type": "build.phase", "phase": phase, "label": label, "attempt": attempt])
             case let .reasoningSummary(summary):
-                onEvent(["type": "reasoning.summary", "summary": summary])
+                onEvent([
+                    "type": "reasoning.summary",
+                    "summary": aorusAITimelineText(key: summary.key, params: summary.params, fallback: summary.text),
+                ])
             case .responseStarted:
                 onEvent(["type": "response.start"])
             case .responseDone:

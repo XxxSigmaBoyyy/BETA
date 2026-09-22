@@ -174,6 +174,21 @@ jobs:
             aorusgram/scripts/tests/AorusAITurnResumeTests.swift \
             -o /tmp/aorus-ai-preflight/turn-resume-tests
           /tmp/aorus-ai-preflight/turn-resume-tests
+          # The timeline the gateway now sends as keys rather than as Russian sentences.
+          # The catalog lives in the UI module and takes only `aorusL`, which the test
+          # supplies, so both halves of the contract run here: what is read out of an event
+          # and what is written in its place.
+          swiftc \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAITurnResume.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIMentionModel.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIStore.swift \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAITimelineStrings.swift \
+            aorusgram/scripts/tests/AorusAITimelineTests.swift \
+            -o /tmp/aorus-ai-preflight/ai-timeline-tests
+          /tmp/aorus-ai-preflight/ai-timeline-tests
           swiftc \
             -module-cache-path /tmp/aorus-ai-preflight/module-cache \
             aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginModel.swift \
@@ -208,6 +223,7 @@ jobs:
             aorusgram/AorusGram/Sources/Features/Plugins/AorusPluginSandbox.swift \
             aorusgram/scripts/tests/AorusPluginUIStubs.swift \
             aorusgram/patches/submodules/AorusGramUI/Sources/Features/Plugins/AorusPluginChatBridge.swift \
+            aorusgram/patches/submodules/AorusGramUI/Sources/Features/AI/AorusAITimelineStrings.swift \
             /tmp/aorus-plugin-ui/AorusPluginControllers.swift
           swiftc -frontend -parse \
             aorusgram/AorusGram/Sources/Features/Subscription/AorusBuildKeyProvider.swift \
@@ -226,7 +242,17 @@ jobs:
             aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIMentionModel.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIStore.swift
-          swiftc -frontend -parse \
+          # Was only parsed, which is how a type error in the SSE decoding would have
+          # reached Bazel an hour later. It imports nothing but Foundation and UIKit, so it
+          # type-checks against the iOS SDK next to the models it decodes into.
+          swiftc -typecheck \
+            -module-cache-path /tmp/aorus-ai-preflight/module-cache \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -target arm64-apple-ios13.0 \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIModels.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAITurnResume.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAIArtifactFlow.swift \
+            aorusgram/AorusGram/Sources/Features/AI/AorusAISSEParser.swift \
             aorusgram/AorusGram/Sources/Features/AI/AorusAIClient.swift
           # Every AorusGramUI source under Features/AI, discovered rather than listed: a
           # file added to the feature and left out of this list would be parsed for the

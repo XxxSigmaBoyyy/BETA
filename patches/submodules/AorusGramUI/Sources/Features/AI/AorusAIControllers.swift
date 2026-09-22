@@ -2222,10 +2222,24 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
             // V7: and it is the identity the journal is numbered against. The client
             // never invents one — this and `turn.resume` are the only two sources.
             turnCursor.adopt(turnId: turnId)
+        case let .threadTitle(turnId, title):
+            // A name for the chat, from the first turn only, fire-and-forget. The list
+            // already shows a placeholder cut from the first message, so nothing waited for
+            // this and nothing breaks if it never comes.
+            //
+            // It replaces the placeholder and only the placeholder. If the title is no
+            // longer the one this app generated, someone has renamed the chat, and their
+            // name outranks the gateway's.
+            guard turnId == self.turnId else { break }
+            let placeholder = conversation.messages.first(where: { $0.role == .user })
+                .map { AorusAIFormat.title(from: $0.rawText) } ?? ""
+            guard conversation.title.isEmpty || conversation.title == placeholder else { break }
+            conversation.title = String(title.prefix(120))
         case let .status(label, progress):
-            let visibleLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let rendered = aorusAITimelineText(key: label.key, params: label.params, fallback: label.text)
+            let visibleLabel = rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? aorusAILocalized("Выполняю…", "Working…")
-                : label
+                : rendered
             let safeLabel = AorusAIFormat.safeStatus(visibleLabel, progress: progress)
             conversation.messages[index].statusLabel = safeLabel
             beginWorkPhase(safeLabel, at: index)
@@ -2239,7 +2253,9 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         case let .fileChange(change):
             appendWorkFile(change, at: index)
         case let .reasoningSummary(value):
-            let safeLabel = AorusAIFormat.safeStatus(value)
+            let safeLabel = AorusAIFormat.safeStatus(
+                aorusAITimelineText(key: value.key, params: value.params, fallback: value.text)
+            )
             conversation.messages[index].statusLabel = safeLabel
             beginWorkPhase(safeLabel, at: index)
         case .responseStarted:
@@ -2283,7 +2299,10 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         case let .toolResult(_, ok, label):
             // §8/§15: the backend's own bookkeeping is a transient status line, never a
             // chat message of its own.
-            let visible = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let visible = label.map {
+                aorusAITimelineText(key: $0.key, params: $0.params, fallback: $0.text)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             if ok, let visible, !visible.isEmpty {
                 conversation.messages[index].statusLabel = AorusAIFormat.safeStatus(visible)
             }
@@ -2915,12 +2934,25 @@ private final class AorusAIChatController: ViewController, UITableViewDataSource
         //
         // A payload that named no amounts gets the client's own steps rather than a dialog
         // whose only answer is "no", which is not the same thing as being asked.
-        let options = request.options.isEmpty ? Self.historyOptions(preferred: nil) : request.options
+        // Localized from the key where the gateway sent one, and left exactly as it arrived
+        // where it did not. What the words *mean* is still the client's decision — the
+        // amounts below are derived from what the executor will actually do — but a chat
+        // running in German should read this question in German.
+        let options = (request.options.isEmpty ? Self.historyOptions(preferred: nil) : request.options).map { option in
+            var option = option
+            if let key = option.key {
+                option.label = aorusAITimelineText(key: key, params: request.params, fallback: option.label)
+            }
+            return option
+        }
+        let explanation = request.text.map {
+            aorusAITimelineText(key: request.textKey, params: request.params, fallback: $0)
+        }
         let controller = AorusAIShareScopeController(
             context: context,
             theme: presentationData.theme,
             username: request.username,
-            explanation: request.text,
+            explanation: explanation,
             options: options,
             onSelect: { [weak self] option in
                 self?.select(option: option, for: request)

@@ -839,12 +839,23 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
         case "agent.start":
             guard let turn = object["turn_id"] as? String, !turn.isEmpty else { return nil }
             return .agentStarted(turnId: turn, context: object["context"] as? String)
+        case "thread.title":
+            // First turn only, and optional. A title that is empty, absurdly long or for a
+            // different turn is dropped: the local placeholder is already on screen and is
+            // a better answer than a wrong name.
+            guard let turn = object["turn_id"] as? String, !turn.isEmpty,
+                  let title = (object["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  title.count >= 2, title.count <= 120 else { return nil }
+            return .threadTitle(turnId: turn, title: title)
         case "status", "render.start", "render.phase", "render_progress", "build_progress":
-            // Only display the backend's user-facing label. Internal phase names are
-            // implementation details and must never leak into the chat UI.
-            let label = (object["label"] as? String) ?? ""
+            // The backend's own `phase` name is an implementation detail and never reaches
+            // the chat. What is shown is the key localized here, or the sentence the gateway
+            // sent when the key is one this build does not know.
             let progress = (object["progress"] as? NSNumber)?.doubleValue
-            return label.isEmpty && progress == nil ? nil : .status(label: label, progress: progress)
+            guard let label = AorusAITimelineText.from(object, textFields: ["label"]) else {
+                return progress == nil ? nil : .status(label: AorusAITimelineText(key: nil, text: ""), progress: progress)
+            }
+            return .status(label: label, progress: progress)
         case "build.phase":
             // Same rule as `status`: the label is shown verbatim and the backend's own
             // phase name never reaches the chat.
@@ -870,7 +881,7 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             // "оба 0: строку не показывать" — dropped here so no layer above has to know.
             return change.isRenderable ? .fileChange(change) : nil
         case "reasoning.summary":
-            guard let value = object["summary"] as? String else { return nil }
+            guard let value = AorusAITimelineText.from(object, textFields: ["summary"]) else { return nil }
             return .reasoningSummary(value)
         case "response.start":
             return .responseStarted
@@ -905,7 +916,11 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
             // The backend confirming its own bookkeeping. Purely informational: it is
             // shown as a transient status, never as a chat message (§15).
             guard let tool = object["tool"] as? String, !tool.isEmpty else { return nil }
-            return .toolResult(tool: tool, ok: (object["ok"] as? Bool) ?? true, label: object["label"] as? String)
+            return .toolResult(
+                tool: tool,
+                ok: (object["ok"] as? Bool) ?? true,
+                label: AorusAITimelineText.from(object, textFields: ["label"])
+            )
         case "permission.request":
             let requestId = (object["id"] as? String) ?? (object["request_id"] as? String) ?? UUID().uuidString
             let tool = (object["tool"] as? String) ?? AorusAITool.chatHistory
@@ -924,6 +939,7 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
                 options.append(AorusAIPermissionOption(
                     id: String(rawId.prefix(AorusAIRequestLimits.permissionOptionCharacters)),
                     label: label,
+                    key: (rawOption["key"] as? String).flatMap { $0.count <= 64 ? $0 : nil },
                     limit: limit,
                     mode: mode
                 ))
@@ -933,6 +949,9 @@ private final class AorusAIStreamOperation: NSObject, URLSessionDataDelegate, UR
                 tool: tool,
                 title: object["title"] as? String,
                 text: (object["description"] as? String) ?? (object["text"] as? String),
+                titleKey: (object["key"] as? String).flatMap { $0.count <= 64 ? $0 : nil },
+                textKey: (object["description_key"] as? String).flatMap { $0.count <= 64 ? $0 : nil },
+                params: AorusAITimelineText.parameters(object["params"]),
                 username: AorusAIStreamOperation.username(from: arguments),
                 options: options,
                 allowCancel: (object["allow_cancel"] as? Bool) ?? true
