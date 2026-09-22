@@ -61,6 +61,12 @@ jobs:
       - name: Compile unit preflight
         run: python3 aorusgram/scripts/swift_compile_unit_check.py aorusgram
 
+      # The prelude is JavaScript inside a Swift string, so every Swift check passes while it
+      # is broken and then no plugin starts at all. Node runs it against a stub host and asks
+      # it the questions the API promises. Runs 490 to 494 were one mis-escaped quote.
+      - name: Plugin prelude preflight
+        run: python3 aorusgram/scripts/plugin_prelude_check.py aorusgram
+
       - name: AorusAI transport and store preflight
         run: |
           mkdir -p /tmp/aorus-ai-preflight/module-cache

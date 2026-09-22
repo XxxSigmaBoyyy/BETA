@@ -1077,7 +1077,7 @@ public enum AorusPluginPrelude {
                 try {
                     snapshot[i](event);
                 } catch (error) {
-                    reportError('Handler for plugin topic \'' + event.topic + '\' failed', error);
+                    reportError('Handler for plugin topic \\'' + event.topic + '\\' failed', error);
                 }
             }
         }
