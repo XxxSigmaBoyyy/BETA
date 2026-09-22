@@ -11323,21 +11323,19 @@ extension AorusFakeGiftsStore {
               case let .generic(generic) = gift,
               let price = upgradePrice(gift) else { return nil }
 
-        // Paid before the preview is fetched: a balance that cannot cover it is an answer,
-        // not a reason to spend a round trip. Nothing is charged when Fake Stars are off,
-        // because then there is no balance to charge against.
-        if AorusFakeStarsStore.isEnabled, price > 0 {
-            guard AorusFakeStarsStore.spend(price) else {
-                return .fail(.generic)
-            }
-            AorusFakeStarsStore.recordPurchase(
-                accountPeerId: account.peerId,
-                recipientPeerId: account.peerId,
-                amount: price,
-                gift: gift,
-                premiumMonths: nil,
-                text: ""
-            )
+        // The balance is *checked* here and *spent* further down, once there is a
+        // collectible to hand over. Spending first would have taken the stars for an upgrade
+        // that then failed to assemble, and nothing would have given them back. Checking
+        // first still answers an empty balance without a round trip, which is the only
+        // reason to look at it this early.
+        //
+        // Nothing is charged at all when Fake Stars are off: there is no balance to charge.
+        let chargeable = AorusFakeStarsStore.isEnabled && price > 0
+        if chargeable, AorusFakeStarsStore.amount < price {
+            // Spelled out rather than `.fail(.generic)`: this function returns an optional
+            // signal, and leaning on implicit member lookup through Optional for the failure
+            // case is the kind of thing that compiles until it does not.
+            return Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError>.fail(.generic)
         }
 
         let ownerPeerId = account.peerId
@@ -11351,6 +11349,23 @@ extension AorusFakeGiftsStore {
                 ownerPeerId: ownerPeerId
             ) else {
                 return .fail(.generic)
+            }
+            // Charged before anything is written, and only once there is a collectible to
+            // hand over. A balance that emptied while the preview was in flight fails the
+            // upgrade with the gift still exactly as it was — there is nothing to undo,
+            // which is better than having something to undo.
+            if chargeable {
+                guard AorusFakeStarsStore.spend(price) else {
+                    return .fail(.generic)
+                }
+                AorusFakeStarsStore.recordPurchase(
+                    accountPeerId: ownerPeerId,
+                    recipientPeerId: ownerPeerId,
+                    amount: price,
+                    gift: gift,
+                    premiumMonths: nil,
+                    text: ""
+                )
             }
             guard let upgraded = AorusFakeGiftsStore.replaceStoredGift(
                 instanceId: instanceId,
