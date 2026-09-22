@@ -55,6 +55,12 @@ jobs:
       - name: Test source shadowing preflight
         run: python3 aorusgram/scripts/swift_local_shadow_check.py aorusgram
 
+      # There is no Swift compiler outside CI, so the bookkeeping the compiler would do for
+      # a type-check has to be done by hand: a file added to one of the invocations below
+      # without the files it names costs a run for nothing. Run 489 was exactly that.
+      - name: Compile unit preflight
+        run: python3 aorusgram/scripts/swift_compile_unit_check.py aorusgram
+
       - name: AorusAI transport and store preflight
         run: |
           mkdir -p /tmp/aorus-ai-preflight/module-cache
@@ -975,6 +981,11 @@ jobs:
       # Bazel.
       - name: Base class member collision preflight
         run: python3 aorusgram/scripts/swift_member_collision_check.py telegram-ios
+
+      # And the other half: a name our code takes from Telegram that the pinned tree does not
+      # have. Signatures still reach Bazel; a name that does not exist at all stops here.
+      - name: Tree symbol preflight
+        run: python3 aorusgram/scripts/swift_tree_symbol_check.py telegram-ios aorusgram
 
       - name: Install Bazel
         run: brew install bazel 2>/dev/null || true

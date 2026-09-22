@@ -68,6 +68,7 @@ public final class AorusPluginRuntimeManager {
     private var settingsShortcuts: [String: [AorusPluginSettingsShortcut]] = [:]
     private var contextActions: [String: [AorusPluginContextAction]] = [:]
     private var overlays: [String: [AorusPluginOverlay]] = [:]
+    private var nativeButtons: [String: [AorusPluginNativeButton]] = [:]
     private var observers: [NSObjectProtocol] = []
 
     private init() {}
@@ -117,6 +118,7 @@ public final class AorusPluginRuntimeManager {
             settingsShortcuts[sandbox.manifest.id] = nil
             contextActions[sandbox.manifest.id] = nil
             overlays[sandbox.manifest.id] = nil
+            nativeButtons[sandbox.manifest.id] = nil
         }
         lock.unlock()
         if !stale.isEmpty { publishIntegrationsChanged() }
@@ -164,6 +166,7 @@ public final class AorusPluginRuntimeManager {
         settingsShortcuts[id] = nil
         contextActions[id] = nil
         overlays[id] = nil
+        nativeButtons[id] = nil
         lock.unlock()
         publishIntegrationsChanged()
         publishOverlaysChanged()
@@ -326,6 +329,30 @@ public final class AorusPluginRuntimeManager {
     fileprivate func setOverlays(_ value: [AorusPluginOverlay], id: String) {
         lock.lock(); overlays[id] = value; lock.unlock()
         publishOverlaysChanged()
+    }
+
+    fileprivate func setNativeButtons(_ value: [AorusPluginNativeButton], id: String) {
+        lock.lock(); nativeButtons[id] = value; lock.unlock()
+        publishIntegrationsChanged()
+    }
+
+    /// Every button every running plugin has put into one of Telegram's own containers,
+    /// in the order they asked for and then by plugin, so the row does not reshuffle
+    /// itself between renders.
+    public func pluginNativeButtons(_ place: AorusPluginNativeButton.Place) -> [(pluginId: String, button: AorusPluginNativeButton)] {
+        lock.lock(); defer { lock.unlock() }
+        return nativeButtons.keys.sorted().flatMap { pluginId in
+            (nativeButtons[pluginId] ?? []).filter { $0.place == place }.map { (pluginId, $0) }
+        }.sorted { $0.button.order < $1.button.order }
+    }
+
+    public func dispatchNativeButtonAction(pluginId: String, buttonId: String, payload: [String: Any] = [:]) {
+        lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
+        guard let sandbox else { return }
+        var value = payload
+        value["id"] = buttonId
+        sandbox.note(.debug, "nativeButtonAction \(buttonId)")
+        sandbox.dispatch(event: "nativeButtonAction", payload: value)
     }
 
     /// Everything every running plugin has drawn over the chat, in a stable order so the
@@ -1416,6 +1443,11 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             picker.allowsMultipleSelection = false
             presenter.view.window?.rootViewController?.present(picker, animated: true)
         }
+    }
+
+    func pluginNativeButtonsChanged(_ pluginId: String, buttons: [AorusPluginNativeButton]) {
+        guard manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else { return }
+        manager?.setNativeButtons(buttons, id: pluginId)
     }
 
     func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?) {

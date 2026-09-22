@@ -18270,6 +18270,80 @@ extension ChatTitleView {
 '''
 
 
+AORUS_CHAT_LIST_BUTTON_SWIFT = '''
+    // AorusGram: `ui.addChatListHeaderButton`. `.text` rather than `.icon` because that
+    // component loads a named image out of the app bundle and a plugin's SF Symbol is not in
+    // it; a word is what a plugin can honestly put in this row. A button with no word is
+    // skipped rather than drawn as a gap between Telegram's own controls.
+    func aorusPluginHeaderButtons() -> [AnyComponentWithIdentity<NavigationButtonComponentEnvironment>] {
+        var result: [AnyComponentWithIdentity<NavigationButtonComponentEnvironment>] = []
+        for item in AorusPluginRuntimeManager.shared.pluginNativeButtons(.chatListHeader) {
+            let pluginId = item.pluginId
+            let buttonId = item.button.id
+            let title = item.button.title
+            if title.isEmpty {
+                continue
+            }
+            result.append(AnyComponentWithIdentity(
+                id: "aorusPlugin-" + pluginId + "-" + buttonId,
+                component: AnyComponent(NavigationButtonComponent(
+                    content: .text(title: title, isBold: false),
+                    pressed: { _ in
+                        AorusPluginRuntimeManager.shared.dispatchNativeButtonAction(
+                            pluginId: pluginId,
+                            buttonId: buttonId,
+                            payload: ["source": "chatListHeader"]
+                        )
+                    }
+                ))
+            ))
+        }
+        return result
+    }
+'''
+
+
+def patch_plugin_chat_list_button(tg: Path) -> None:
+    """Put a plugin's button in the chat list header, beside proxy and compose.
+
+    `rightButtons` is computed every time the header is built, so the buttons a plugin has
+    registered are appended there rather than stored anywhere: adding or removing one shows
+    up the next time the header is drawn, and a plugin that is not running contributes
+    nothing at all.
+    """
+    path = tg / "submodules/ChatListUI/Sources/ChatListController.swift"
+    if not path.is_file():
+        raise SystemExit("ChatListButton: ChatListController.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "aorusPluginHeaderButtons" in source:
+        print("ChatListButton: already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        raise SystemExit("ChatListButton: AorusGramUI is not imported by ChatListController")
+    anchor = (
+        "        if let proxyButton = self.proxyButton {\n"
+        "            result.append(proxyButton)\n"
+        "        }\n"
+        "        return result\n"
+        "    }\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("ChatListButton: rightButtons anchor not found")
+    replacement = (
+        "        if let proxyButton = self.proxyButton {\n"
+        "            result.append(proxyButton)\n"
+        "        }\n"
+        "        // AorusGram: buttons running plugins have put here. Computed with the rest\n"
+        "        // of the header, so a plugin that stops contributes nothing on the next draw.\n"
+        "        result.append(contentsOf: self.aorusPluginHeaderButtons())\n"
+        "        return result\n"
+        "    }\n"
+        + AORUS_CHAT_LIST_BUTTON_SWIFT
+    )
+    path.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
+    print("ChatListButton: plugin buttons added to the chat list header")
+
+
 def patch_plugin_header_badge(tg: Path) -> None:
     """Draw the word a plugin put in the chat's title bar.
 
@@ -27034,6 +27108,7 @@ def main() -> None:
     # methods, and their anchors span the lines this one inserts.
     patch_plugin_chat_surface(tg)
     patch_plugin_header_badge(tg)
+    patch_plugin_chat_list_button(tg)
     patch_settings_live_refresh(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)

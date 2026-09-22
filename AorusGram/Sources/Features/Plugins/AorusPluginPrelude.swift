@@ -21,7 +21,7 @@ public enum AorusPluginPrelude {
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
         "foreground", "background", "settingsChanged", "appSettingsChanged",
         "connectionChanged", "uiAction", "contextAction", "settings.changed", "settings.action", "settings.reset",
-        "chatOpened", "chatClosed", "inputChanged", "overlayAction", "pluginMessage",
+        "chatOpened", "chatClosed", "inputChanged", "overlayAction", "pluginMessage", "nativeButtonAction",
     ]
 
     public static let source: String = """
@@ -180,6 +180,16 @@ public enum AorusPluginPrelude {
             // have to subscribe to a stream and work out which of its buttons was pressed.
             // The event is also emitted, for a plugin that prefers to listen.
             if (event === 'pluginMessage') { pluginMessageReceived(payload); }
+            if (event === 'nativeButtonAction' && payload && nativeHandlers.hasOwnProperty(payload.id)) {
+                try {
+                    var pressed = nativeHandlers[payload.id](payload);
+                    if (pressed && typeof pressed.then === 'function') {
+                        pressed.then(undefined, function (error) { reportError('Button handler for \\'' + payload.id + '\\' rejected', error); });
+                    }
+                } catch (error) {
+                    reportError('Button handler for \\'' + payload.id + '\\' failed', error);
+                }
+            }
             if (event === 'overlayAction' && payload && overlayHandlers.hasOwnProperty(payload.id)) {
                 try {
                     var direct = overlayHandlers[payload.id](payload);
@@ -536,6 +546,48 @@ public enum AorusPluginPrelude {
                 }
                 publish(JSON.stringify(target));
             };
+        }
+
+        // Buttons a plugin puts into Telegram's own containers. Same shape as the overlays:
+        // the whole set is republished on every change, the handler goes to `add`, and an
+        // add that is not accepted throws instead of handing back an id for nothing.
+        var nativeButtons = [];
+        var nativeHandlers = {};
+        var nativeSequence = 0;
+        function publishNativeButtons() {
+            var accepted = host.nativeButtonsDefine(JSON.stringify(nativeButtons));
+            if (accepted < 0) { throw new Error('Custom UI permission is not granted'); }
+            if (accepted !== nativeButtons.length) { throw new Error('Invalid button definition'); }
+        }
+        function addNativeButton(place, config, handler) {
+            if (handler !== undefined && handler !== null) { requireFunction(handler, 'handler'); }
+            var value = optionalObject(config, 'config');
+            nativeSequence += 1;
+            var id = place + '-' + nativeSequence;
+            var clean = JSON.parse(JSON.stringify(value));
+            clean.place = place;
+            clean.id = id;
+            var previous = nativeButtons.slice();
+            nativeButtons.push(clean);
+            try {
+                publishNativeButtons();
+            } catch (error) {
+                nativeButtons = previous;
+                throw error;
+            }
+            if (handler) { nativeHandlers[id] = handler; }
+            return id;
+        }
+        function removeNativeButton(id) {
+            requireString(id, 'id');
+            var found = false;
+            for (var i = nativeButtons.length - 1; i >= 0; i--) {
+                if (nativeButtons[i].id === id) { nativeButtons.splice(i, 1); found = true; }
+            }
+            if (!found) { return false; }
+            delete nativeHandlers[id];
+            publishNativeButtons();
+            return true;
         }
 
         function overlayConfig(kind, config, id) {
@@ -1413,6 +1465,9 @@ public enum AorusPluginPrelude {
                 overlays: function () { return freeze(JSON.parse(JSON.stringify(overlays))); },
                 // A word in the chat's title bar. One at a time across every plugin: two
                 // labels stacked there would leave a chat nobody can read the name of.
+                addChatListHeaderButton: function (config, handler) { return addNativeButton('chatListHeader', config, handler); },
+                removeChatListHeaderButton: removeNativeButton,
+                nativeButtons: function () { return freeze(JSON.parse(JSON.stringify(nativeButtons))); },
                 setChatHeaderBadge: function (text, color) {
                     requireString(text, 'text');
                     if (color !== undefined && color !== null) { requireString(color, 'color'); }

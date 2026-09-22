@@ -1010,6 +1010,66 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(headerBadges.last?.0 == nil, "clearing asks for no badge at all")
     accessorySandbox.stop()
 
+    // A button in a container Telegram owns.
+    let nativeHost = AorusPluginNullHost()
+    var publishedNative: [AorusPluginNativeButton] = []
+    nativeHost.onNativeButtonsChanged = { _, items in publishedNative = items }
+    var nativeResults: [String: AorusPluginJSONValue] = [:]
+    nativeHost.onStorageChanged = { _, values in nativeResults = values }
+    let nativeSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Native"),
+        source: """
+        aorus.on('start', function () {
+            var id = aorus.ui.addChatListHeaderButton({ title: 'TON', color: '#0098EA', placement: 'leading', order: 3 }, function (event) {
+                aorus.storage.set('pressed', event.id + '/' + event.source);
+            });
+            aorus.storage.set('id', id);
+            try { aorus.ui.addChatListHeaderButton({}); } catch (error) { aorus.storage.set('empty', 'refused'); }
+        });
+        """,
+        host: nativeHost,
+        permissions: [.customUI]
+    )
+    let nativeStarted = DispatchSemaphore(value: 0)
+    nativeSandbox.start { error in expect(error == nil, "native button plugin starts"); nativeStarted.signal() }
+    _ = nativeStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(publishedNative.count == 1, "the button reaches the app")
+    expect(publishedNative.first?.place == .chatListHeader, "in the container it asked for")
+    expect(publishedNative.first?.title == "TON", "carrying its word")
+    expect(publishedNative.first?.color == "0098EA", "and its colour without the hash")
+    expect(publishedNative.first?.placement == "leading", "and which end of the row it wants")
+    expect(publishedNative.first?.order == 3, "and its place among other plugins' buttons")
+    // A button with neither a word nor a glyph is a gap in a row of Telegram's own controls.
+    expect(nativeResults["empty"] == .string("refused"), "a button with nothing on it is refused")
+    if case let .string(buttonId)? = nativeResults["id"] {
+        nativeSandbox.dispatch(event: "nativeButtonAction", payload: ["id": buttonId, "source": "chatListHeader"])
+        Thread.sleep(forTimeInterval: 0.2)
+        expect(nativeResults["pressed"] == .string(buttonId + "/chatListHeader"), "a press reaches the handler the plugin passed in")
+    } else {
+        expect(false, "the add answers with an id")
+    }
+    nativeSandbox.stop()
+
+    let deniedNativeHost = AorusPluginNullHost()
+    var deniedNativePublishes = 0
+    deniedNativeHost.onNativeButtonsChanged = { _, _ in deniedNativePublishes += 1 }
+    var deniedNativeResults: [String: AorusPluginJSONValue] = [:]
+    deniedNativeHost.onStorageChanged = { _, values in deniedNativeResults = values }
+    let deniedNative = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Denied native"),
+        source: "aorus.on('start', function () { try { aorus.ui.addChatListHeaderButton({ title: 'X' }); } catch (error) { aorus.storage.set('add', 'refused'); } });",
+        host: deniedNativeHost,
+        permissions: []
+    )
+    let deniedNativeStarted = DispatchSemaphore(value: 0)
+    deniedNative.start { error in expect(error == nil, "denied native plugin starts"); deniedNativeStarted.signal() }
+    _ = deniedNativeStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(deniedNativePublishes == 0, "an ungranted button never reaches the app")
+    expect(deniedNativeResults["add"] == .string("refused"), "and the plugin is told rather than holding an id for nothing")
+    deniedNative.stop()
+
     // Without the grant nothing is drawn at all, and the add says so rather than reporting
     // an id for something that does not exist.
     let deniedOverlayHost = AorusPluginNullHost()

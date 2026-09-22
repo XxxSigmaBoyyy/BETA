@@ -88,6 +88,7 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginModerate(_ pluginId: String, action: String, chatPeerId: Int64, userPeerId: Int64, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
     func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?)
+    func pluginNativeButtonsChanged(_ pluginId: String, buttons: [AorusPluginNativeButton])
     func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginBroadcast(_ pluginId: String, topic: String, json: String)
     var pluginAppState: [String: Any] { get }
@@ -130,6 +131,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onModerate: ((String, String, Int64, Int64) -> [String: Any])?
     public var onPickFile: ((String) -> [String: Any]?)?
     public var onHeaderBadge: ((String, String?, String?) -> Void)?
+    public var onNativeButtonsChanged: ((String, [AorusPluginNativeButton]) -> Void)?
     public var onShareFile: ((String, URL) -> Void)?
     public var onBroadcast: ((String, String, String) -> Void)?
     // The open chat. Nothing is open unless a test says so, which is also true on a device
@@ -234,6 +236,9 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     }
     open func pluginSetHeaderBadge(_ pluginId: String, text: String?, color: String?) {
         onHeaderBadge?(pluginId, text, color)
+    }
+    open func pluginNativeButtonsChanged(_ pluginId: String, buttons: [AorusPluginNativeButton]) {
+        onNativeButtonsChanged?(pluginId, buttons)
     }
     open func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void) {
         onShareFile?(pluginId, path)
@@ -791,6 +796,7 @@ public final class AorusPluginSandbox {
         // it. That is the composer, not chat metadata.
         if event == "inputChanged" && !permissions.contains(.composer) { return }
         if event == "overlayAction" && !permissions.contains(.customUI) { return }
+        if event == "nativeButtonAction" && !permissions.contains(.customUI) { return }
         if event == "pluginMessage" && !permissions.contains(.pluginMessaging) { return }
         queue.async {
             self.deliver(event: event, payload: payload)
@@ -1139,6 +1145,17 @@ public final class AorusPluginSandbox {
             return true
         }
         hostObject.setObject(headerBadge, forKeyedSubscript: "headerBadge" as NSString)
+
+        // Buttons a plugin puts into Telegram's own containers. Answers how many were
+        // accepted, for the same reason the overlays do: an id for a button that is not
+        // there is worse than being told it was refused.
+        let nativeButtonsDefine: @convention(block) (String) -> Int32 = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.customUI) else { return -1 }
+            guard let buttons = AorusPluginNativeButton.validated(from: Data(json.utf8)) else { return -1 }
+            self.hostServices.pluginNativeButtonsChanged(pluginId, buttons: buttons)
+            return Int32(buttons.count)
+        }
+        hostObject.setObject(nativeButtonsDefine, forKeyedSubscript: "nativeButtonsDefine" as NSString)
 
         // One plugin talking to another. The message goes out through the app, which knows
         // which plugins are running, and comes back as a `pluginMessage` event carrying the

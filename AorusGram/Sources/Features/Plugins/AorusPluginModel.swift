@@ -698,6 +698,67 @@ extension AorusPluginOverlay.Position {
     ]
 }
 
+/// A button a plugin puts into one of Telegram's own containers.
+///
+/// Deliberately not an overlay. An overlay is drawn by us, over a chat, and can look like
+/// anything within a range; this goes inside a container Telegram owns and has to look like
+/// everything already in it, so a plugin gives a word, a glyph and a colour, and the
+/// container decides the rest.
+public struct AorusPluginNativeButton: Codable, Equatable {
+    public enum Place: String, Codable {
+        case chatListHeader
+    }
+
+    public static let maximumPerPlugin = 2
+
+    public var id: String
+    public var place: Place
+    public var title: String
+    public var icon: String?
+    public var color: String?
+    /// `leading` or `trailing`.
+    public var placement: String
+    public var order: Int
+
+    public init(id: String, place: Place, title: String, icon: String? = nil, color: String? = nil, placement: String = "trailing", order: Int = 0) {
+        self.id = id
+        self.place = place
+        self.title = title
+        self.icon = icon
+        self.color = color
+        self.placement = placement
+        self.order = order
+    }
+
+    public static func validated(from data: Data) -> [AorusPluginNativeButton]? {
+        guard data.count <= 16 * 1024,
+              let items = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        var result: [AorusPluginNativeButton] = []
+        var ids = Set<String>()
+        for item in items {
+            guard result.count < maximumPerPlugin else { break }
+            guard let id = item["id"] as? String, AorusPluginIdentifier.isValid(id), ids.insert(id).inserted,
+                  let rawPlace = item["place"] as? String, let place = Place(rawValue: rawPlace) else { continue }
+            let title = String((item["title"] as? String ?? "").prefix(24)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let icon = (item["icon"] as? String).flatMap { AorusPluginOverlay.normalizedSymbol($0) }
+            // A button with nothing on it is a gap in a row of Telegram's own controls.
+            if title.isEmpty, icon == nil { continue }
+            let placement = (item["placement"] as? String) == "leading" ? "leading" : "trailing"
+            let order = (item["order"] as? NSNumber).map { min(99, max(0, $0.intValue)) } ?? 0
+            result.append(AorusPluginNativeButton(
+                id: id,
+                place: place,
+                title: title,
+                icon: icon,
+                color: (item["color"] as? String).flatMap { AorusPluginOverlay.normalizedColor($0) },
+                placement: placement,
+                order: order
+            ))
+        }
+        return result
+    }
+}
+
 /// The one identifier rule the plugin surfaces share: a name a person types into their own
 /// source and the app stores, never a path and never an expression.
 public enum AorusPluginIdentifier {
