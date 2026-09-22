@@ -82,6 +82,12 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginDeleteLocalMessage(_ pluginId: String, peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginSetAutoSwitch(_ pluginId: String, enabled: Bool, completion: @escaping (Result<[String: Any], Error>) -> Void)
     func pluginStringOverridesChanged(_ pluginId: String, overrides: [String: String])
+    /// `action` is `info`, `download`, `save`, `saveToFiles` or `share`.
+    func pluginMedia(_ pluginId: String, action: String, peerId: Int64, namespace: Int32, messageId: Int32, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    /// `action` is `ban`, `kick`, `restrict` or `unban`.
+    func pluginModerate(_ pluginId: String, action: String, chatPeerId: Int64, userPeerId: Int64, completion: @escaping (Result<[String: Any], Error>) -> Void)
+    func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void)
+    func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginBroadcast(_ pluginId: String, topic: String, json: String)
     var pluginAppState: [String: Any] { get }
     var pluginDeviceInfo: [String: Any] { get }
@@ -119,6 +125,10 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onDeleteLocalMessage: ((String, Int64, Int32, Int32) -> Void)?
     public var onSetAutoSwitch: ((String, Bool) -> Void)?
     public var onStringOverridesChanged: ((String, [String: String]) -> Void)?
+    public var onMedia: ((String, String, Int64, Int32, Int32) -> [String: Any]?)?
+    public var onModerate: ((String, String, Int64, Int64) -> [String: Any])?
+    public var onPickFile: ((String) -> [String: Any]?)?
+    public var onShareFile: ((String, URL) -> Void)?
     public var onBroadcast: ((String, String, String) -> Void)?
     // The open chat. Nothing is open unless a test says so, which is also true on a device
     // between chats, so the default answer here is the same one the app gives.
@@ -210,6 +220,19 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     }
     open func pluginBroadcast(_ pluginId: String, topic: String, json: String) {
         onBroadcast?(pluginId, topic, json)
+    }
+    open func pluginMedia(_ pluginId: String, action: String, peerId: Int64, namespace: Int32, messageId: Int32, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(onMedia?(pluginId, action, peerId, namespace, messageId)))
+    }
+    open func pluginModerate(_ pluginId: String, action: String, chatPeerId: Int64, userPeerId: Int64, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        completion(.success(onModerate?(pluginId, action, chatPeerId, userPeerId) ?? ["ok": NSNumber(value: false)]))
+    }
+    open func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(onPickFile?(pluginId)))
+    }
+    open func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        onShareFile?(pluginId, path)
+        completion(.success(()))
     }
     open var pluginAppState: [String: Any] {
         return ["foreground": NSNumber(value: true), "locked": NSNumber(value: false)]
@@ -1478,6 +1501,61 @@ public final class AorusPluginSandbox {
             }
         case "app.state":
             settle(id, with: .success(host.pluginAppState as Any))
+        // A message's attachment. Reading what is in a message is message history; the two
+        // that put something on screen also need the grant that covers showing things.
+        case "media.info", "media.download", "media.save", "media.saveToFiles", "media.share":
+            guard require(.messageHistory, id: id) else { return }
+            if kind == "media.share" || kind == "media.saveToFiles", !permissions.contains(.dialogs) {
+                settle(id, with: .failure(AorusPluginRequestError("Permission not granted: dialogs")))
+                return
+            }
+            guard let peerId = int64("peerId"), let namespace = int32("namespace"), let messageId = int32("messageId") else {
+                settle(id, with: .failure(AorusPluginRequestError("A valid message reference is required")))
+                return
+            }
+            let action = String(kind.dropFirst("media.".count))
+            host.pluginMedia(pluginId, action: action, peerId: peerId, namespace: namespace, messageId: messageId, directory: files?.directory) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value.map { $0 as Any } })
+            }
+        // Acting on somebody in a group. The app asks first and Telegram's own rights decide:
+        // without them the answer is a refusal, not an error, because "you are not an admin"
+        // is an answer to the question.
+        case "moderation.ban", "moderation.kick", "moderation.restrict", "moderation.unban":
+            guard require(.manageMessages, id: id) else { return }
+            guard let chatPeerId = int64("chatPeerId"), let userPeerId = int64("userPeerId") else {
+                settle(id, with: .failure(AorusPluginRequestError("chatPeerId and userPeerId are required")))
+                return
+            }
+            host.pluginModerate(pluginId, action: String(kind.dropFirst("moderation.".count)), chatPeerId: chatPeerId, userPeerId: userPeerId) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value as Any })
+            }
+        case "files.pick":
+            guard require(.dialogs, id: id) else { return }
+            guard files != nil else {
+                settle(id, with: .failure(AorusPluginRequestError("This plugin has no file storage")))
+                return
+            }
+            host.pluginPickFile(pluginId, directory: files?.directory) { [weak self] result in
+                self?.settle(id, with: result.map { value -> Any? in value.map { $0 as Any } })
+            }
+        case "files.share":
+            guard require(.dialogs, id: id) else { return }
+            guard let files = self.files, let name = string("name") else {
+                settle(id, with: .failure(AorusPluginRequestError("name is required")))
+                return
+            }
+            guard let normalized = AorusPluginFiles.normalizedName(name) else {
+                settle(id, with: .failure(AorusPluginRequestError(AorusPluginFiles.FileError.invalidName.message)))
+                return
+            }
+            let target = files.directory.appendingPathComponent(normalized, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: target.path) else {
+                settle(id, with: .failure(AorusPluginRequestError("No such file")))
+                return
+            }
+            host.pluginShareFile(pluginId, path: target) { [weak self] result in
+                self?.settle(id, with: result.map { _ -> Any? in nil })
+            }
         case "theme.current":
             host.pluginTheme(pluginId) { [weak self] result in
                 self?.settle(id, with: result.map { value -> Any? in value as Any })

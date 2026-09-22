@@ -10,6 +10,7 @@ import TelegramUIPreferences
 import ContextUI
 import UndoUI
 import QuickLook
+import UniformTypeIdentifiers
 import AorusGram
 
 /// The entitlement verdict for the plugin runtime, read once and re-read only when it can
@@ -538,6 +539,8 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     private let context: AccountContext
     private weak var manager: AorusPluginRuntimeManager?
     private let aiLock = NSLock()
+    /// Held while the document picker is on screen: UIKit keeps only a weak delegate.
+    fileprivate var filePicker: AorusPluginFilePickerDelegate?
     private var aiStreams: [String: AorusAIStreamHandle] = [:]
     private var aiReservations = Set<String>()
     private var aiArtifacts: [String: [String: AorusAIArtifact]] = [:]
@@ -1238,6 +1241,188 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             }
             action(id)
         })
+    }
+
+    // MARK: - Attachments, moderation and files the person chooses
+
+    /// The message behind a reference, or nil. Everything in this section starts here, so
+    /// there is one place that decides a plugin is talking about a message that exists.
+    private func pluginMessage(peerId: Int64, namespace: Int32, messageId: Int32, completion: @escaping (Message?) -> Void) {
+        let id = MessageId(peerId: PeerId(peerId), namespace: namespace, id: messageId)
+        let _ = (context.account.postbox.transaction { transaction -> Message? in
+            return transaction.getMessage(id)
+        } |> take(1)).start(next: completion)
+    }
+
+    func pluginMedia(_ pluginId: String, action: String, peerId: Int64, namespace: Int32, messageId: Int32, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.messageHistory, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Message history permission is not granted")))
+            return
+        }
+        let mediaBox = context.account.postbox.mediaBox
+        pluginMessage(peerId: peerId, namespace: namespace, messageId: messageId) { message in
+            guard let message, let media = message.media.first else {
+                completion(.success(nil))
+                return
+            }
+            guard let described = AorusPluginMediaDescription(media: media, mediaBox: mediaBox) else {
+                completion(.success(nil))
+                return
+            }
+            switch action {
+            case "info":
+                completion(.success(described.payload))
+            case "download":
+                // Copied into the plugin's own directory rather than handing out Telegram's
+                // cache path. A path into the media box is a path a plugin could still be
+                // reading after the cache has decided to drop the file.
+                guard let directory else {
+                    completion(.failure(AorusPluginRequestError("This plugin has no file storage")))
+                    return
+                }
+                guard let source = described.path else {
+                    completion(.failure(AorusPluginRequestError("This attachment has not been downloaded yet")))
+                    return
+                }
+                let files = AorusPluginFiles(directory: directory)
+                let name = AorusPluginFiles.normalizedName(described.suggestedName) ?? "attachment.bin"
+                do {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: source))
+                    guard data.count <= AorusPluginFiles.maximumFileBytes else {
+                        completion(.failure(AorusPluginRequestError(AorusPluginFiles.FileError.tooLarge.message)))
+                        return
+                    }
+                    try files.write(name, text: data.base64EncodedString())
+                    var payload = described.payload
+                    payload["name"] = name
+                    payload["encoding"] = "base64"
+                    completion(.success(payload))
+                } catch let error as AorusPluginFiles.FileError {
+                    completion(.failure(AorusPluginRequestError(error.message)))
+                } catch {
+                    completion(.failure(AorusPluginRequestError((error as NSError).localizedDescription)))
+                }
+            case "save", "saveToFiles", "share":
+                guard let source = described.path else {
+                    completion(.failure(AorusPluginRequestError("This attachment has not been downloaded yet")))
+                    return
+                }
+                DispatchQueue.main.async {
+                    if action == "save", described.isImage, let image = UIImage(contentsOfFile: source) {
+                        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                        completion(.success(["saved": NSNumber(value: true)]))
+                        return
+                    }
+                    // A copy with the message's own name, because the share sheet shows the
+                    // file name and the media box stores everything under a hash.
+                    let temporary = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(described.suggestedName)
+                    try? FileManager.default.removeItem(at: temporary)
+                    do {
+                        try FileManager.default.copyItem(at: URL(fileURLWithPath: source), to: temporary)
+                    } catch {
+                        completion(.failure(AorusPluginRequestError((error as NSError).localizedDescription)))
+                        return
+                    }
+                    self.presentShare(items: [temporary]) { result in
+                        completion(result.map { _ in ["requested": NSNumber(value: true)] })
+                    }
+                }
+            default:
+                completion(.success(nil))
+            }
+        }
+    }
+
+    func pluginModerate(_ pluginId: String, action: String, chatPeerId: Int64, userPeerId: Int64, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.manageMessages, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Manage messages permission is not granted")))
+            return
+        }
+        let chat = PeerId(chatPeerId)
+        let member = PeerId(userPeerId)
+        let engine = context.engine
+        // Telegram's own rights decide. Without them the request comes back refused, and
+        // that is an answer to the question rather than an error in the plugin.
+        let refused: [String: Any] = ["ok": NSNumber(value: false)]
+        switch action {
+        case "kick":
+            let _ = (engine.peers.removePeerMember(peerId: chat, memberId: member) |> take(1)).start(completed: {
+                completion(.success(["ok": NSNumber(value: true)]))
+            })
+        case "ban":
+            let _ = (engine.peers.updateChannelMemberBannedRights(
+                peerId: chat,
+                memberId: member,
+                rights: TelegramChatBannedRights(flags: [.banReadMessages], untilDate: Int32.max)
+            ) |> take(1)).start(next: { _, _, _ in
+                completion(.success(["ok": NSNumber(value: true)]))
+            }, completed: {
+                completion(.success(refused))
+            })
+        case "restrict":
+            let _ = (engine.peers.updateChannelMemberBannedRights(
+                peerId: chat,
+                memberId: member,
+                rights: TelegramChatBannedRights(
+                    flags: [.banSendText, .banSendMedia, .banSendStickers, .banSendGifs, .banEmbedLinks],
+                    untilDate: Int32.max
+                )
+            ) |> take(1)).start(next: { _, _, _ in
+                completion(.success(["ok": NSNumber(value: true)]))
+            }, completed: {
+                completion(.success(refused))
+            })
+        case "unban":
+            let _ = (engine.peers.updateChannelMemberBannedRights(
+                peerId: chat, memberId: member, rights: nil
+            ) |> take(1)).start(next: { _, _, _ in
+                completion(.success(["ok": NSNumber(value: true)]))
+            }, completed: {
+                completion(.success(refused))
+            })
+        default:
+            completion(.success(refused))
+        }
+    }
+
+    func pluginPickFile(_ pluginId: String, directory: URL?, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true,
+              let directory else {
+            completion(.failure(AorusPluginRequestError("Dialogs permission is not granted")))
+            return
+        }
+        DispatchQueue.main.async {
+            guard let presenter = self.topController() else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
+                return
+            }
+            // The person picks, and the app copies the file into the plugin's own directory.
+            // A plugin never reaches into anybody's documents: it is handed one file, by
+            // name, the same as one it wrote itself.
+            let delegate = AorusPluginFilePickerDelegate(directory: directory) { result in
+                completion(.success(result))
+            }
+            self.filePicker = delegate
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+            picker.delegate = delegate
+            picker.allowsMultipleSelection = false
+            presenter.view.window?.rootViewController?.present(picker, animated: true)
+        }
+    }
+
+    func pluginShareFile(_ pluginId: String, path: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard AorusPluginEntitlement.isAllowed,
+              manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else {
+            completion(.failure(AorusPluginRequestError("Dialogs permission is not granted")))
+            return
+        }
+        DispatchQueue.main.async {
+            self.presentShare(items: [path], completion: completion)
+        }
     }
 
     // MARK: - People, navigation and the app itself
@@ -2181,6 +2366,111 @@ private func aorusPluginMessageEntities(_ entities: [AorusPluginTextEntity]) -> 
             guard let fileId = entity.customEmojiId else { return nil }
             return MessageTextEntity(range: range, type: .CustomEmoji(stickerPack: nil, fileId: fileId))
         }
+    }
+}
+
+/// What a message has attached, as a plugin sees it.
+///
+/// Photos and files are two different Telegram types with nothing in common at the call
+/// site, so the differences are resolved once here and everything downstream reads the same
+/// three things: what it is, where it is on disk if it has been downloaded, and what to call
+/// it when it leaves the app.
+struct AorusPluginMediaDescription {
+    let kind: String
+    let payload: [String: Any]
+    let path: String?
+    let suggestedName: String
+    let isImage: Bool
+
+    init?(media: Media, mediaBox: MediaBox) {
+        if let image = media as? TelegramMediaImage {
+            let representation = image.representations.max(by: { $0.dimensions.width < $1.dimensions.width })
+            var value: [String: Any] = ["kind": "photo", "mimeType": "image/jpeg"]
+            if let representation {
+                value["dimensions"] = [
+                    "w": NSNumber(value: representation.dimensions.width),
+                    "h": NSNumber(value: representation.dimensions.height),
+                ]
+            }
+            let resolved = representation.flatMap { mediaBox.completedResourcePath($0.resource) }
+            if let resolved, let size = try? FileManager.default.attributesOfItem(atPath: resolved)[.size] as? NSNumber {
+                value["sizeBytes"] = size
+            }
+            value["downloaded"] = NSNumber(value: resolved != nil)
+            self.kind = "photo"
+            self.payload = value
+            self.path = resolved
+            self.suggestedName = "photo.jpg"
+            self.isImage = true
+            return
+        }
+        guard let file = media as? TelegramMediaFile else { return nil }
+        var kind = "file"
+        if file.isVideo { kind = "video" } else if file.isVoice { kind = "voice" }
+        else if file.isMusic { kind = "audio" } else if file.isSticker { kind = "sticker" }
+        else if file.isAnimated { kind = "animation" }
+        var value: [String: Any] = ["kind": kind, "mimeType": file.mimeType]
+        if let size = file.size { value["sizeBytes"] = NSNumber(value: size) }
+        for attribute in file.attributes {
+            if case let .Video(duration, dimensions, _, _, _, _) = attribute {
+                value["duration"] = NSNumber(value: duration)
+                value["dimensions"] = ["w": NSNumber(value: dimensions.width), "h": NSNumber(value: dimensions.height)]
+            }
+            if case let .Audio(_, duration, _, _, _) = attribute {
+                value["duration"] = NSNumber(value: duration)
+            }
+        }
+        let resolved = mediaBox.completedResourcePath(file.resource)
+        value["downloaded"] = NSNumber(value: resolved != nil)
+        if let name = file.fileName, !name.isEmpty { value["name"] = name }
+        self.kind = kind
+        self.payload = value
+        self.path = resolved
+        self.suggestedName = file.fileName.flatMap { $0.isEmpty ? nil : $0 } ?? "attachment.\(kind)"
+        self.isImage = false
+    }
+}
+
+/// Answers the document picker once, whichever way it closes. UIKit keeps only a weak
+/// delegate, so the runtime holds this for as long as the picker is on screen.
+final class AorusPluginFilePickerDelegate: NSObject, UIDocumentPickerDelegate {
+    private let directory: URL
+    private var answer: (([String: Any]?) -> Void)?
+
+    init(directory: URL, answer: @escaping ([String: Any]?) -> Void) {
+        self.directory = directory
+        self.answer = answer
+        super.init()
+    }
+
+    private func finish(_ value: [String: Any]?) {
+        let answer = self.answer
+        self.answer = nil
+        answer?(value)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let source = urls.first else { finish(nil); return }
+        let files = AorusPluginFiles(directory: directory)
+        // The person's own file name, brought onto the rule the plugin's directory uses.
+        // Anything that would have to be repaired becomes a plain name rather than a refusal:
+        // they picked the file, and the name is not what they were choosing.
+        let name = AorusPluginFiles.normalizedName(source.lastPathComponent)
+            ?? AorusPluginFiles.normalizedName(source.pathExtension.isEmpty ? "picked.bin" : "picked.\(source.pathExtension)")
+            ?? "picked.bin"
+        let accessed = source.startAccessingSecurityScopedResource()
+        defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: source) else { finish(nil); return }
+        do {
+            try files.write(name, text: data.base64EncodedString())
+            finish(["name": name, "sizeBytes": NSNumber(value: data.count), "encoding": "base64"])
+        } catch {
+            finish(nil)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        finish(nil)
     }
 }
 

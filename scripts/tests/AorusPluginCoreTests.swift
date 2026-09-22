@@ -999,6 +999,85 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(deniedOverlayResults["add"] == .string("refused"), "an ungranted add reports rather than returning an id")
     deniedOverlays.stop()
 
+    // A message's attachment, and acting on somebody in a group.
+    let mediaHost = AorusPluginNullHost()
+    var mediaCalls: [(String, Int32)] = []
+    mediaHost.onMedia = { _, action, _, _, messageId in
+        mediaCalls.append((action, messageId))
+        return ["kind": "photo", "sizeBytes": NSNumber(value: 2048), "downloaded": NSNumber(value: true)]
+    }
+    var moderationCalls: [(String, Int64, Int64)] = []
+    mediaHost.onModerate = { _, action, chat, user in
+        moderationCalls.append((action, chat, user))
+        return ["ok": NSNumber(value: action != "ban")]
+    }
+    var mediaResults: [String: AorusPluginJSONValue] = [:]
+    mediaHost.onStorageChanged = { _, values in mediaResults = values }
+    let mediaSource = """
+    var ref = { peerId: '-1001234567890', namespace: 0, messageId: 77 };
+    aorus.on('start', function () {
+        aorus.media.info(ref).then(function (value) { aorus.storage.set('info', value.kind + '/' + value.sizeBytes); });
+        aorus.media.download(ref);
+        aorus.media.save(ref);
+        aorus.media.share(ref);
+        aorus.moderation.kick('42', { chatPeerId: '-1001234567890' })
+            .then(function (value) { aorus.storage.set('kick', value.ok ? 'yes' : 'no'); });
+        aorus.moderation.ban('42', { chatPeerId: '-1001234567890' })
+            .then(function (value) { aorus.storage.set('ban', value.ok ? 'yes' : 'no'); });
+        try { aorus.moderation.ban('42'); } catch (error) { aorus.storage.set('noChat', 'rejected'); }
+    });
+    """
+    let mediaSandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Media"),
+        source: mediaSource,
+        host: mediaHost,
+        permissions: [.messageHistory, .dialogs, .manageMessages]
+    )
+    let mediaStarted = DispatchSemaphore(value: 0)
+    mediaSandbox.start { error in expect(error == nil, "media plugin starts"); mediaStarted.signal() }
+    _ = mediaStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.3)
+    expect(mediaResults["info"] == .string("photo/2048"), "info describes the attachment")
+    expect(mediaCalls.map { $0.0 } == ["info", "download", "save", "share"], "each media call reaches the host as its own action")
+    expect(mediaCalls.allSatisfy { $0.1 == 77 }, "and carries the message it was asked about")
+    expect(moderationCalls.map { $0.0 } == ["kick", "ban"], "moderation actions reach the host by name")
+    expect(moderationCalls.first?.2 == 42, "with the person they are about")
+    expect(mediaResults["kick"] == .string("yes"), "an action the rights allow answers ok")
+    // Telegram's own rights decide, and being refused is an answer rather than an error.
+    expect(mediaResults["ban"] == .string("no"), "an action the rights refuse answers not-ok instead of failing")
+    expect(mediaResults["noChat"] == .string("rejected"), "moderating without naming the group is refused before it crosses")
+    mediaSandbox.stop()
+
+    // Sharing and saving put something on screen, so they need the grant that covers that —
+    // even for a plugin that may read the message.
+    let mediaReadOnlyHost = AorusPluginNullHost()
+    var mediaReadOnlyCalls = 0
+    mediaReadOnlyHost.onMedia = { _, _, _, _, _ in mediaReadOnlyCalls += 1; return [:] }
+    var mediaReadOnlyResults: [String: AorusPluginJSONValue] = [:]
+    mediaReadOnlyHost.onStorageChanged = { _, values in mediaReadOnlyResults = values }
+    let mediaReadOnly = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Media read only"),
+        source: """
+        aorus.on('start', function () {
+            aorus.media.info({ peerId: '1', namespace: 0, messageId: 1 }).then(function () { aorus.storage.set('info', 'allowed'); });
+            aorus.media.share({ peerId: '1', namespace: 0, messageId: 1 }).then(
+                function () { aorus.storage.set('share', 'allowed'); },
+                function (error) { aorus.storage.set('share', String(error.message || error)); }
+            );
+        });
+        """,
+        host: mediaReadOnlyHost,
+        permissions: [.messageHistory]
+    )
+    let mediaReadOnlyStarted = DispatchSemaphore(value: 0)
+    mediaReadOnly.start { error in expect(error == nil, "read-only media plugin starts"); mediaReadOnlyStarted.signal() }
+    _ = mediaReadOnlyStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(mediaReadOnlyResults["info"] == .string("allowed"), "reading the attachment is message history")
+    expect(mediaReadOnlyResults["share"] == .string("Permission not granted: dialogs"), "putting it on screen also needs dialogs")
+    expect(mediaReadOnlyCalls == 1, "and the refused one never reaches the host")
+    mediaReadOnly.stop()
+
     // Storage's JSON conveniences, the console's own history, and what a plugin may do.
     let shelfHost = AorusPluginNullHost()
     var shelfResults: [String: AorusPluginJSONValue] = [:]

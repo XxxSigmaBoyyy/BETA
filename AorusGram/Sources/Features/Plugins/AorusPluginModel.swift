@@ -167,7 +167,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             // `toast` is gated on the same permission as the other dialogs and had no
             // needle, so a plugin whose only visible output is a toast was granted nothing
             // and every message it showed went nowhere, silently.
-            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast", "aorus.ui.showSheet", "aorus.users.select"]),
+            (.dialogs, ["aorus.ui.alert", "aorus.ui.confirm", "aorus.ui.prompt", "aorus.ui.share", "aorus.app.share", "aorus.ui.toast", "aorus.ui.showSheet", "aorus.users.select", "aorus.files.pick", "aorus.files.share"]),
             (.clipboardRead, ["aorus.clipboard.read"]),
             (.clipboardWrite, ["aorus.clipboard.write"]),
             (.incomingMessages, [
@@ -175,7 +175,8 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
                 "aorus.on('messageDeleted'", "aorus.on(\"messageDeleted\"", "aorus.once('messageDeleted'", "aorus.once(\"messageDeleted\"",
                 "aorus.on('messageEdited'", "aorus.on(\"messageEdited\"", "aorus.once('messageEdited'", "aorus.once(\"messageEdited\"",
             ]),
-            (.messageHistory, ["aorus.chats.history"]),
+            // Reading a message's text, and reading what is attached to it.
+            (.messageHistory, ["aorus.chats.history", "aorus.media."]),
             (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands"]),
             // Pages someone opens, and the things a plugin draws over the chat without
             // being asked to. Both are native UI built from data the app validates.
@@ -207,7 +208,7 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             (.telegramProxy, ["aorus.telegramProxy."]),
             (.manageMessages, [
                 "aorus.messages.edit", "aorus.messages.delete", "aorus.messages.forward", "aorus.messages.react",
-                "aorus.messages.deleteLocal",
+                "aorus.messages.deleteLocal", "aorus.moderation.",
             ]),
             // One plugin talking to another. Separate from everything else because it is
             // the one capability whose other side is not the app but code somebody else

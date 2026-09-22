@@ -965,7 +965,12 @@ public enum AorusPluginPrelude {
             list: function () { return request('files.list', {}); },
             remove: function (name) { return request('files.remove', { name: requireString(name, 'name') }); },
             clear: function () { return request('files.clear', {}); },
-            usage: function () { return request('files.usage', {}); }
+            usage: function () { return request('files.usage', {}); },
+            // The person picks the file and the app copies it into the plugin's own
+            // directory. A plugin never reaches into anybody's documents; it is handed one
+            // file, by name, the same as one it wrote itself.
+            pick: function () { return request('files.pick', {}); },
+            share: function (name) { return request('files.share', { name: requireString(name, 'name') }); }
         });
 
         // Words the app draws, replaced. The whole set is republished on every change, so
@@ -1045,6 +1050,15 @@ public enum AorusPluginPrelude {
             },
             topics: function () { return freeze(Object.keys(pluginTopics)); }
         });
+
+        function moderate(action, userPeerId, options) {
+            var user = toPeerId(userPeerId);
+            if (user === 'me') { throw typeError('userPeerId must identify a person'); }
+            var opts = optionalObject(options, 'options');
+            var chat = opts.chatPeerId === undefined ? null : toPeerId(opts.chatPeerId);
+            if (chat === null || chat === 'me') { throw typeError('options.chatPeerId must identify a group'); }
+            return request('moderation.' + action, { chatPeerId: chat, userPeerId: user });
+        }
 
         // The chat that is open right now. Everything here answers while a chat is on screen
         // and rejects the moment none is, which is what "the current chat" means: there is no
@@ -1209,6 +1223,27 @@ public enum AorusPluginPrelude {
             files: filesApi,
             strings: stringsApi,
             plugins: pluginsApi,
+            // A message's attachment: what it is, and the four things anyone ever wants to
+            // do with one. `selected` is the message a context action was invoked on, which
+            // the plugin already has — it is here because the contract names it.
+            media: freeze({
+                info: function (message) { return request('media.info', messageReference(message)); },
+                forMessage: function (message) { return request('media.info', messageReference(message)); },
+                selected: function (message) { return request('media.info', messageReference(message)); },
+                download: function (message) { return request('media.download', messageReference(message)); },
+                save: function (message) { return request('media.save', messageReference(message)); },
+                saveToFiles: function (message) { return request('media.saveToFiles', messageReference(message)); },
+                share: function (message) { return request('media.share', messageReference(message)); }
+            }),
+            // Acting on somebody in a group. The app asks first, and Telegram's own rights
+            // decide: without them the answer is `{ ok: false }` rather than an error,
+            // because "you are not an admin" is an answer to the question.
+            moderation: freeze({
+                ban: function (userPeerId, options) { return moderate('ban', userPeerId, options); },
+                kick: function (userPeerId, options) { return moderate('kick', userPeerId, options); },
+                restrict: function (userPeerId, options) { return moderate('restrict', userPeerId, options); },
+                unban: function (userPeerId, options) { return moderate('unban', userPeerId, options); }
+            }),
             // Someone, rather than a conversation. `chats.get` answers about a chat; this
             // answers about a person, which is the same lookup and a different question.
             users: freeze({
