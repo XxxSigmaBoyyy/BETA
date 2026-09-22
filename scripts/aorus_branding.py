@@ -10667,14 +10667,21 @@ public enum AorusFakeGiftsStore {
             root["value"] = value
             giftObject = root
         }
+        // An ordinary gift that states an upgrade price can become a collectible, and the
+        // native screen only offers the button when the wrapper says so. This was hardcoded
+        // to false, which is why a stock gift had no Upgrade at all.
+        let aorusUpgradePrice = stored.gift.flatMap { AorusFakeGiftsStore.upgradePrice($0) }
         var dict: [String: Any] = [
             "gift": giftObject,
             "date": Int(stored.date),
             "nameHidden": renderedSenderPeerId == 0,
             "savedToProfile": stored.showInProfile,
             "pinnedToTop": stored.pinnedToTop,
-            "canUpgrade": false
+            "canUpgrade": aorusUpgradePrice != nil
         ]
+        if let aorusUpgradePrice {
+            dict["upgradeStars"] = Int(aorusUpgradePrice)
+        }
         if renderedSenderPeerId != 0 {
             dict["fromPeerId"] = ["iv": renderedSenderPeerId]
         }
@@ -11260,6 +11267,170 @@ public enum AorusFakeStarsStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return data
+    }
+}
+
+// Upgrading a local gift to a collectible.
+//
+// An ordinary gift that has not been upgraded is not a collectible yet, and the app offered
+// no way to make one: the wrapper handed to the native screen said `canUpgrade: false`, so
+// the Upgrade button never appeared, and even if it had, the action would have gone to the
+// server for a gift the server has never heard of.
+//
+// The upgrade is done here instead, and it is a real upgrade rather than a picture of one.
+// The model, pattern and backdrop come from Telegram's own upgrade preview for that gift id
+// — the same call the real flow makes to show what an upgrade could look like — so a local
+// collectible carries authentic attributes with their real rarities, not invented ones. What
+// stays local is the outcome: the stored gift is replaced by the collectible, and Fake Stars
+// pay for it when they are switched on.
+extension AorusFakeGiftsStore {
+    /// The stored gift a native reference points at, or nil when the reference belongs to a
+    /// real gift on the server.
+    public static func storedGift(matching reference: StarGiftReference) -> AorusStoredGift? {
+        switch reference {
+        case let .peer(peerId, id):
+            // Both halves must match. A local instance id is a random 64-bit number and a
+            // server saved id is small, so a collision is not realistic — but the cost of
+            // one would be hijacking a real gift's upgrade, and the peer is right there.
+            let rawPeerId = peerId.toInt64()
+            return all().first(where: { $0.instanceId == id && ($0.referencePeerId == rawPeerId || $0.referencePeerId == 0) })
+        case let .slug(slug):
+            return all().first(where: { stored in
+                if case let .unique(unique)? = stored.gift { return unique.slug == slug }
+                return false
+            })
+        case .message:
+            return nil
+        }
+    }
+
+    /// What an ordinary gift costs to upgrade, as the gift itself states. Nil when it has no
+    /// upgrade — a gift with no `upgradeStars` is one that was never meant to become a
+    /// collectible, and offering the button anyway would be a button that cannot work.
+    public static func upgradePrice(_ gift: StarGift) -> Int64? {
+        guard case let .generic(value) = gift, let stars = value.upgradeStars, stars >= 0 else { return nil }
+        return stars
+    }
+
+    /// Runs the upgrade for a local gift, or answers nil so the caller goes to the server.
+    public static func upgradeLocally(
+        account: Account,
+        reference: StarGiftReference,
+        keepOriginalInfo: Bool
+    ) -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError>? {
+        guard let stored = storedGift(matching: reference),
+              let gift = stored.gift,
+              case let .generic(generic) = gift,
+              let price = upgradePrice(gift) else { return nil }
+
+        // Paid before the preview is fetched: a balance that cannot cover it is an answer,
+        // not a reason to spend a round trip. Nothing is charged when Fake Stars are off,
+        // because then there is no balance to charge against.
+        if AorusFakeStarsStore.isEnabled, price > 0 {
+            guard AorusFakeStarsStore.spend(price) else {
+                return .fail(.generic)
+            }
+            AorusFakeStarsStore.recordPurchase(
+                accountPeerId: account.peerId,
+                recipientPeerId: account.peerId,
+                amount: price,
+                gift: gift,
+                premiumMonths: nil,
+                text: ""
+            )
+        }
+
+        let ownerPeerId = account.peerId
+        let instanceId = stored.instanceId
+        return _internal_starGiftUpgradePreview(account: account, giftId: generic.id)
+        |> castError(UpgradeStarGiftError.self)
+        |> mapToSignal { preview -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError> in
+            guard let unique = AorusFakeGiftsStore.assembleUpgrade(
+                generic: generic,
+                sampled: preview?.attributes ?? [],
+                ownerPeerId: ownerPeerId
+            ) else {
+                return .fail(.generic)
+            }
+            guard let upgraded = AorusFakeGiftsStore.replaceStoredGift(
+                instanceId: instanceId,
+                with: .unique(unique),
+                dropOriginalDetails: !keepOriginalInfo
+            ),
+                  let value = AorusFakeGiftsStore.wrapper(for: upgraded) else {
+                return .fail(.generic)
+            }
+            return .single(value)
+        }
+    }
+
+    /// One model, one pattern and one backdrop out of the preview, plus the original details
+    /// when they are being kept. A preview with nothing in it produces no collectible: a
+    /// gift with no model is a blank card, and showing one would be worse than the refusal.
+    /// The collectible's own attributes. Who sent the gift and when is not one of them:
+    /// `wrapper(for:)` builds that from the stored entry every time the gift is rendered, so
+    /// keeping or dropping the original details is a change to the entry, not to this.
+    static func assembleUpgrade(
+        generic: StarGift.Gift,
+        sampled: [StarGift.UniqueGift.Attribute],
+        ownerPeerId: EnginePeer.Id
+    ) -> StarGift.UniqueGift? {
+        var attributes: [StarGift.UniqueGift.Attribute] = []
+        for type in [StarGift.UniqueGift.Attribute.AttributeType.model, .pattern, .backdrop] {
+            let candidates = sampled.filter { $0.attributeType == type }
+            guard let chosen = candidates.randomElement() else {
+                if type == .model { return nil }
+                continue
+            }
+            attributes.append(chosen)
+        }
+        let total = generic.availability?.total ?? 0
+        let issued = total > 0 ? max(1, total - (generic.availability?.remains ?? 0)) : 1
+        return StarGift.UniqueGift(
+            id: Int64.random(in: 1 ... Int64.max),
+            giftId: generic.id,
+            title: generic.title ?? "",
+            number: issued,
+            // Local and obviously local. The slug is what the reference is keyed on, so it
+            // has to be unique across repeated upgrades of the same gift.
+            slug: "aorus-" + String(UInt64.random(in: 1 ... UInt64.max), radix: 36),
+            owner: .peerId(ownerPeerId),
+            attributes: attributes,
+            availability: StarGift.UniqueGift.Availability(issued: issued, total: max(issued, total)),
+            giftAddress: nil,
+            resellAmounts: nil,
+            resellForTonOnly: false,
+            releasedBy: generic.releasedBy,
+            valueAmount: nil,
+            valueCurrency: nil,
+            valueUsdAmount: nil,
+            flags: [],
+            themePeerId: nil,
+            peerColor: nil,
+            hostPeerId: nil,
+            minOfferStars: nil,
+            craftChancePermille: nil
+        )
+    }
+
+    /// Swaps the gift a stored entry holds, keeping everything about the entry that is not
+    /// the gift: where it is pinned, which collections it is in, when it arrived, who sent
+    /// it. An upgrade is the same gift wearing something else, not a new one.
+    static func replaceStoredGift(instanceId: Int64, with gift: StarGift, dropOriginalDetails: Bool) -> AorusStoredGift? {
+        guard let data = try? JSONEncoder().encode(gift) else { return nil }
+        var gifts = all()
+        guard let index = gifts.firstIndex(where: { $0.instanceId == instanceId }) else { return nil }
+        var updated = gifts[index]
+        updated.giftData = dataWithOwner(data, ownerPeerId: updated.referencePeerId) ?? data
+        if dropOriginalDetails {
+            // "Do not keep original details" is the person choosing that the collectible
+            // stops saying who sent it and what they wrote. The entry is where that lives.
+            updated.senderPeerId = 0
+            updated.comment = ""
+        }
+        gifts[index] = updated
+        persist(gifts)
+        return updated
     }
 }
 '''
@@ -12823,6 +12994,43 @@ def patch_fake_stars_purchases(tg: Path) -> None:
         print("FakeStarsPurchases: patched collectible native purchase flow")
     else:
         print("FakeStarsPurchases: collectible purchase already patched")
+
+
+def patch_local_gift_upgrade(tg: Path) -> None:
+    """Route the Upgrade action for a local gift through the local upgrade.
+
+    Every path that upgrades a gift — the gift screen, the profile pane and the gifts grid —
+    ends at `_internal_upgradeStarGift`, so that is where the fork goes: one call site rather
+    than three, and `ProfileGiftsContext` still sees the result and updates its list exactly
+    as it does for a real upgrade.
+
+    `upgradeLocally` answers nil for anything the server owns, so a real gift takes the real
+    path untouched.
+    """
+    path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift"
+    if not path.is_file():
+        raise SystemExit("LocalGiftUpgrade: StarGifts.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "AorusFakeGiftsStore.upgradeLocally" in source:
+        print("LocalGiftUpgrade: already patched")
+        return
+    anchor = (
+        "func _internal_upgradeStarGift(account: Account, formId: Int64?, reference: StarGiftReference, keepOriginalInfo: Bool) -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError> {\n"
+        "    if let formId {\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("LocalGiftUpgrade: _internal_upgradeStarGift anchor not found")
+    replacement = (
+        "func _internal_upgradeStarGift(account: Account, formId: Int64?, reference: StarGiftReference, keepOriginalInfo: Bool) -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError> {\n"
+        "    // AorusGram: a local gift is upgraded locally. The server has never heard of it,\n"
+        "    // so asking it to upgrade one could only fail. Answers nil for everything else.\n"
+        "    if let aorusLocal = AorusFakeGiftsStore.upgradeLocally(account: account, reference: reference, keepOriginalInfo: keepOriginalInfo) {\n"
+        "        return aorusLocal\n"
+        "    }\n"
+        "    if let formId {\n"
+    )
+    path.write_text(source.replace(anchor, replacement, 1), encoding="utf-8")
+    print("LocalGiftUpgrade: local gifts upgrade without the server")
 
 
 def patch_fake_stars_all_gifts(tg: Path) -> None:
@@ -26585,6 +26793,7 @@ def main() -> None:
     patch_aorus_badges(tg)
     patch_local_premium(tg)
     patch_fake_gifts(tg)
+    patch_local_gift_upgrade(tg)
     patch_fake_stars(tg)
     patch_fake_stars_statistics(tg)
     patch_fake_stars_purchases(tg)
