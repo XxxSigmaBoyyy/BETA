@@ -46,6 +46,20 @@ public final class AorusPluginChatBridge {
     public static let openedNotification = Notification.Name("aorusgram.plugins.chatOpened")
     public static let closedNotification = Notification.Name("aorusgram.plugins.chatClosed")
     public static let inputChangedNotification = Notification.Name("aorusgram.plugins.chatInputChanged")
+    /// A plugin added, changed or removed something it draws over the chat.
+    public static let overlaysChangedNotification = Notification.Name("aorusgram.plugins.overlaysChanged")
+    /// One of those things was tapped. Posted by whatever drew it; the runtime turns it into
+    /// the plugin's `overlayAction`.
+    public static let overlayTappedNotification = Notification.Name("aorusgram.plugins.overlayTapped")
+
+    /// Reports a tap on an overlay. It goes through a notification rather than a direct call
+    /// because the view that drew it is in TelegramUI and the runtime that owns the plugin is
+    /// here, and this is the one direction the modules cannot call in.
+    public static func reportOverlayTap(pluginId: String, overlayId: String, peerId: Int64?) {
+        var info: [String: Any] = ["pluginId": pluginId, "overlayId": overlayId]
+        if let peerId = peerId { info["peerId"] = String(peerId) }
+        NotificationCenter.default.post(name: AorusPluginChatBridge.overlayTappedNotification, object: nil, userInfo: info)
+    }
 
     private weak var host: AorusPluginChatHost?
 

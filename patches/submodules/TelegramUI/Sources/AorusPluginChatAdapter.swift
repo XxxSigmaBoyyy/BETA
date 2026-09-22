@@ -33,6 +33,11 @@ final class AorusPluginChatAdapter: NSObject, AorusPluginChatHost {
     /// Set while this adapter is itself writing the draft, so a plugin that reacts to
     /// `inputChanged` by writing the composer does not drive itself in a loop.
     private var isWriting = false
+    /// What the running plugins have drawn over this chat, and the observer that keeps it
+    /// current. Created on the first overlay rather than on every chat: a chat nobody has
+    /// drawn anything over carries no extra view at all.
+    private var overlayHost: AorusPluginOverlayHost?
+    private var overlayObserver: NSObjectProtocol?
 
     init(controller: ChatControllerImpl) {
         self.controller = controller
@@ -187,6 +192,54 @@ final class AorusPluginChatAdapter: NSObject, AorusPluginChatHost {
         }
     }
 
+    // MARK: - Overlays
+
+    fileprivate func startOverlays() {
+        if self.overlayObserver == nil {
+            self.overlayObserver = NotificationCenter.default.addObserver(
+                forName: AorusPluginChatBridge.overlaysChangedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.refreshOverlays()
+            }
+        }
+        self.refreshOverlays()
+    }
+
+    fileprivate func stopOverlays() {
+        if let observer = self.overlayObserver {
+            NotificationCenter.default.removeObserver(observer)
+            self.overlayObserver = nil
+        }
+        self.overlayHost?.removeFromSuperview()
+        self.overlayHost = nil
+    }
+
+    private func refreshOverlays() {
+        guard let controller = self.liveController else { return }
+        let items = AorusPluginRuntimeManager.shared.pluginOverlays()
+        if items.isEmpty {
+            self.overlayHost?.removeFromSuperview()
+            self.overlayHost = nil
+            return
+        }
+        let host: AorusPluginOverlayHost
+        if let existing = self.overlayHost {
+            host = existing
+        } else {
+            host = AorusPluginOverlayHost()
+            self.overlayHost = host
+            controller.view.addSubview(host)
+        }
+        host.peerId = controller.chatLocation.peerId?.toInt64()
+        host.frame = controller.view.bounds
+        // Telegram adds and reorders its own subviews as the chat lays out, so the container
+        // is put back on top every time rather than once when it was added.
+        controller.view.bringSubviewToFront(host)
+        host.reload()
+    }
+
     // MARK: - Reporting
 
     fileprivate func reportInputIfChanged(source: String) {
@@ -213,6 +266,7 @@ extension ChatControllerImpl {
         let adapter = self.aorusPluginChatAdapter ?? AorusPluginChatAdapter(controller: self)
         self.aorusPluginChatAdapter = adapter
         AorusPluginChatBridge.shared.attach(adapter)
+        adapter.startOverlays()
     }
 
     /// The chat is leaving. The bridge ignores this if another chat has already registered,
@@ -220,6 +274,7 @@ extension ChatControllerImpl {
     func aorusPluginChatWillDisappear() {
         guard let adapter = self.aorusPluginChatAdapter else { return }
         AorusPluginChatBridge.shared.detach(adapter)
+        adapter.stopOverlays()
     }
 
     /// The interface state changed for some reason. Only a changed composer is an event, and

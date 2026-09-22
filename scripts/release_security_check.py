@@ -1305,6 +1305,17 @@ def check_plugin_boundary(root: Path, errors: list[str]) -> None:
     ):
         if marker not in branding:
             fail(errors, f"plugin outgoing command integration is missing: {marker}")
+    # The hook that matters. `ChatControllerImpl.sendMessages` is reached by stickers, dice
+    # and media; a message someone types goes through the `chatDisplayNode.sendMessages`
+    # closure, and a plugin chain that is not on that path sees no commands at all.
+    for marker in (
+        "def patch_plugin_outgoing_hook_composer",
+        "self.chatDisplayNode.sendMessages = { [weak self] messages, silentPosting",
+        "aorusPluginMessages = messages.compactMap { message in",
+        "transformEnqueueMessages(aorusPluginMessages, silentPosting: effectiveSilentPosting",
+    ):
+        if marker not in branding:
+            fail(errors, f"plugin outgoing chain is not on the typed-message path: {marker}")
     check_plugin_ui_stubs(root, errors)
 
 

@@ -52,6 +52,7 @@ public protocol AorusPluginHostServices: AnyObject {
     func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage])
     func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut])
     func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction])
+    func pluginOverlaysChanged(_ pluginId: String, overlays: [AorusPluginOverlay])
     func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginOpenURL(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void)
     func pluginOpenTelegramLink(_ pluginId: String, url: String, completion: @escaping (Result<Void, Error>) -> Void)
@@ -92,6 +93,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     public var onPagesChanged: ((String, [AorusPluginUIPage]) -> Void)?
     public var onSettingsShortcutsChanged: ((String, [AorusPluginSettingsShortcut]) -> Void)?
     public var onContextActionsChanged: ((String, [AorusPluginContextAction]) -> Void)?
+    public var onOverlaysChanged: ((String, [AorusPluginOverlay]) -> Void)?
     public var onOpenPage: ((String, String, String) -> Void)?
     public var onOpenURL: ((String, String) -> Void)?
     public var onOpenTelegramLink: ((String, String) -> Void)?
@@ -218,6 +220,7 @@ open class AorusPluginNullHost: AorusPluginHostServices {
     open func pluginPagesChanged(_ pluginId: String, pages: [AorusPluginUIPage]) { onPagesChanged?(pluginId, pages) }
     open func pluginSettingsShortcutsChanged(_ pluginId: String, shortcuts: [AorusPluginSettingsShortcut]) { onSettingsShortcutsChanged?(pluginId, shortcuts) }
     open func pluginContextActionsChanged(_ pluginId: String, actions: [AorusPluginContextAction]) { onContextActionsChanged?(pluginId, actions) }
+    open func pluginOverlaysChanged(_ pluginId: String, overlays: [AorusPluginOverlay]) { onOverlaysChanged?(pluginId, overlays) }
     open func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void) {
         onOpenPage?(pluginId, pageId, style)
         completion(.success(()))
@@ -632,6 +635,25 @@ public final class AorusPluginSandbox {
                 completion?(.runtime(message: message, line: line))
                 return
             }
+            // The console was empty for every plugin that worked. Nothing wrote a line
+            // unless something went wrong, so "started, nothing happened" and "never
+            // started" looked identical — an empty screen either way. The lifecycle is
+            // the log's first job: what ran, what it registered, what it may do.
+            let granted = self.permissions.map { $0.rawValue }.sorted()
+            self.record(.info, "Started \(self.manifest.name) \(self.manifest.version)")
+            self.record(.debug, granted.isEmpty ? "No permissions granted" : "Granted: " + granted.joined(separator: ", "))
+            let registered = self.registrationSnapshot()
+            if registered.commands.isEmpty {
+                self.record(.debug, "No commands registered")
+            } else {
+                self.record(.info, "Commands: " + registered.commands.map { registered.prefix + $0 }.joined(separator: ", "))
+            }
+            if !registered.events.isEmpty {
+                self.record(.debug, "Listening for: " + registered.events.joined(separator: ", "))
+            }
+            if !registered.commands.isEmpty, !self.permissions.contains(.outgoingMessages) {
+                self.record(.warn, "Commands are registered but the outgoing-messages permission is not granted, so none of them will run")
+            }
             self.deliver(event: "start", payload: nil)
             completion?(nil)
         }
@@ -642,6 +664,9 @@ public final class AorusPluginSandbox {
         queue.async {
             if self.context != nil, !self.isHung {
                 self.deliver(event: "stop", payload: nil)
+            }
+            if self.context != nil {
+                self.record(.info, "Stopped")
             }
             self.tearDown()
             completion?()
@@ -678,6 +703,7 @@ public final class AorusPluginSandbox {
         // What someone is typing, keystroke by keystroke, before they have decided to send
         // it. That is the composer, not chat metadata.
         if event == "inputChanged" && !permissions.contains(.composer) { return }
+        if event == "overlayAction" && !permissions.contains(.customUI) { return }
         queue.async {
             self.deliver(event: event, payload: payload)
         }
@@ -772,6 +798,28 @@ public final class AorusPluginSandbox {
         }
     }
 
+    /// The same read, for a caller that is already on the plugin's queue. `registration`
+    /// dispatches and waits, which from inside the queue would wait on the queue itself and
+    /// answer nothing after the timeout.
+    private func registrationSnapshot() -> Registration {
+        var value = Registration()
+        // Read even during a cooldown: this is what the diagnostics screen shows, and
+        // hiding the commands there is the opposite of what it is for.
+        if let dispatcher = self.dispatcher, self.context != nil {
+            self.pendingException = nil
+            if let prefix = dispatcher.invokeMethod("commandPrefix", withArguments: []), prefix.isString {
+                value.prefix = prefix.toString()
+            }
+            if let commands = dispatcher.invokeMethod("commandNames", withArguments: []), commands.isArray {
+                value.commands = (commands.toArray() as? [String]) ?? []
+            }
+            if let events = dispatcher.invokeMethod("eventNames", withArguments: []), events.isArray {
+                value.events = (events.toArray() as? [String]) ?? []
+            }
+        }
+        return value
+    }
+
     public func registration(timeout: TimeInterval = 0.3) -> Registration {
         final class Box {
             let lock = NSLock()
@@ -780,21 +828,7 @@ public final class AorusPluginSandbox {
         let box = Box()
         let semaphore = DispatchSemaphore(value: 0)
         queue.async {
-            var value = Registration()
-            // Read even during a cooldown: this is what the diagnostics screen shows, and
-            // hiding the commands there is the opposite of what it is for.
-            if let dispatcher = self.dispatcher, self.context != nil {
-                self.pendingException = nil
-                if let prefix = dispatcher.invokeMethod("commandPrefix", withArguments: []), prefix.isString {
-                    value.prefix = prefix.toString()
-                }
-                if let commands = dispatcher.invokeMethod("commandNames", withArguments: []), commands.isArray {
-                    value.commands = (commands.toArray() as? [String]) ?? []
-                }
-                if let events = dispatcher.invokeMethod("eventNames", withArguments: []), events.isArray {
-                    value.events = (events.toArray() as? [String]) ?? []
-                }
-            }
+            let value = self.registrationSnapshot()
             box.lock.lock()
             box.value = value
             box.lock.unlock()
@@ -973,6 +1007,21 @@ public final class AorusPluginSandbox {
             return true
         }
         hostObject.setObject(contextActionsDefine, forKeyedSubscript: "contextActionsDefine" as NSString)
+
+        // What a plugin draws over the open chat. Same shape as the other integrations: the
+        // whole set is republished on every change, so removing one is publishing the rest.
+        //
+        // The answer is how many were accepted, not whether anything was. An overlay that is
+        // dropped for having nothing to show would otherwise hand the plugin an id for a
+        // button nobody can see or press, which is the failure this whole feature keeps
+        // running into. Negative means the plugin may not draw at all.
+        let overlaysDefine: @convention(block) (String) -> Int32 = { [weak self] json in
+            guard let self, self.hostServices.pluginExecutionAllowed, self.permissions.contains(.customUI) else { return -1 }
+            guard let overlays = AorusPluginOverlay.validated(from: Data(json.utf8)) else { return -1 }
+            self.hostServices.pluginOverlaysChanged(pluginId, overlays: overlays)
+            return Int32(overlays.count)
+        }
+        hostObject.setObject(overlaysDefine, forKeyedSubscript: "overlaysDefine" as NSString)
 
         let timerSchedule: @convention(block) (Int32, Double, Bool) -> Void = { [weak self] id, milliseconds, repeats in
             self?.scheduleTimer(id: id, milliseconds: milliseconds, repeats: repeats)

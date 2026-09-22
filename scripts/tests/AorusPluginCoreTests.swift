@@ -920,6 +920,85 @@ if AorusPluginSandbox.watchdogAvailable {
     expect(fileResults["count"] == .number(1), "usage counts what is left")
     fileSandbox.stop()
 
+    // What a plugin draws over the chat. Every number is clamped rather than rejected — a
+    // plugin asking for a 900-point button has made a mistake, not an attack, and the useful
+    // answer is the largest button that still fits.
+    let overlayHost = AorusPluginNullHost()
+    var publishedOverlays: [AorusPluginOverlay] = []
+    overlayHost.onOverlaysChanged = { _, items in publishedOverlays = items }
+    var overlayResults: [String: AorusPluginJSONValue] = [:]
+    overlayHost.onStorageChanged = { _, values in overlayResults = values }
+    let overlaySource = """
+    aorus.on('start', function () {
+        var button = aorus.ui.addFloatingButton(
+            { title: 'Go', icon: 'bolt.fill', backgroundColor: '#0A84FF', position: 'BottomLeft', offsetY: -120, width: 900, alpha: 4, draggable: true },
+            function (event) { aorus.storage.set('tapped', event.id); }
+        );
+        var panel = aorus.ui.addChatPanel({ title: 'Recording', subtitle: 'in progress' });
+        aorus.storage.set('ids', button + '|' + panel);
+        aorus.ui.updateChatPanel(panel, { title: 'Recording', subtitle: 'stopped' });
+        aorus.storage.set('count', aorus.ui.overlays().length);
+        try { aorus.ui.addFloatingButton({ title: '' }); } catch (error) { aorus.storage.set('empty', 'threw'); }
+    });
+    """
+    let overlaySandbox = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Overlays"),
+        source: overlaySource,
+        host: overlayHost,
+        permissions: [.customUI]
+    )
+    let overlayStarted = DispatchSemaphore(value: 0)
+    overlaySandbox.start { error in expect(error == nil, "overlay plugin starts"); overlayStarted.signal() }
+    _ = overlayStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.3)
+    expect(publishedOverlays.count == 2, "both overlays reach the app")
+    if publishedOverlays.count == 2 {
+        let button = publishedOverlays[0]
+        expect(button.kind == .floatingButton, "the first overlay is the button")
+        expect(button.position == .bottomLeft, "a position is matched whatever its case")
+        expect(button.backgroundColor == "0A84FF", "a colour arrives as six hex digits without the hash")
+        expect(button.width == AorusPluginOverlay.maximumSide, "an oversized width is clamped, not refused")
+        expect(button.alpha == 1.0, "an out-of-range alpha is clamped to fully opaque")
+        expect(button.offsetY == -120.0, "an offset within range is kept exactly")
+        expect(button.draggable, "draggable carries across")
+        expect(button.displayMode == .iconText, "a button with both a glyph and a word shows both")
+        let panel = publishedOverlays[1]
+        expect(panel.kind == .chatPanel, "the second overlay is the panel")
+        expect(panel.subtitle == "stopped", "an update replaces what the panel says")
+        expect(panel.position == .topLeft, "a panel defaults to the top of the chat")
+    }
+    expect(overlayResults["count"] == .number(2), "the plugin can read back what it has drawn")
+    // A button with neither a glyph nor a word on it is an invisible tap target, so it is
+    // dropped — and the add fails rather than reporting an id for something not on screen.
+    expect(overlayResults["empty"] == .string("threw"), "an overlay with nothing to show is refused")
+    // A handler given to `add` is called directly, so a plugin with several buttons does not
+    // have to work out which one was pressed.
+    overlaySandbox.dispatch(event: "overlayAction", payload: ["id": "floatingButton-1"])
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(overlayResults["tapped"] == .string("floatingButton-1"), "a tap reaches the handler the plugin passed in")
+    overlaySandbox.stop()
+
+    // Without the grant nothing is drawn at all, and the add says so rather than reporting
+    // an id for something that does not exist.
+    let deniedOverlayHost = AorusPluginNullHost()
+    var deniedOverlayCount = 0
+    deniedOverlayHost.onOverlaysChanged = { _, _ in deniedOverlayCount += 1 }
+    var deniedOverlayResults: [String: AorusPluginJSONValue] = [:]
+    deniedOverlayHost.onStorageChanged = { _, values in deniedOverlayResults = values }
+    let deniedOverlays = AorusPluginSandbox(
+        manifest: AorusPluginManifest(name: "Denied overlays"),
+        source: "aorus.on('start', function () { try { aorus.ui.addFloatingButton({ title: 'Go' }); } catch (error) { aorus.storage.set('add', 'refused'); } });",
+        host: deniedOverlayHost,
+        permissions: []
+    )
+    let deniedOverlaysStarted = DispatchSemaphore(value: 0)
+    deniedOverlays.start { error in expect(error == nil, "denied overlay plugin starts"); deniedOverlaysStarted.signal() }
+    _ = deniedOverlaysStarted.wait(timeout: .now() + 2)
+    Thread.sleep(forTimeInterval: 0.2)
+    expect(deniedOverlayCount == 0, "an ungranted overlay never reaches the app")
+    expect(deniedOverlayResults["add"] == .string("refused"), "an ungranted add reports rather than returning an id")
+    deniedOverlays.stop()
+
     // The theme a plugin draws against.
     let themeHost = AorusPluginNullHost()
     var themeResults: [String: AorusPluginJSONValue] = [:]

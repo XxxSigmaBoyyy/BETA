@@ -170,7 +170,12 @@ public enum AorusPluginPermission: String, Codable, CaseIterable, Hashable {
             ]),
             (.messageHistory, ["aorus.chats.history"]),
             (.outgoingMessages, ["aorus.on('send'", "aorus.on(\"send\"", "aorus.once('send'", "aorus.once(\"send\"", "aorus.commands"]),
-            (.customUI, ["aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage"]),
+            // Pages someone opens, and the things a plugin draws over the chat without
+            // being asked to. Both are native UI built from data the app validates.
+            (.customUI, [
+                "aorus.ui.definePages", "aorus.ui.createPage", "aorus.ui.openPage", "aorus.ui.presentPage",
+                "aorus.ui.addFloatingButton", "aorus.ui.addChatPanel",
+            ]),
             (.settingsIntegration, ["aorus.integrations.settings.register"]),
             (.contextMenu, ["aorus.integrations.contextMenu.register"]),
             // The call sites and the two ways a page declares a link row. A bare `url:`
@@ -469,6 +474,204 @@ public struct AorusPluginContextAction: Codable, Equatable {
             items[index] = item
         }
         return items
+    }
+}
+
+/// Something a plugin draws over the open chat: a floating button, or a panel under the
+/// navigation bar.
+///
+/// Like every other plugin surface this is data, not views. The plugin says what it wants to
+/// look like within a range the app decides, and the app builds a `UIButton` and a
+/// `UIView` from it. Nothing crosses the boundary that could draw arbitrary content, and
+/// every number is clamped rather than rejected, because a plugin asking for a 900-point
+/// button has made a mistake, not an attack, and the useful answer is the largest button
+/// that still fits.
+public struct AorusPluginOverlay: Codable, Equatable {
+    public enum Kind: String, Codable {
+        case floatingButton
+        case chatPanel
+    }
+
+    public enum Position: String, Codable {
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+        case centerLeft
+        case centerRight
+        case center
+    }
+
+    public enum DisplayMode: String, Codable {
+        case icon
+        case text
+        case iconText
+    }
+
+    public static let maximumPerPlugin = 4
+    public static let minimumSide = 28.0
+    public static let maximumSide = 220.0
+
+    public var id: String
+    public var kind: Kind
+    public var title: String
+    public var subtitle: String?
+    public var icon: String?
+    public var backgroundColor: String?
+    public var textColor: String?
+    public var borderColor: String?
+    public var borderWidth: Double
+    public var cornerRadius: Double?
+    public var alpha: Double
+    public var fontSize: Double?
+    public var shadow: Bool
+    public var displayMode: DisplayMode
+    public var position: Position
+    public var offsetX: Double
+    public var offsetY: Double
+    public var width: Double?
+    public var height: Double?
+    public var draggable: Bool
+    public var interactive: Bool
+
+    public init(
+        id: String,
+        kind: Kind,
+        title: String = "",
+        subtitle: String? = nil,
+        icon: String? = nil,
+        backgroundColor: String? = nil,
+        textColor: String? = nil,
+        borderColor: String? = nil,
+        borderWidth: Double = 0.0,
+        cornerRadius: Double? = nil,
+        alpha: Double = 1.0,
+        fontSize: Double? = nil,
+        shadow: Bool = true,
+        displayMode: DisplayMode = .iconText,
+        position: Position = .bottomRight,
+        offsetX: Double = 0.0,
+        offsetY: Double = 0.0,
+        width: Double? = nil,
+        height: Double? = nil,
+        draggable: Bool = false,
+        interactive: Bool = true
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.subtitle = subtitle
+        self.icon = icon
+        self.backgroundColor = backgroundColor
+        self.textColor = textColor
+        self.borderColor = borderColor
+        self.borderWidth = borderWidth
+        self.cornerRadius = cornerRadius
+        self.alpha = alpha
+        self.fontSize = fontSize
+        self.shadow = shadow
+        self.displayMode = displayMode
+        self.position = position
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+        self.width = width
+        self.height = height
+        self.draggable = draggable
+        self.interactive = interactive
+    }
+
+    /// An SF Symbol name as a name, not as a path or an expression. An unknown symbol draws
+    /// nothing rather than failing, so the list does not have to be exhaustive — only the
+    /// shape has to be a symbol name.
+    public static func normalizedSymbol(_ name: String) -> String? {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.")
+        guard !name.isEmpty, name.count <= 64, !name.hasPrefix("."), !name.contains(".."),
+              name.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return name
+    }
+
+    private static func clamped(_ value: Any?, _ low: Double, _ high: Double) -> Double? {
+        guard let number = value as? NSNumber, number.doubleValue.isFinite else { return nil }
+        return min(high, max(low, number.doubleValue))
+    }
+
+    /// Six hex digits, with or without the hash. Nil for anything else, deliberately:
+    /// `AorusPluginAccent.normalized` answers with the fallback colour for what it does not
+    /// recognise, which would turn a typo into a colour the plugin never asked for instead
+    /// of leaving the theme's own.
+    private static func colour(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let trimmed = text.hasPrefix("#") ? String(text.dropFirst()) : text
+        guard trimmed.count == 6, trimmed.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return trimmed.uppercased()
+    }
+
+    public static func validated(from data: Data) -> [AorusPluginOverlay]? {
+        guard data.count <= 32 * 1024,
+              let items = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        return validated(items)
+    }
+
+    /// Everything a plugin may send across, checked one overlay at a time. A malformed one is
+    /// dropped on its own so it cannot take the rest with it.
+    public static func validated(_ items: [[String: Any]]) -> [AorusPluginOverlay] {
+        var result: [AorusPluginOverlay] = []
+        var ids = Set<String>()
+        for item in items {
+            guard result.count < maximumPerPlugin else { break }
+            guard let id = item["id"] as? String, AorusPluginIdentifier.isValid(id), ids.insert(id).inserted,
+                  let rawKind = item["kind"] as? String, let kind = Kind(rawValue: rawKind) else { continue }
+            let title = String((item["title"] as? String ?? "").prefix(80))
+            let subtitle = (item["subtitle"] as? String).map { String($0.prefix(160)) }
+            let icon = (item["icon"] as? String).flatMap { normalizedSymbol($0) }
+            // A button with neither a glyph nor a word on it is an invisible tap target.
+            if kind == .floatingButton, icon == nil, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            if kind == .chatPanel, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, subtitle == nil { continue }
+            let displayMode = (item["displayMode"] as? String).flatMap { DisplayMode(rawValue: $0) }
+                ?? (icon == nil ? .text : (title.isEmpty ? .icon : .iconText))
+            let position = (item["position"] as? String).flatMap { raw in
+                Position.allPositions.first { $0.rawValue.lowercased() == raw.lowercased() }
+            } ?? (kind == .chatPanel ? .topLeft : .bottomRight)
+            result.append(AorusPluginOverlay(
+                id: id,
+                kind: kind,
+                title: title,
+                subtitle: subtitle,
+                icon: icon,
+                backgroundColor: colour(item["backgroundColor"]) ?? colour(item["color"]),
+                textColor: colour(item["textColor"]),
+                borderColor: colour(item["borderColor"]),
+                borderWidth: clamped(item["borderWidth"], 0.0, 6.0) ?? 0.0,
+                cornerRadius: clamped(item["cornerRadius"], 0.0, 40.0),
+                alpha: clamped(item["alpha"], 0.15, 1.0) ?? 1.0,
+                fontSize: clamped(item["fontSize"], 8.0, 32.0),
+                shadow: (item["shadow"] as? NSNumber)?.boolValue ?? true,
+                displayMode: displayMode,
+                position: position,
+                offsetX: clamped(item["offsetX"], -400.0, 400.0) ?? 0.0,
+                offsetY: clamped(item["offsetY"], -400.0, 400.0) ?? 0.0,
+                width: clamped(item["width"], minimumSide, maximumSide),
+                height: clamped(item["height"], minimumSide, maximumSide),
+                draggable: (item["draggable"] as? NSNumber)?.boolValue ?? false,
+                interactive: (item["interactive"] as? NSNumber)?.boolValue ?? true
+            ))
+        }
+        return result
+    }
+}
+
+extension AorusPluginOverlay.Position {
+    static let allPositions: [AorusPluginOverlay.Position] = [
+        .topLeft, .topRight, .bottomLeft, .bottomRight, .centerLeft, .centerRight, .center,
+    ]
+}
+
+/// The one identifier rule the plugin surfaces share: a name a person types into their own
+/// source and the app stores, never a path and never an expression.
+public enum AorusPluginIdentifier {
+    public static func isValid(_ value: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        return !value.isEmpty && value.count <= 64 && value.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 }
 

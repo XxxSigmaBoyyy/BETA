@@ -7,6 +7,7 @@ import SwiftSignalKit
 import Display
 import TelegramPresentationData
 import ContextUI
+import UndoUI
 import QuickLook
 import AorusGram
 
@@ -64,6 +65,7 @@ public final class AorusPluginRuntimeManager {
     private var pages: [String: [AorusPluginUIPage]] = [:]
     private var settingsShortcuts: [String: [AorusPluginSettingsShortcut]] = [:]
     private var contextActions: [String: [AorusPluginContextAction]] = [:]
+    private var overlays: [String: [AorusPluginOverlay]] = [:]
     private var observers: [NSObjectProtocol] = []
 
     private init() {}
@@ -112,6 +114,7 @@ public final class AorusPluginRuntimeManager {
             pages[sandbox.manifest.id] = nil
             settingsShortcuts[sandbox.manifest.id] = nil
             contextActions[sandbox.manifest.id] = nil
+            overlays[sandbox.manifest.id] = nil
         }
         lock.unlock()
         if !stale.isEmpty { publishIntegrationsChanged() }
@@ -158,6 +161,7 @@ public final class AorusPluginRuntimeManager {
         pages[id] = nil
         settingsShortcuts[id] = nil
         contextActions[id] = nil
+        overlays[id] = nil
         lock.unlock()
         publishIntegrationsChanged()
         currentHost()?.clearPluginState(id)
@@ -225,13 +229,22 @@ public final class AorusPluginRuntimeManager {
         let host = self.host
         lock.unlock()
         guard let shortcut, let host else { return }
-        if let pageId = shortcut.pageId {
-            guard isPermissionGranted(.customUI, pluginId: pluginId) else { return }
-            host.pluginOpenPage(pluginId, pageId: pageId, style: "push") { _ in }
-        } else if let url = shortcut.url {
-            guard isPermissionGranted(.inAppBrowser, pluginId: pluginId) else { return }
-            host.pluginOpenURL(pluginId, url: url) { _ in }
+        // A tap that does nothing is the worst answer this can give. Whatever the shortcut
+        // turns out to be, the person finds out what happened.
+        let report: (Result<Void, Error>) -> Void = { result in
+            guard case let .failure(error) = result else { return }
+            DispatchQueue.main.async { host.presentNotice(AorusPluginRuntimeManager.describe(error)) }
         }
+        if let pageId = shortcut.pageId {
+            host.pluginOpenPage(pluginId, pageId: pageId, style: "push", completion: report)
+        } else if let url = shortcut.url {
+            host.pluginOpenURL(pluginId, url: url, completion: report)
+        }
+    }
+
+    static func describe(_ error: Error) -> String {
+        if let error = error as? AorusPluginRequestError { return error.message }
+        return (error as NSError).localizedDescription
     }
 
     public func openURL(pluginId: String, url: String, completion: ((Error?) -> Void)? = nil) {
@@ -302,6 +315,37 @@ public final class AorusPluginRuntimeManager {
     fileprivate func setContextActions(_ value: [AorusPluginContextAction], id: String) {
         lock.lock(); contextActions[id] = value; lock.unlock()
         publishIntegrationsChanged()
+    }
+
+    fileprivate func setOverlays(_ value: [AorusPluginOverlay], id: String) {
+        lock.lock(); overlays[id] = value; lock.unlock()
+        publishOverlaysChanged()
+    }
+
+    /// Everything every running plugin has drawn over the chat, in a stable order so the
+    /// view that renders it can tell an addition from a reshuffle.
+    public func pluginOverlays() -> [(pluginId: String, overlay: AorusPluginOverlay)] {
+        lock.lock(); defer { lock.unlock() }
+        return overlays.keys.sorted().flatMap { pluginId in
+            (overlays[pluginId] ?? []).map { (pluginId, $0) }
+        }
+    }
+
+    /// A tap on one of them. Like the other two dispatchers this writes a line to the
+    /// plugin's own log, so a button that does nothing can say which it was.
+    public func dispatchOverlayAction(pluginId: String, overlayId: String, payload: [String: Any]) {
+        lock.lock(); let sandbox = sandboxes[pluginId]; lock.unlock()
+        guard let sandbox else { return }
+        var value = payload
+        value["id"] = overlayId
+        sandbox.note(.debug, "overlayAction \(overlayId)")
+        sandbox.dispatch(event: "overlayAction", payload: value)
+    }
+
+    private func publishOverlaysChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: AorusPluginChatBridge.overlaysChangedNotification, object: nil)
+        }
     }
 
     private func publishIntegrationsChanged() {
@@ -464,6 +508,14 @@ public final class AorusPluginRuntimeManager {
         observers.append(center.addObserver(forName: AorusPluginChatBridge.closedNotification, object: nil, queue: .main) { [weak self] note in
             self?.dispatch(event: "chatClosed", payload: note.userInfo as? [String: Any] ?? [:])
         })
+        observers.append(center.addObserver(forName: AorusPluginChatBridge.overlayTappedNotification, object: nil, queue: .main) { [weak self] note in
+            guard let info = note.userInfo,
+                  let pluginId = info["pluginId"] as? String,
+                  let overlayId = info["overlayId"] as? String else { return }
+            var payload: [String: Any] = [:]
+            if let peerId = info["peerId"] as? String { payload["peerId"] = peerId }
+            self?.dispatchOverlayAction(pluginId: pluginId, overlayId: overlayId, payload: payload)
+        })
         observers.append(center.addObserver(forName: AorusPluginChatBridge.inputChangedNotification, object: nil, queue: .main) { [weak self] note in
             guard let info = note.userInfo, let text = info["text"] as? String else { return }
             var payload: [String: Any] = [
@@ -546,6 +598,11 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
         manager?.setContextActions(actions, id: pluginId)
     }
 
+    func pluginOverlaysChanged(_ pluginId: String, overlays: [AorusPluginOverlay]) {
+        guard manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else { return }
+        manager?.setOverlays(overlays, id: pluginId)
+    }
+
     func pluginOpenPage(_ pluginId: String, pageId: String, style: String, completion: @escaping (Result<Void, Error>) -> Void) {
         guard manager?.isPermissionGranted(.customUI, pluginId: pluginId) == true else {
             completion(.failure(AorusPluginRequestError("Custom UI permission is not granted")))
@@ -593,29 +650,32 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
             completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
             return
         }
-        DispatchQueue.global(qos: .utility).async {
-            guard AorusPluginSandbox.hostResolvesPublicly(host) else {
-                completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
+        // No DNS pre-check here, on purpose. It exists to stop a plugin reaching something
+        // on the local network *and reading the answer*, which is what `http.fetch` does.
+        // Opening a page hands it to the person, in Telegram's own browser, with the address
+        // in front of them; nothing comes back to the plugin. What the check did do was
+        // block on `getaddrinfo` before a link someone had just tapped — on a device whose
+        // traffic goes through this app's own tunnel, which is exactly when it fails. A
+        // guard that protects nothing and stops the button from working is not a guard.
+        // The scheme and the blocklist above still refuse tg://, file://, loopback, private
+        // ranges and the control plane.
+        DispatchQueue.main.async {
+            guard self.pluginExecutionAllowed,
+                  let navigation = self.topController()?.navigationController as? NavigationController else {
+                completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
                 return
             }
-            DispatchQueue.main.async {
-                guard self.pluginExecutionAllowed,
-                      let navigation = self.topController()?.navigationController as? NavigationController else {
-                    completion(.failure(AorusPluginRequestError("Navigation is unavailable")))
-                    return
-                }
-                let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
-                self.context.sharedContext.openExternalUrl(
-                    context: self.context,
-                    urlContext: .generic,
-                    url: url,
-                    forceExternal: false,
-                    presentationData: presentationData,
-                    navigationController: navigation,
-                    dismissInput: {}
-                )
-                completion(.success(()))
-            }
+            let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+            self.context.sharedContext.openExternalUrl(
+                context: self.context,
+                urlContext: .generic,
+                url: url,
+                forceExternal: false,
+                presentationData: presentationData,
+                navigationController: navigation,
+                dismissInput: {}
+            )
+            completion(.success(()))
         }
     }
 
@@ -1435,54 +1495,42 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
     func pluginShowToast(_ pluginId: String, text: String, duration: Double?) {
         guard manager?.isPermissionGranted(.dialogs, pluginId: pluginId) == true else { return }
         DispatchQueue.main.async {
-            guard let presenter = self.topController(), !text.isEmpty else { return }
-            let tag = 0xA07A57
-            presenter.view.viewWithTag(tag)?.removeFromSuperview()
-
-            let effect = UIBlurEffect(style: self.context.sharedContext.currentPresentationData.with { $0 }.theme.overallDarkAppearance ? .systemMaterialDark : .systemMaterialLight)
-            let toast = UIVisualEffectView(effect: effect)
-            toast.tag = tag
-            toast.layer.cornerRadius = 14
-            toast.layer.cornerCurve = .continuous
-            toast.clipsToBounds = true
-            toast.alpha = 0
-            toast.transform = CGAffineTransform(translationX: 0, y: 12)
-
-            let label = UILabel()
-            label.text = String(text.prefix(2_000))
-            label.numberOfLines = 4
-            label.textAlignment = .center
-            label.font = .systemFont(ofSize: 15, weight: .semibold)
-            label.textColor = .label
-            toast.contentView.addSubview(label)
-            presenter.view.addSubview(toast)
-
-            let availableWidth = max(160, presenter.view.bounds.width - 40)
-            let labelSize = label.sizeThatFits(CGSize(width: availableWidth - 32, height: 160))
-            let toastWidth = min(availableWidth, max(140, labelSize.width + 32))
-            let toastHeight = max(48, labelSize.height + 24)
-            toast.frame = CGRect(
-                x: (presenter.view.bounds.width - toastWidth) / 2,
-                y: presenter.view.bounds.height - presenter.view.safeAreaInsets.bottom - toastHeight - 18,
-                width: toastWidth,
-                height: toastHeight
-            )
-            label.frame = toast.contentView.bounds.insetBy(dx: 16, dy: 12)
-            toast.autoresizingMask = [.flexibleTopMargin, .flexibleLeftMargin, .flexibleRightMargin]
-
-            UIView.animate(withDuration: 0.2) {
-                toast.alpha = 1
-                toast.transform = .identity
-            }
-            let visibleDuration = min(8.0, max(1.2, duration ?? 2.5))
-            DispatchQueue.main.asyncAfter(deadline: .now() + visibleDuration) { [weak toast] in
-                guard let toast else { return }
-                UIView.animate(withDuration: 0.2, animations: {
-                    toast.alpha = 0
-                    toast.transform = CGAffineTransform(translationX: 0, y: 8)
-                }, completion: { _ in toast.removeFromSuperview() })
-            }
+            self.presentNotice(text, title: self.pluginName(pluginId), duration: duration)
         }
+    }
+
+    /// The name on the plugin's card, so a message says which plugin is talking. Falls back
+    /// to nothing rather than to an identifier nobody recognises.
+    private func pluginName(_ pluginId: String) -> String? {
+        guard let record = AorusPluginStore.shared.load(id: pluginId) else { return nil }
+        let name = record.manifest.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Telegram's own notice, not one of ours.
+    ///
+    /// This used to be a hand-built blur view with a label in it, floating at the bottom of
+    /// whatever happened to be on screen. It looked like nothing else in the app, it did not
+    /// know about the keyboard or the tab bar, and a second one replaced the first mid-
+    /// animation. `UndoOverlayController` is what every other notice in Telegram is, so a
+    /// plugin's message now arrives the same way a "Message deleted" or a "Link copied"
+    /// does, with the same placement, the same dismissal and the same swipe.
+    func presentNotice(_ text: String, title: String? = nil, duration: Double? = nil) {
+        guard !text.isEmpty, let presenter = self.topController() else { return }
+        let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+        let controller = UndoOverlayController(
+            presentationData: presentationData,
+            content: .info(
+                title: title,
+                text: String(text.prefix(2_000)),
+                timeout: min(8.0, max(1.5, duration ?? 3.0)),
+                customUndoText: nil
+            ),
+            elevatedLayout: false,
+            position: .bottom,
+            action: { _ in return true }
+        )
+        presenter.present(controller, in: .window(.root))
     }
 
     func pluginAlert(_ pluginId: String, title: String, text: String?, completion: @escaping () -> Void) {
@@ -1526,13 +1574,9 @@ private final class AorusPluginTelegramHost: AorusPluginHostServices {
                 completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
                 return
             }
-            DispatchQueue.global(qos: .utility).async {
-                guard AorusPluginSandbox.hostResolvesPublicly(host) else {
-                    completion(.failure(AorusPluginRequestError("URL is not available to plugins")))
-                    return
-                }
-                self.presentShare(items: items + [parsed], completion: completion)
-            }
+            // Same reasoning as opening a link: the share sheet hands the URL to another
+            // app and to the person, and returns nothing to the plugin.
+            presentShare(items: items + [parsed], completion: completion)
             return
         }
         guard !items.isEmpty else {

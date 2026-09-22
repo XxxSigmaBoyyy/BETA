@@ -21,7 +21,7 @@ public enum AorusPluginPrelude {
         "start", "stop", "message", "send", "messageDeleted", "messageEdited",
         "foreground", "background", "settingsChanged", "appSettingsChanged",
         "connectionChanged", "uiAction", "contextAction", "settings.changed", "settings.action", "settings.reset",
-        "chatOpened", "chatClosed", "inputChanged",
+        "chatOpened", "chatClosed", "inputChanged", "overlayAction",
     ]
 
     public static let source: String = """
@@ -167,6 +167,19 @@ public enum AorusPluginPrelude {
         }
 
         function emit(event, payload) {
+            // An overlay carries the function that was handed to `add*`, so a plugin does not
+            // have to subscribe to a stream and work out which of its buttons was pressed.
+            // The event is also emitted, for a plugin that prefers to listen.
+            if (event === 'overlayAction' && payload && overlayHandlers.hasOwnProperty(payload.id)) {
+                try {
+                    var direct = overlayHandlers[payload.id](payload);
+                    if (direct && typeof direct.then === 'function') {
+                        direct.then(undefined, function (error) { reportError('Overlay handler for \\'' + payload.id + '\\' rejected', error); });
+                    }
+                } catch (error) {
+                    reportError('Overlay handler for \\'' + payload.id + '\\' failed', error);
+                }
+            }
             var list = handlers[event];
             if (!list) { return; }
             var snapshot = list.slice();
@@ -467,6 +480,12 @@ public enum AorusPluginPrelude {
         var settingsShortcuts = [];
         var contextActions = [];
         var builderPages = [];
+        // What the plugin has drawn over the chat, and who to call when it is tapped. The
+        // whole set is republished on every change, because the app holds one list per
+        // plugin and an add is the list plus one.
+        var overlays = [];
+        var overlayHandlers = {};
+        var overlaySequence = 0;
 
         function registerIntegration(target, definition, publish) {
             var value = optionalObject(definition, 'definition');
@@ -485,6 +504,79 @@ public enum AorusPluginPrelude {
                 }
                 publish(JSON.stringify(target));
             };
+        }
+
+        function overlayConfig(kind, config, id) {
+            var value = optionalObject(config, 'config');
+            var clean = JSON.parse(JSON.stringify(value));
+            clean.kind = kind;
+            clean.id = id;
+            return clean;
+        }
+
+        function publishOverlays() {
+            var accepted = host.overlaysDefine(JSON.stringify(overlays));
+            if (accepted < 0) { throw new Error('Custom UI permission is not granted'); }
+            // Fewer accepted than sent means one was dropped for having nothing to draw. The
+            // caller hears about it instead of holding an id for a button that is not there.
+            if (accepted !== overlays.length) { throw new Error('Invalid overlay definition'); }
+        }
+
+        function addOverlay(kind, config, handler) {
+            if (handler !== undefined && handler !== null) { requireFunction(handler, 'handler'); }
+            overlaySequence += 1;
+            var id = kind + '-' + overlaySequence;
+            var previous = overlays.slice();
+            overlays.push(overlayConfig(kind, config, id));
+            try {
+                publishOverlays();
+            } catch (error) {
+                overlays = previous;
+                throw error;
+            }
+            if (handler) { overlayHandlers[id] = handler; }
+            return id;
+        }
+
+        function updateOverlay(kind, id, config) {
+            requireString(id, 'id');
+            for (var i = 0; i < overlays.length; i++) {
+                if (overlays[i].id === id) {
+                    var previous = overlays.slice();
+                    // An update is the same validation as an add, so a change that would not
+                    // have been accepted in the first place leaves what is on screen alone.
+                    overlays[i] = overlayConfig(kind, config, id);
+                    try {
+                        publishOverlays();
+                    } catch (error) {
+                        overlays = previous;
+                        throw error;
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function removeOverlay(id) {
+            requireString(id, 'id');
+            var found = false;
+            for (var i = overlays.length - 1; i >= 0; i--) {
+                if (overlays[i].id === id) { overlays.splice(i, 1); found = true; }
+            }
+            if (!found) { return false; }
+            delete overlayHandlers[id];
+            publishOverlays();
+            return true;
+        }
+
+        function removeAllOverlays() {
+            if (overlays.length === 0) { return 0; }
+            var count = overlays.length;
+            overlays = [];
+            overlayHandlers = {};
+            publishOverlays();
+            return count;
         }
 
         function pageStyle(options) {
@@ -1095,6 +1187,22 @@ public enum AorusPluginPrelude {
                 },
                 openURL: function (url) {
                     return request('browser.open', { url: requireString(url, 'url') });
+                },
+                addFloatingButton: function (config, handler) { return addOverlay('floatingButton', config, handler); },
+                updateFloatingButton: function (id, config) { return updateOverlay('floatingButton', id, config); },
+                removeFloatingButton: removeOverlay,
+                addChatPanel: function (config, handler) { return addOverlay('chatPanel', config, handler); },
+                updateChatPanel: function (id, config) { return updateOverlay('chatPanel', id, config); },
+                removeChatPanel: removeOverlay,
+                overlays: function () { return freeze(JSON.parse(JSON.stringify(overlays))); },
+                removeAllOverlays: removeAllOverlays,
+                showSheet: function (options) {
+                    var opts = typeof options === 'string' ? { text: options } : optionalObject(options, 'options');
+                    return request('ui.alert', {
+                        title: typeof opts.title === 'string' ? opts.title : '',
+                        text: typeof opts.text === 'string' ? opts.text : null,
+                        ok: typeof opts.buttonTitle === 'string' ? opts.buttonTitle : null
+                    });
                 }
             }),
             browser: freeze({

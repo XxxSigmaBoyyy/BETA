@@ -21,6 +21,7 @@
 9a. [Открытый чат](#9a-открытый-чат)
 10. [Аккаунты](#10-аккаунты)
 11. [Нативные экраны](#11-нативные-экраны)
+11a. [Кнопки и панели поверх чата](#11a-кнопки-и-панели-поверх-чата)
 12. [Форматированный текст](#13a-форматированный-текст)
 12. [Интеграции: настройки и контекстное меню](#12-интеграции-настройки-и-контекстное-меню)
 13. [Настройки плагина](#13-настройки-плагина)
@@ -113,7 +114,7 @@ aorus.commands.register('hello', function (args, context) {
 | `clipboardRead` / `clipboardWrite` | Буфер обмена | `aorus.clipboard.read` / `.write` |
 | `incomingMessages` | События входящих, удалённых, изменённых | `aorus.on('message'…)` и родственные |
 | `outgoingMessages` | Команды и перехват исходящего текста | `aorus.commands`, `aorus.on('send'…)` |
-| `customUI` | Собственные нативные экраны | `aorus.ui.definePages/createPage/openPage/presentPage` |
+| `customUI` | Собственные экраны, кнопки и панели поверх чата | `aorus.ui.definePages/createPage/openPage/presentPage`, `aorus.ui.addFloatingButton`, `aorus.ui.addChatPanel` |
 | `settingsIntegration` | Ярлык в настройках | `aorus.integrations.settings.register` |
 | `contextMenu` | Действие в меню сообщения | `aorus.integrations.contextMenu.register` |
 | `inAppBrowser` | Открытие сайтов во встроенном браузере | `aorus.browser.open`, `aorus.ui.openURL`, строки с ссылками |
@@ -151,6 +152,7 @@ aorus.off('message', fn);    // снять конкретный обработч
 | `connectionChanged` | Изменилось состояние соединения | состояние |
 | `uiAction` | Взаимодействие со строкой нативного экрана | `{ pageId, rowId, value }` |
 | `contextAction` | Выбрано действие в меню сообщения | `{ actionId, peerId, namespace, messageId, text, source }` |
+| `overlayAction` | Нажата кнопка или панель поверх чата | `{ id, peerId }` |
 | `chatOpened` | Чат появился на экране | `{ peerId, title, kind, threadId }` |
 | `chatClosed` | Чат ушёл с экрана | `{ peerId }` |
 | `inputChanged` | Изменился текст в поле ввода | `{ peerId, text, source }` |
@@ -310,6 +312,43 @@ page.update('prompt', 'новое значение');
 идентификаторы — латиница, цифры, `_`, `.`, `-`, до 64 символов, и они должны быть
 уникальными. Ссылка принимает только `http` и `https`, а адрес проверяется перед открытием:
 loopback, локальная сеть и служебные домены AorusGram отклоняются.
+
+## 11a. Кнопки и панели поверх чата
+
+```js
+const button = aorus.ui.addFloatingButton(
+    { title: 'Перевести', icon: 'globe', backgroundColor: '#0A84FF', position: 'bottomRight', offsetY: -120, draggable: true },
+    () => aorus.chat.setDraft(translate(aorus.chat.draft()))
+);
+aorus.ui.updateFloatingButton(button, { title: 'Готово', backgroundColor: '#30D158' });
+aorus.ui.removeFloatingButton(button);
+
+const panel = aorus.ui.addChatPanel({ title: 'Идёт запись', subtitle: 'нажмите, чтобы остановить' }, stop);
+aorus.ui.updateChatPanel(panel, { subtitle: 'остановлено' });
+aorus.ui.removeChatPanel(panel);
+
+aorus.ui.overlays();          // что сейчас нарисовано
+aorus.ui.removeAllOverlays(); // снять всё сразу
+```
+
+Поля: `title`, `subtitle` (только панель), `icon` (SF Symbol), `backgroundColor`, `textColor`,
+`borderColor`, `borderWidth`, `cornerRadius`, `alpha`, `fontSize`, `shadow`, `displayMode`
+(`icon` / `text` / `iconText`), `position` (`topLeft`, `topRight`, `bottomLeft`, `bottomRight`,
+`centerLeft`, `centerRight`, `center` — регистр не важен), `offsetX`, `offsetY`, `width`,
+`height`, `draggable`, `interactive`.
+
+Числа **ограничиваются, а не отклоняются**: ширина 900 станет 220, `alpha: 4` станет `1`.
+Плагин, который просит кнопку в пол-экрана, ошибся, а не нападает, и полезный ответ — самая
+большая кнопка, которая всё ещё помещается. Отклоняется только то, что нельзя нарисовать:
+кнопка без текста и без иконки — это невидимая зона нажатия, и `add` в этом случае бросает
+ошибку, а не возвращает id того, чего нет.
+
+Обработчик передаётся прямо в `add`, поэтому плагину с несколькими кнопками не нужно
+разбирать поток событий. Событие `overlayAction` при этом тоже приходит — если так удобнее.
+
+До четырёх элементов на плагин. Живут, пока открыт чат: панели встают под шапкой в порядке
+регистрации, кнопки — по своей позиции, с `draggable` их можно перетащить и позиция
+запомнится на время сессии. Всё, что не попало по элементу, проходит насквозь в чат.
 
 ## 12. Интеграции: настройки и контекстное меню
 

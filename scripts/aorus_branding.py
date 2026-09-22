@@ -17741,6 +17741,112 @@ def patch_plugin_outgoing_messages(tg: Path) -> None:
     print("Plugins: outgoing command/send hook installed")
 
 
+def patch_plugin_outgoing_hook_composer(tg: Path) -> None:
+    """Put the plugin chain on the path a typed message actually takes.
+
+    The hook was installed in `ChatControllerImpl.sendMessages`, which sounds like the place
+    and is not: that function is reached by stickers, dice, media and inline results. Text
+    someone types goes `ChatControllerNode.sendCurrentMessage` -> the `chatDisplayNode
+    .sendMessages` closure, and never touches it. So every plugin command was offered
+    nothing but sticker sends, which the chain drops for having no text, and a message
+    starting with a command prefix went out exactly as typed — no error, no log line,
+    nothing to look at.
+
+    The chain goes at the top of that closure, before the correlation ids are collected: a
+    message a command consumes must not leave an id behind for an animation that will never
+    arrive. Quick replies and business links go through the same closure and are not a
+    conversation, so they are excluded by subject rather than by peer.
+    """
+    path = tg / "submodules/TelegramUI/Sources/Chat/ChatControllerLoadDisplayNode.swift"
+    if not path.is_file():
+        raise SystemExit("PluginsComposer: ChatControllerLoadDisplayNode.swift not found")
+    source = path.read_text(encoding="utf-8")
+    if "aorusPluginMessages" in source:
+        print("PluginsComposer: already patched")
+        return
+    if "import AorusGramUI\n" not in source:
+        if "import AccountContext\n" in source:
+            source = source.replace("import AccountContext\n", "import AccountContext\nimport AorusGramUI\n", 1)
+        else:
+            source = "import AorusGramUI\n" + source
+    anchor = (
+        "        self.chatDisplayNode.sendMessages = { [weak self] messages, silentPosting, scheduleTime, repeatPeriod, isAnyMessageTextPartitioned, postpone in\n"
+        "            guard let strongSelf = self else {\n"
+        "                return\n"
+        "            }\n"
+        "            \n"
+        "            var correlationIds: [Int64] = []\n"
+        "            for message in messages {\n"
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("PluginsComposer: sendMessages closure anchor not found")
+    replacement = (
+        "        self.chatDisplayNode.sendMessages = { [weak self] messages, silentPosting, scheduleTime, repeatPeriod, isAnyMessageTextPartitioned, postpone in\n"
+        "            guard let strongSelf = self else {\n"
+        "                return\n"
+        "            }\n"
+        "\n"
+        "            // AorusGram plugins: this is the path a typed message takes, so this is\n"
+        "            // where commands and outgoing handlers see it. Only human-authored plain\n"
+        "            // text in a real conversation enters the chain: media, forwards and\n"
+        "            // inline content pass through untouched, and quick replies and business\n"
+        "            // links are not a conversation at all.\n"
+        "            var aorusPluginMessages: [EnqueueMessage] = messages\n"
+        "            var aorusPluginPeerId: Int64?\n"
+        "            if case .customChatContents = strongSelf.subject {\n"
+        "                aorusPluginPeerId = nil\n"
+        "            } else {\n"
+        "                aorusPluginPeerId = strongSelf.chatLocation.peerId?.toInt64()\n"
+        "            }\n"
+        "            if let aorusPeerId = aorusPluginPeerId {\n"
+        "                aorusPluginMessages = messages.compactMap { message in\n"
+        "                    guard case let .message(text, attributes, inlineStickers, mediaReference, threadId, replyToMessageId, replyToStoryId, localGroupingKey, correlationId, bubbleUpEmojiOrStickersets) = message,\n"
+        "                          mediaReference == nil, inlineStickers.isEmpty, !text.isEmpty else {\n"
+        "                        return message\n"
+        "                    }\n"
+        "                    let verdict = AorusPluginRuntimeManager.shared.processOutgoing(\n"
+        "                        text: text, peerId: aorusPeerId, accountId: strongSelf.context.account.id.int64\n"
+        "                    )\n"
+        "                    if verdict.consumed { return nil }\n"
+        "                    guard let replacement = verdict.replacement, replacement != text else { return message }\n"
+        "                    var updatedAttributes = attributes.filter { !($0 is TextEntitiesMessageAttribute) }\n"
+        "                    let updatedEntities = generateTextEntities(replacement, enabledTypes: .all)\n"
+        "                    if !updatedEntities.isEmpty { updatedAttributes.append(TextEntitiesMessageAttribute(entities: updatedEntities)) }\n"
+        "                    return .message(text: replacement, attributes: updatedAttributes, inlineStickers: [:], mediaReference: nil, threadId: threadId, replyToMessageId: replyToMessageId, replyToStoryId: replyToStoryId, localGroupingKey: localGroupingKey, correlationId: correlationId, bubbleUpEmojiOrStickersets: bubbleUpEmojiOrStickersets)\n"
+        "                }\n"
+        "                if aorusPluginMessages.isEmpty {\n"
+        "                    // A command handled everything that was typed. The composer has\n"
+        "                    // already been cleared by the send, so the only thing left is to\n"
+        "                    // close the command menu, exactly as a real send would.\n"
+        "                    strongSelf.updateChatPresentationInterfaceState(interactive: true, { $0.updatedShowCommands(false) })\n"
+        "                    return\n"
+        "                }\n"
+        "            }\n"
+        "\n"
+        "            var correlationIds: [Int64] = []\n"
+        "            for message in aorusPluginMessages {\n"
+    )
+    source = source.replace(anchor, replacement, 1)
+
+    for old, new, name in [
+        (
+            "                    let forwardCount = messages.reduce(0, { count, message -> Int in\n",
+            "                    let forwardCount = aorusPluginMessages.reduce(0, { count, message -> Int in\n",
+            "slowmode forward count",
+        ),
+        (
+            "                let transformedMessages = strongSelf.transformEnqueueMessages(messages, silentPosting: effectiveSilentPosting, scheduleTime: scheduleTime, repeatPeriod: repeatPeriod, postpone: postpone)\n",
+            "                let transformedMessages = strongSelf.transformEnqueueMessages(aorusPluginMessages, silentPosting: effectiveSilentPosting, scheduleTime: scheduleTime, repeatPeriod: repeatPeriod, postpone: postpone)\n",
+            "enqueue transform",
+        ),
+    ]:
+        if source.count(old) != 1:
+            raise SystemExit(f"PluginsComposer: {name} anchor found {source.count(old)} times, expected 1")
+        source = source.replace(old, new, 1)
+    path.write_text(source, encoding="utf-8")
+    print("PluginsComposer: outgoing chain installed on the typed-message path")
+
+
 def patch_internal_delete_maintenance(tg: Path) -> None:
     """Stop marking a message as deleted when nothing was deleted.
 
@@ -26520,6 +26626,7 @@ def main() -> None:
     patch_amoled_theme(tg)
     patch_plugin_runtime(tg)
     patch_plugin_outgoing_messages(tg)
+    patch_plugin_outgoing_hook_composer(tg)
     patch_plugin_context_menu(tg)
     patch_plugin_settings_rows(tg)
     patch_internal_delete_maintenance(tg)
